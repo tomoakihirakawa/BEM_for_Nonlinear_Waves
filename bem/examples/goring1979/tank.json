@@ -1,0 +1,6 @@
+{
+    "name": "tank",
+    "type": "RigidBody",
+    "isFixed": true,
+    "objfile": ["../../../obj/Goring1979/tank.obj"]
+}

@@ -1,0 +1,82 @@
+# =========================
+# OS & Editor
+# =========================
+.DS_Store
+.vscode/
+*.code-workspace
+*~
+#*#
+.directory
+
+# =========================
+# Build Artifacts (C++/CMake)
+# =========================
+build/
+cmake-build-*/
+*.o
+*.a
+*.lib
+*.dylib
+*.dll
+*.so
+*.exe
+*.out
+main
+main.dSYM/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+compile_commands.json
+*.gch
+
+# =========================
+# Legacy directories (not part of public repo)
+# =========================
+builds/
+bem-freq/
+mathematica_utilities/
+
+# =========================
+# TetGen source (AGPL — do not distribute)
+# =========================
+tetgen.cxx
+predicates.cxx
+
+# =========================
+# Python
+# =========================
+__pycache__/
+*.pyc
+
+# =========================
+# Simulation outputs
+# =========================
+*.log
+*.vtk
+*.vtu
+*.vtp
+*.csv
+*.nb
+*.mov
+*.avi
+*.key
+*.gif
+output*/
+!output*.png
+
+# =========================
+# Mesh files (large, tracked selectively)
+# =========================
+obj/*
+!obj/Goring1979/
+!obj/Tanizawa1996/
+
+# =========================
+# Misc
+# =========================
+temp/
+tmp/
+docs/site/
+*.html
+rsync*.sh

@@ -1,0 +1,25 @@
+BasedOnStyle: LLVM
+
+# Keep diffs small for this codebase:
+# - don't reflow Japanese/long comments
+# - don't wrap long lines (many tables / math expressions)
+# - don't reorder includes
+ReflowComments: false
+ColumnLimit: 0
+SortIncludes: false
+
+IndentWidth: 2
+TabWidth: 2
+UseTab: Never
+
+BreakBeforeBraces: Attach
+DerivePointerAlignment: false
+PointerAlignment: Left
+
+# Keep preprocessor directives at column 1 (e.g. #pragma omp ...)
+IndentPPDirectives: None
+
+# Avoid aggressive bin-packing changes in function signatures/calls
+BinPackParameters: true
+BinPackArguments: true
+

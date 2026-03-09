@@ -1,0 +1,20 @@
+{
+    "max_dt": 0.03,
+    "end_time_step": 100000,
+    "end_time": 20,
+    "element": "linear",
+    "ALE": "linear",
+    "ALEPERIOD": "1",
+    "output_directory": "./output",
+    "input_files": [
+        "tank.json",
+        "wavemaker.json",
+        "water.json",
+        "gauge1.json",
+        "gauge2.json",
+        "gauge3.json"
+    ],
+    "meshing_options": [
+        "surface_flip"
+    ]
+}
