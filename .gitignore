@@ -15,6 +15,7 @@ build/
 cmake-build-*/
 *.o
 *.a
+!third_party/tetgen/libtet.a
 *.lib
 *.dylib
 *.dll
