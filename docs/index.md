@@ -3,6 +3,8 @@ layout: default
 title: Home
 ---
 
+[🇯🇵 日本語](ja/)
+
 # BEM for Nonlinear Waves
 
 A boundary element method (BEM) solver for nonlinear free-surface wave problems.

@@ -3,6 +3,8 @@ layout: default
 title: "Example: Goring (1979)"
 ---
 
+[🇯🇵 日本語](../ja/examples/goring1979.html)
+
 # Example: Solitary Wave Generation (Goring, 1979)
 
 This example demonstrates solitary wave generation using a piston-type wavemaker, following the method of Goring (1979).

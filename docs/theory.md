@@ -3,6 +3,8 @@ layout: default
 title: Theory
 ---
 
+[🇯🇵 日本語](ja/theory.html)
+
 # Theoretical Background
 
 ## Potential Flow Formulation

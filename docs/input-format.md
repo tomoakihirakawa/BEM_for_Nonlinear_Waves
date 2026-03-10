@@ -3,6 +3,8 @@ layout: default
 title: Input Format
 ---
 
+[🇯🇵 日本語](ja/input-format.html)
+
 # Input File Format
 
 All input files use JSON format. A simulation requires a `settings.json` file and one or more body definition files.
