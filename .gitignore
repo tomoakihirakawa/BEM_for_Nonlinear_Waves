@@ -74,6 +74,13 @@ obj/*
 !obj/Tanizawa1996/
 
 # =========================
+# AI tool config (not part of public repo)
+# =========================
+.claude/
+CLAUDE.md
+ROBUSTNESS_*.md
+
+# =========================
 # Misc
 # =========================
 temp/
