@@ -9,6 +9,8 @@ title: Home
 
 A boundary element method (BEM) solver for nonlinear free-surface wave problems.
 
+![GUI Screenshot](images/gui_screenshot.png)
+
 ## Overview
 
 This software solves potential flow problems with nonlinear free-surface boundary conditions using the boundary element method. It implements the Mixed Eulerian-Lagrangian (MEL) approach for time-domain simulations and supports frequency-domain analysis.
