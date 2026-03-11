@@ -106,4 +106,5 @@ temp/
 tmp/
 docs/site/
 *.html
+!docs/**/*.html
 rsync*.sh
