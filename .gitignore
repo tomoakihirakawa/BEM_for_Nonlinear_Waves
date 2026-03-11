@@ -79,6 +79,9 @@ obj/*
 .claude/
 CLAUDE.md
 ROBUSTNESS_*.md
+*_CHATGPT*.md
+*_CLAUDE*.md
+*_GPT*.md
 
 # =========================
 # Papers & presentations (private)
