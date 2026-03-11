@@ -636,6 +636,7 @@ void generateBIEMatrix() {
 
 void solveLU(TimeWatch &watch, double &time_setup, double &time_solve) {
   std::cout << "Using LU solver..." << std::endl;
+  resetLastGmresDiagnosticsForDirectSolve();
   watch();
   setIGIGn();
   // std::cout << "2つの係数行列の情報を持つ　P_P_IGIGn　を境界条件に応じて入れ替える（移項）:" << std::endl;

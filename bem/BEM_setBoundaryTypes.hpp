@@ -750,7 +750,11 @@ inline double getDirichletPhit(networkLine* l) {
 
 // --- 統一テンプレート: setPhiPhinOnFace の per-face 処理 ---
 template <typename Node>
-inline void setPhiPhinOnFace_run(Node* node, networkFace* const f, const std::unordered_set<networkFace*>& alive_faces) {
+inline void setPhiPhinOnFace_run(Node* node,
+                                 networkFace* const f,
+                                 const std::unordered_set<networkFace*>& alive_faces,
+                                 const std::unordered_map<networkFace*, double>& old_phi_on_face = {},
+                                 const std::unordered_map<networkFace*, double>& old_phin_on_face = {}) {
   if (f && !alive_faces.count(f))
     return;
   if (isNeumannID_BEM(node, f)) {
@@ -766,13 +770,21 @@ inline void setPhiPhinOnFace_run(Node* node, networkFace* const f, const std::un
       else
         node->phinOnFace[f] = Dot(contactNormalVelocity(node, f), f->normal);
     }
-    node->phiOnFace[f] = phi_ref(node);
+    if (node->isMultipleNode) {
+      auto it = old_phi_on_face.find(f);
+      node->phiOnFace[f] = (it != old_phi_on_face.end()) ? it->second : phi_ref(node);
+    } else
+      node->phiOnFace[f] = phi_ref(node);
     node->phitOnFace[f] = 1E+30;
     node->phintOnFace[f] = 1E+30;
   }
   if (isDirichletID_BEM(node, f)) {
     node->phiOnFace[f] = phi_ref(node);
-    node->phinOnFace[f] = phin_ref(node);
+    if (node->isMultipleNode) {
+      auto it = old_phin_on_face.find(f);
+      node->phinOnFace[f] = (it != old_phin_on_face.end()) ? it->second : phin_ref(node);
+    } else
+      node->phinOnFace[f] = phin_ref(node);
     node->phitOnFace[f] = 1E+30;
     node->phintOnFace[f] = 1E+30;
   }
@@ -787,14 +799,16 @@ inline void setPhiPhinOnFace(Network* water) {
 
 #pragma omp parallel for
   for (const auto& p : ToVector(water->getPoints())) {
+    auto old_phi_on_face = std::move(p->phiOnFace);
+    auto old_phin_on_face = std::move(p->phinOnFace);
     p->phiOnFace.clear();
     p->phinOnFace.clear();
     p->phitOnFace.clear();
     p->phintOnFace.clear();
 
-    setPhiPhinOnFace_run(p, (networkFace*)nullptr, alive_faces);
+    setPhiPhinOnFace_run(p, (networkFace*)nullptr, alive_faces, old_phi_on_face, old_phin_on_face);
     for (auto* face : p->getBoundaryFaces())
-      setPhiPhinOnFace_run(p, face, alive_faces);
+      setPhiPhinOnFace_run(p, face, alive_faces, old_phi_on_face, old_phin_on_face);
   }
 
   // b! 面
@@ -807,6 +821,8 @@ inline void setPhiPhinOnFace(Network* water) {
   // b! 辺中点（真2次要素の場合）
   if (use_true_quadratic_element) {
     for (auto* l : water->getBoundaryLines()) {
+      auto old_phi_on_face = std::move(l->phiOnFace);
+      auto old_phin_on_face = std::move(l->phinOnFace);
       l->phiOnFace.clear();
       l->phinOnFace.clear();
       l->phitOnFace.clear();
@@ -825,7 +841,7 @@ inline void setPhiPhinOnFace(Network* water) {
       }
 
       for (const auto& [f, idx] : l->f2Index)
-        setPhiPhinOnFace_run(l, f, alive_faces);
+        setPhiPhinOnFace_run(l, f, alive_faces, old_phi_on_face, old_phin_on_face);
     }
   }
 };
@@ -861,7 +877,10 @@ inline void setPhiPhin_t(std::vector<Network*> WATERS) {
 
   /* -------------------------------------------------------------------------- */
   // --- 統一テンプレート: setPhiPhin_t の per-face 処理 ---
-  auto setPhiPhin_t_run = [](auto* node, networkFace* const f) {
+  auto setPhiPhin_t_run = [](auto* node,
+                             networkFace* const f,
+                             const std::unordered_map<networkFace*, double>& old_phit_on_face = {},
+                             const std::unordered_map<networkFace*, double>& old_phint_on_face = {}) {
     if (isNeumannID_BEM(node, f)) {
       if (node->absorbedBy != nullptr) {
         Tddd gradPhi_t = node->absorbedBy->absorb_gradPhi_t(getNodeX(node), getNodeTime(node));
@@ -875,11 +894,19 @@ inline void setPhiPhin_t(std::vector<Network*> WATERS) {
         else
           node->phintOnFace[f] = phint_Neumann(node, f);
       }
-      node->phitOnFace[f] = 0.;
+      if (node->isMultipleNode) {
+        auto it = old_phit_on_face.find(f);
+        node->phitOnFace[f] = (it != old_phit_on_face.end()) ? it->second : 0.;
+      } else
+        node->phitOnFace[f] = 0.;
     }
     if (isDirichletID_BEM(node, f)) {
       node->phitOnFace[f] = getDirichletPhit(node);
-      node->phintOnFace[f] = 0.;
+      if (node->isMultipleNode) {
+        auto it = old_phint_on_face.find(f);
+        node->phintOnFace[f] = (it != old_phint_on_face.end()) ? it->second : 0.;
+      } else
+        node->phintOnFace[f] = 0.;
     }
   };
 
@@ -889,23 +916,27 @@ inline void setPhiPhin_t(std::vector<Network*> WATERS) {
   for (const auto water : WATERS)
 #pragma omp parallel for
     for (const auto& p : ToVector(water->getPoints())) {
+      auto old_phit_on_face = std::move(p->phitOnFace);
+      auto old_phint_on_face = std::move(p->phintOnFace);
       p->phitOnFace.clear();
       p->phintOnFace.clear();
 
-      setPhiPhin_t_run(p, (networkFace*)nullptr);
+      setPhiPhin_t_run(p, (networkFace*)nullptr, old_phit_on_face, old_phint_on_face);
       for (const auto& f : p->getBoundaryFaces())
-        setPhiPhin_t_run(p, f);
+        setPhiPhin_t_run(p, f, old_phit_on_face, old_phint_on_face);
     }
 
   // b! 辺中点（真2次要素の場合）
   if (use_true_quadratic_element) {
     for (const auto water : WATERS) {
       for (auto* l : water->getBoundaryLines()) {
+        auto old_phit_on_face = std::move(l->phitOnFace);
+        auto old_phint_on_face = std::move(l->phintOnFace);
         l->phitOnFace.clear();
         l->phintOnFace.clear();
 
         for (const auto& [f, idx] : l->f2Index)
-          setPhiPhin_t_run(l, f);
+          setPhiPhin_t_run(l, f, old_phit_on_face, old_phint_on_face);
       }
     }
   }

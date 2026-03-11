@@ -1,0 +1,7 @@
+# /bin/bash
+
+rm -r ./CMake*
+rm -r ./cmake*
+rm -r ./Makefile
+# rm -r ./build*.*
+rm -r ./.ninja

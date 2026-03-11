@@ -5,6 +5,7 @@
 #include <cmath>
 #include <iostream>
 #include <optional>
+#include <sstream>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -42,6 +43,24 @@ struct FaceAltitudeDetail {
   double altitude_rel = 1E+100;
   int subface_index = -1;
 };
+
+inline std::string faceBadQualityHistorySummary(const networkFace* face) {
+  if (!face || face->bad_quality_history.empty())
+    return "";
+  const auto& history = face->bad_quality_history;
+  const auto& first = history.front();
+  const auto& last = history.back();
+  std::ostringstream oss;
+  oss << " streak=" << history.size()
+      << " from=(" << first.time_step;
+  if (first.rk_step >= 0)
+    oss << "," << first.rk_step;
+  oss << ") to=(" << last.time_step;
+  if (last.rk_step >= 0)
+    oss << "," << last.rk_step;
+  oss << ")";
+  return oss.str();
+}
 
 inline std::vector<FaceTriangle> qualityTriangles(networkFace* face) {
   std::vector<FaceTriangle> tris;
@@ -565,6 +584,7 @@ inline void monitorTinyFaceRelativeToLocalMean(
             << " area_ratio=" << result.worst_area_ratio
             << " area=" << result.worst_area
             << " local_mean_area=" << result.worst_local_mean_area
+            << faceBadQualityHistorySummary(result.worst_face)
             << colorReset << std::endl;
 }
 
@@ -633,6 +653,67 @@ inline double faceAltitudeRelativeToSharedEdge(networkFace* face, networkLine* s
   return faceAltitudeRelativeToSharedEdgeDetail(face, shared_line).altitude_rel;
 }
 
+inline void refreshFaceBadQualityHistory(
+    Network& water,
+    const int time_step,
+    const std::optional<int> rk_step,
+    const double tiny_face_bad_ratio,
+    const SimulationSettings::RemeshingSettings::SubsurfaceAltitudeRejectSettings& subsurface_settings,
+    const double tiny_face_clear_ratio = 0.12,
+    const double subsurface_clear_ratio = 0.08) {
+  std::unordered_map<networkFace*, double> min_altitude_ratio;
+  auto boundary_faces = water.getBoundaryFaces();
+  min_altitude_ratio.reserve(boundary_faces.size());
+
+  for (auto* face : boundary_faces)
+    if (face)
+      min_altitude_ratio.emplace(face, 1E+100);
+
+  if (subsurface_settings.enabled) {
+    for (auto* line : water.getBoundaryLines()) {
+      if (!line)
+        continue;
+      auto faces = line->getBoundaryFaces();
+      if (faces.size() != 2 || !faces[0] || !faces[1])
+        continue;
+
+      const double dot = std::clamp(Dot(faces[0]->normal, faces[1]->normal), -1., 1.);
+      const double theta_deg = 180. - std::acos(dot) * 180. / M_PI;
+      if (!(subsurface_settings.min_edge_angle_deg < theta_deg && theta_deg < subsurface_settings.max_edge_angle_deg))
+        continue;
+
+      const auto detail0 = faceAltitudeRelativeToSharedEdgeDetail(faces[0], line);
+      const auto detail1 = faceAltitudeRelativeToSharedEdgeDetail(faces[1], line);
+      min_altitude_ratio[faces[0]] = std::min(min_altitude_ratio[faces[0]], detail0.altitude_rel);
+      min_altitude_ratio[faces[1]] = std::min(min_altitude_ratio[faces[1]], detail1.altitude_rel);
+    }
+  }
+
+  for (auto* face : boundary_faces) {
+    if (!face)
+      continue;
+
+    const double area = boundaryFaceArea(face);
+    const double local_mean_area = localMeanFaceArea(face);
+    const double area_ratio = (local_mean_area > 0.0 && std::isfinite(local_mean_area) && std::isfinite(area))
+                                  ? area / local_mean_area
+                                  : 1E+100;
+    const double altitude_ratio = min_altitude_ratio.contains(face) ? min_altitude_ratio.at(face) : 1E+100;
+
+    const bool bad_tiny = area_ratio < tiny_face_bad_ratio;
+    const bool bad_altitude = subsurface_settings.enabled && altitude_ratio < subsurface_settings.min_face_altitude_rel;
+    const bool clear_tiny = area_ratio >= tiny_face_clear_ratio;
+    const bool clear_altitude = (!subsurface_settings.enabled) || (altitude_ratio >= subsurface_clear_ratio);
+
+    if (bad_tiny)
+      face->appendBadQualityEvent({time_step, rk_step.value_or(-1), FaceBadQualityType::TinyFace, area_ratio, tiny_face_bad_ratio});
+    if (bad_altitude)
+      face->appendBadQualityEvent({time_step, rk_step.value_or(-1), FaceBadQualityType::SubsurfaceAltitude, altitude_ratio, subsurface_settings.min_face_altitude_rel});
+    if (!bad_tiny && !bad_altitude && clear_tiny && clear_altitude)
+      face->clearBadQualityHistory();
+  }
+}
+
 inline SubsurfaceAltitudeCheckResult checkSubsurfaceFaceAltitude(
     Network& water,
     const SimulationSettings::RemeshingSettings::SubsurfaceAltitudeRejectSettings& settings) {
@@ -695,7 +776,8 @@ inline void throwIfSubsurfaceFaceAltitudeTooSmall(
                      " (edge_angle_deg=" + std::to_string(result.worst_angle_deg) +
                      ", point_indices=" + std::to_string(p0 ? p0->index : -1) + "," + std::to_string(p1 ? p1->index : -1) +
                      ", face_index=" + std::to_string(result.worst_face ? result.worst_face->index : -1) +
-                     ", subface_index=" + std::to_string(result.worst_subface_index) + ")");
+                     ", subface_index=" + std::to_string(result.worst_subface_index) +
+                     ", bad_streak=" + std::to_string(result.worst_face ? result.worst_face->bad_quality_history.size() : 0) + ")");
 }
 
 inline bool flipIfOnce(Network& water, const Tdd& limit_Dirichlet, const Tdd& limit_Neumann, bool force = false, int iteration = 0,

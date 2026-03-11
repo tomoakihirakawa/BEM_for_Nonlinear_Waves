@@ -530,65 +530,68 @@ void buildSparseMatrixForILU() {
           const auto [fp0, fp1, fp2] = integ_f->getPoints();
           const auto& [fl0, fl1, fl2] = integ_f->Lines;
           auto dof_idx = getQuadDOFIndices(integ_f);
-          const std::array<Tddd, 3> X012_tq = {fp0->X, fp1->X, fp2->X};
-          const auto cross_tq = Cross(fp1->X - fp0->X, fp2->X - fp0->X);
-          const double J_det_tq = Norm(cross_tq);
+          const T6Tddd X6_tq = {fp0->X, fp1->X, fp2->X, fl0->X_mid, fl1->X_mid, fl2->X_mid};
           constexpr std::array<bool, 3> all_true_tq{true, true, true};
           std::array<std::array<double, 2>, 6> WGN{}; // [G_weighted, Gn_weighted] per DOF
 
-          const bool is_vert_on_elem = (origin == fp0 || origin == fp1 || origin == fp2);
+          int vertex_local = -1;
+          if (origin == fp0)
+            vertex_local = 0;
+          else if (origin == fp1)
+            vertex_local = 1;
+          else if (origin == fp2)
+            vertex_local = 2;
+          const bool is_vert_on_elem = (vertex_local >= 0);
 
           if (is_vert_on_elem) {
             // Duffy transform: permute so origin is at vertex 0
-            std::array<Tddd, 3> X_loc = X012_tq;
             std::array<int, 3> vperm = {0, 1, 2};
             if (fp1 == origin) {
               vperm = {1, 2, 0};
-              X_loc = {X012_tq[1], X012_tq[2], X012_tq[0]};
             } else if (fp2 == origin) {
               vperm = {2, 0, 1};
-              X_loc = {X012_tq[2], X012_tq[0], X012_tq[1]};
             }
 
-            // Map permuted local index -> original DOF index
-            auto perm_to_orig = [&](int local_idx) -> int {
-              if (local_idx < 3)
-                return vperm[local_idx];
-              int a = vperm[local_idx - 3], b = vperm[(local_idx - 3 + 1) % 3];
-              for (int e = 0; e < 3; ++e)
-                if ((a == e && b == (e + 1) % 3) || (b == e && a == (e + 1) % 3))
-                  return 3 + e;
-              return 3;
-            };
-
             for (const auto& [t0, t1, ww] : __array_GW5xGW5__) {
-              auto N6 = ModTriShape<6>(t0, t1, all_true_tq);
-              auto N3 = ModTriShape<3>(t0, t1);
-              auto X = Dot(N3, X_loc);
-              auto R = X - origin->X;
+              const auto bary_loc = ModTriShape<3>(t0, t1);
+              std::array<double, 3> bary{};
+              bary[vperm[0]] = bary_loc[0];
+              bary[vperm[1]] = bary_loc[1];
+              bary[vperm[2]] = bary_loc[2];
+
+              auto N6_geo = TriShape<6>(bary[0], bary[1], all_true_tq);
+              auto dN_dt0 = D_TriShape<6, 1, 0>(bary[0], bary[1], all_true_tq);
+              auto dN_dt1 = D_TriShape<6, 0, 1>(bary[0], bary[1], all_true_tq);
+              auto X_q = Dot(N6_geo, X6_tq);
+              auto cross_q = Cross(Dot(dN_dt0, X6_tq), Dot(dN_dt1, X6_tq));
+              auto N6 = integ_f->trueQuadN6(bary[0], bary[1]);
+              auto R = X_q - origin->X;
               double nr = Norm(R);
               double nr_inv = 1.0 / nr;
               double w_nr = ww * (1. - t0) * nr_inv;
-              double WG = J_det_tq * w_nr;
-              double WGn = -Dot(R * nr_inv, cross_tq) * w_nr * nr_inv;
+              double WG = Norm(cross_q) * w_nr;
+              double WGn = -Dot(R * nr_inv, cross_q) * w_nr * nr_inv;
               for (int kk = 0; kk < 6; ++kk) {
-                int ok = perm_to_orig(kk);
-                WGN[ok][0] += WG * N6[kk];
-                WGN[ok][1] += (kk == 0) ? 0. : WGn * N6[kk]; // rigid mode: skip Gn for origin
+                WGN[kk][0] += WG * N6[kk];
+                WGN[kk][1] += (kk == vertex_local) ? 0. : WGn * N6[kk]; // rigid mode: skip Gn for origin
               }
             }
           } else {
             // Non-adjacent: standard GW5xGW5 quadrature
             for (const auto& [t0, t1, ww] : __array_GW5xGW5__) {
-              auto N6 = ModTriShape<6>(t0, t1, all_true_tq);
-              auto N3 = ModTriShape<3>(t0, t1);
-              auto X = Dot(N3, X012_tq);
-              auto R = X - origin->X;
+              auto bary = ModTriShape<3>(t0, t1);
+              auto N6_geo = TriShape<6>(bary[0], bary[1], all_true_tq);
+              auto dN_dt0 = D_TriShape<6, 1, 0>(bary[0], bary[1], all_true_tq);
+              auto dN_dt1 = D_TriShape<6, 0, 1>(bary[0], bary[1], all_true_tq);
+              auto X_q = Dot(N6_geo, X6_tq);
+              auto cross_q = Cross(Dot(dN_dt0, X6_tq), Dot(dN_dt1, X6_tq));
+              auto N6 = integ_f->trueQuadN6(bary[0], bary[1]);
+              auto R = X_q - origin->X;
               double nr = Norm(R);
               double nr_inv = 1.0 / nr;
               double w_nr = ww * (1. - t0) * nr_inv;
-              double WG = J_det_tq * w_nr;
-              double WGn = -Dot(R * nr_inv, cross_tq) * w_nr * nr_inv;
+              double WG = Norm(cross_q) * w_nr;
+              double WGn = -Dot(R * nr_inv, cross_q) * w_nr * nr_inv;
               for (int kk = 0; kk < 6; ++kk) {
                 WGN[kk][0] += WG * N6[kk];
                 WGN[kk][1] += WGn * N6[kk];
@@ -686,9 +689,7 @@ void buildSparseMatrixForILU() {
           const auto [fp0, fp1, fp2] = integ_f->getPoints();
           const auto& [fl0, fl1, fl2] = integ_f->Lines;
           auto dof_idx = getQuadDOFIndices(integ_f);
-          const std::array<Tddd, 3> X012_m = {fp0->X, fp1->X, fp2->X};
-          const auto cross_m = Cross(fp1->X - fp0->X, fp2->X - fp0->X);
-          const double J_det_m = Norm(cross_m);
+          const T6Tddd X6_m = {fp0->X, fp1->X, fp2->X, fl0->X_mid, fl1->X_mid, fl2->X_mid};
           constexpr std::array<bool, 3> all_true_m{true, true, true};
           std::array<std::array<double, 2>, 6> WGN_m{};
 
@@ -717,14 +718,18 @@ void buildSparseMatrixForILU() {
                 bary[va] = 0.5 * t0;
                 bary[vb] = 0.5 * t0 + s1;
                 bary[vc] = s2;
-                auto N6 = TriShape<6>(bary[0], bary[1], all_true_m);
-                auto X = Dot(bary, X012_m);
-                auto R = X - target_pos;
+                auto N6_geo = TriShape<6>(bary[0], bary[1], all_true_m);
+                auto dN_dt0 = D_TriShape<6, 1, 0>(bary[0], bary[1], all_true_m);
+                auto dN_dt1 = D_TriShape<6, 0, 1>(bary[0], bary[1], all_true_m);
+                auto X_q = Dot(N6_geo, X6_m);
+                auto cross_q = Cross(Dot(dN_dt0, X6_m), Dot(dN_dt1, X6_m));
+                auto N6 = integ_f->trueQuadN6(bary[0], bary[1]);
+                auto R = X_q - target_pos;
                 double nr = Norm(R);
                 double nr_inv = 1.0 / nr;
                 double w_nr = ww * omt0 * 0.5 * nr_inv;
-                double WG = J_det_m * w_nr;
-                double WGn = -Dot(R * nr_inv, cross_m) * w_nr * nr_inv;
+                double WG = Norm(cross_q) * w_nr;
+                double WGn = -Dot(R * nr_inv, cross_q) * w_nr * nr_inv;
                 for (int kk = 0; kk < 6; ++kk) {
                   WGN_m[kk][0] += WG * N6[kk];
                   WGN_m[kk][1] += (kk == mid_local) ? 0. : WGn * N6[kk]; // rigid mode
@@ -737,14 +742,18 @@ void buildSparseMatrixForILU() {
                 bary[va] = 0.5 * t0 + s2;
                 bary[vb] = 0.5 * t0;
                 bary[vc] = s1;
-                auto N6 = TriShape<6>(bary[0], bary[1], all_true_m);
-                auto X = Dot(bary, X012_m);
-                auto R = X - target_pos;
+                auto N6_geo = TriShape<6>(bary[0], bary[1], all_true_m);
+                auto dN_dt0 = D_TriShape<6, 1, 0>(bary[0], bary[1], all_true_m);
+                auto dN_dt1 = D_TriShape<6, 0, 1>(bary[0], bary[1], all_true_m);
+                auto X_q = Dot(N6_geo, X6_m);
+                auto cross_q = Cross(Dot(dN_dt0, X6_m), Dot(dN_dt1, X6_m));
+                auto N6 = integ_f->trueQuadN6(bary[0], bary[1]);
+                auto R = X_q - target_pos;
                 double nr = Norm(R);
                 double nr_inv = 1.0 / nr;
                 double w_nr = ww * omt0 * 0.5 * nr_inv;
-                double WG = J_det_m * w_nr;
-                double WGn = -Dot(R * nr_inv, cross_m) * w_nr * nr_inv;
+                double WG = Norm(cross_q) * w_nr;
+                double WGn = -Dot(R * nr_inv, cross_q) * w_nr * nr_inv;
                 for (int kk = 0; kk < 6; ++kk) {
                   WGN_m[kk][0] += WG * N6[kk];
                   WGN_m[kk][1] += (kk == mid_local) ? 0. : WGn * N6[kk]; // rigid mode
@@ -754,15 +763,19 @@ void buildSparseMatrixForILU() {
           } else {
             // ===== NON-ADJACENT: standard GW5xGW5 =====
             for (const auto& [t0, t1, ww] : __array_GW5xGW5__) {
-              auto N6 = ModTriShape<6>(t0, t1, all_true_m);
-              auto N3 = ModTriShape<3>(t0, t1);
-              auto X = Dot(N3, X012_m);
-              auto R = X - target_pos;
+              auto bary = ModTriShape<3>(t0, t1);
+              auto N6_geo = TriShape<6>(bary[0], bary[1], all_true_m);
+              auto dN_dt0 = D_TriShape<6, 1, 0>(bary[0], bary[1], all_true_m);
+              auto dN_dt1 = D_TriShape<6, 0, 1>(bary[0], bary[1], all_true_m);
+              auto X_q = Dot(N6_geo, X6_m);
+              auto cross_q = Cross(Dot(dN_dt0, X6_m), Dot(dN_dt1, X6_m));
+              auto N6 = integ_f->trueQuadN6(bary[0], bary[1]);
+              auto R = X_q - target_pos;
               double nr = Norm(R);
               double nr_inv = 1.0 / nr;
               double w_nr = ww * (1. - t0) * nr_inv;
-              double WG = J_det_m * w_nr;
-              double WGn = -Dot(R * nr_inv, cross_m) * w_nr * nr_inv;
+              double WG = Norm(cross_q) * w_nr;
+              double WGn = -Dot(R * nr_inv, cross_q) * w_nr * nr_inv;
               for (int kk = 0; kk < 6; ++kk) {
                 WGN_m[kk][0] += WG * N6[kk];
                 WGN_m[kk][1] += WGn * N6[kk];

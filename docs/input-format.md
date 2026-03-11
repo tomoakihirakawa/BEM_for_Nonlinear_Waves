@@ -3,7 +3,7 @@ layout: default
 title: Input Format
 ---
 
-[🇯🇵 日本語](ja/input-format.html)
+[日本語](ja/input-format.html)
 
 # Input File Format
 

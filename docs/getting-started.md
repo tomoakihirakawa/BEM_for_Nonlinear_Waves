@@ -3,7 +3,7 @@ layout: default
 title: Getting Started
 ---
 
-[🇯🇵 日本語](ja/getting-started.html)
+[日本語](ja/getting-started.html)
 
 # Getting Started
 

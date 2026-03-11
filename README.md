@@ -2,8 +2,6 @@
 
 A boundary element method (BEM) solver for nonlinear free-surface wave problems, with applications to wave-body interaction, coastal engineering, and floating offshore structures.
 
-![GUI Screenshot](docs/images/gui_screenshot.png)
-
 ## Features
 
 - **Fully nonlinear BEM** with mixed Eulerian-Lagrangian formulation

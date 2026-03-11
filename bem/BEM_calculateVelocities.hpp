@@ -95,6 +95,169 @@ inline Tddd RK_with_Ubuff(const networkLine* l) {
   return l->RK_X.getX(U);
 }
 
+struct HermiteLineOwnerFaceInfo {
+  networkFace* face = nullptr;
+  int local_edge = -1;
+  bool reversed = false;
+  Tdd param_mid = {0., 0.};
+};
+
+inline bool hermiteEndpointParams(const HermiteLineOwnerFaceInfo& info, Tdd& param_A, Tdd& param_B) {
+  switch (info.local_edge) {
+    case 0:
+      param_A = {1.0, 0.0};
+      param_B = {0.0, 1.0};
+      break;
+    case 1:
+      param_A = {0.0, 1.0};
+      param_B = {0.0, 0.0};
+      break;
+    case 2:
+      param_A = {0.0, 0.0};
+      param_B = {1.0, 0.0};
+      break;
+    default:
+      return false;
+  }
+  if (info.reversed)
+    std::swap(param_A, param_B);
+  return true;
+}
+
+inline HermiteLineOwnerFaceInfo selectHermiteOwnerFace(const networkLine* l) {
+  HermiteLineOwnerFaceInfo info;
+  if (l == nullptr)
+    return info;
+
+  const auto faces = l->getBoundaryFaces();
+  auto pick_face = [&](auto&& pred) -> networkFace* {
+    for (auto* f : faces)
+      if (f != nullptr && f->isTrueQuadraticElement && pred(f))
+        return f;
+    return nullptr;
+  };
+
+  info.face = pick_face([](const networkFace* f) { return f->Dirichlet; });
+  if (info.face == nullptr)
+    info.face = pick_face([](const networkFace*) { return true; });
+  if (info.face == nullptr)
+    return info;
+
+  auto [pA, pB] = l->getPoints();
+  auto [p0, l0, p1, l1, p2, l2] = info.face->PLPLPL;
+
+  networkPoint* local_start = nullptr;
+  networkPoint* local_end = nullptr;
+  if (l == l0) {
+    info.local_edge = 0;
+    local_start = p0;
+    local_end = p1;
+    info.param_mid = {0.5, 0.5};
+  } else if (l == l1) {
+    info.local_edge = 1;
+    local_start = p1;
+    local_end = p2;
+    info.param_mid = {0.0, 0.5};
+  } else if (l == l2) {
+    info.local_edge = 2;
+    local_start = p2;
+    local_end = p0;
+    info.param_mid = {0.5, 0.0};
+  } else {
+    info.face = nullptr;
+    return info;
+  }
+
+  if (pA == local_end && pB == local_start)
+    info.reversed = true;
+  else if (!(pA == local_start && pB == local_end))
+    info.face = nullptr;
+
+  return info;
+}
+
+inline Tddd hermiteOwnerFaceEdgeTangent(const HermiteLineOwnerFaceInfo& info, const Tdd& param, const double sign) {
+  if (info.face == nullptr)
+    return {0., 0., 0.};
+
+  auto [p0, l0, p1, l1, p2, l2] = info.face->PLPLPL;
+  const std::array<Tddd, 6> X6 = {
+      RK_with_Ubuff(p0), RK_with_Ubuff(p1), RK_with_Ubuff(p2),
+      RK_without_Ubuff(l0), RK_without_Ubuff(l1), RK_without_Ubuff(l2)};
+
+  const auto dN_dt0 = D_TriShape<6, 1, 0>(param[0], param[1]);
+  const auto dN_dt1 = D_TriShape<6, 0, 1>(param[0], param[1]);
+  const Tddd dX_dt0 = Dot(dN_dt0, X6);
+  const Tddd dX_dt1 = Dot(dN_dt1, X6);
+
+  Tddd dX_ds_local = {0., 0., 0.};
+  switch (info.local_edge) {
+    case 0:
+      dX_ds_local = -dX_dt0 + dX_dt1;
+      break;
+    case 1:
+      dX_ds_local = -dX_dt1;
+      break;
+    case 2:
+      dX_ds_local = dX_dt0;
+      break;
+    default:
+      break;
+  }
+  const Tddd tangent = sign * dX_ds_local;
+  if (!(Norm(tangent) > 1e-14) || !isFinite(tangent))
+    return {0., 0., 0.};
+  return tangent;
+}
+
+inline Tddd cubicHermiteMidpointFromOwnerFace(const networkLine* l) {
+  auto [pA, pB] = l->getPoints();
+  const Tddd XA = RK_with_Ubuff(pA);
+  const Tddd XB = RK_with_Ubuff(pB);
+  const Tddd linear_mid = 0.5 * (XA + XB);
+  const Tddd edge = XB - XA;
+  const double edge_len = Norm(edge);
+  if (!(edge_len > 1e-14) || !isFinite(edge))
+    return linear_mid;
+
+  Tddd TA = edge;
+  Tddd TB = edge;
+  const auto owner = selectHermiteOwnerFace(l);
+  Tdd param_A = {0., 0.}, param_B = {0., 0.};
+  if (owner.face != nullptr && hermiteEndpointParams(owner, param_A, param_B)) {
+    const double sign = owner.reversed ? -1.0 : 1.0;
+    const auto face_tangent_A = hermiteOwnerFaceEdgeTangent(owner, param_A, sign);
+    const auto face_tangent_B = hermiteOwnerFaceEdgeTangent(owner, param_B, sign);
+    if (Norm(face_tangent_A) > 1e-14 && isFinite(face_tangent_A))
+      TA = face_tangent_A;
+    if (Norm(face_tangent_B) > 1e-14 && isFinite(face_tangent_B))
+      TB = face_tangent_B;
+  } else {
+    auto tangent_from_normal = [&](const networkPoint* p) {
+      Tddd normal = RK_with_Ubuff_Normal(p);
+      if (!isFinite(normal) || !(Norm(normal) > 1e-14))
+        return edge;
+      Tddd tangent = edge - Dot(edge, normal) * normal;
+      if (!(Norm(tangent) > 1e-14) || !isFinite(tangent))
+        tangent = edge;
+      return tangent;
+    };
+    TA = tangent_from_normal(pA);
+    TB = tangent_from_normal(pB);
+  }
+
+  Tddd X_mid = linear_mid + 0.125 * (TA - TB);
+  if (!isFinite(X_mid))
+    return linear_mid;
+
+  const Tddd offset = X_mid - linear_mid;
+  const double offset_norm = Norm(offset);
+  const double max_offset = 0.5 * edge_len;
+  if (offset_norm > max_offset && std::isfinite(offset_norm) && max_offset > 0.)
+    X_mid = linear_mid + (max_offset / offset_norm) * offset;
+  return X_mid;
+}
+
 // mooringで利用
 inline std::array<double, 3> nextPositionOnBody(Network* net, networkPoint* p) {
   if (net->isSoftBody || net->inputJSON.find("relative_velocity")) {
@@ -818,11 +981,30 @@ void calculateVecToSurface(const Network& net, const int loop, const double coef
       continue;
     auto [pA, pB] = l->getPoints();
     auto X_shidted = 0.5 * (RK_with_Ubuff(pA) + RK_with_Ubuff(pB));
+    const bool use_cubic_hermite_midpoint =
+        node_relocation_method == NodeRelocationMethod::interpolation &&
+        interpolation_midpoint_mode == InterpolationMidpointMode::cubic_hermite &&
+        l->Dirichlet && !l->CORNER;
 
-    l->clungSurface = vectorToNextSurface(l, X_shidted);
-    if (!isFinite(l->clungSurface))
-      l->clungSurface.fill(0.);
-    l->vecToSurface = l->clungSurface + (X_shidted - RK_without_Ubuff(l));
+    if (use_cubic_hermite_midpoint) {
+      const auto owner = selectHermiteOwnerFace(l);
+      if (owner.face != nullptr) {
+        l->relocation_face = owner.face;
+        l->relocation_param = owner.param_mid;
+      }
+      const Tddd X_target = cubicHermiteMidpointFromOwnerFace(l);
+      l->clungSurface = X_target - X_shidted;
+      l->vecToSurface = X_target - RK_without_Ubuff(l);
+      if (!isFinite(l->clungSurface))
+        l->clungSurface.fill(0.);
+      if (!isFinite(l->vecToSurface))
+        l->vecToSurface = X_shidted - RK_without_Ubuff(l);
+    } else {
+      l->clungSurface = vectorToNextSurface(l, X_shidted);
+      if (!isFinite(l->clungSurface))
+        l->clungSurface.fill(0.);
+      l->vecToSurface = l->clungSurface + (X_shidted - RK_without_Ubuff(l));
+    }
 
     // Diagnostic: measure how far midpoint is shifted from linear center
     double edge_len = Norm(RK_with_Ubuff(pA) - RK_with_Ubuff(pB));

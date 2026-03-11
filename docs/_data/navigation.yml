@@ -1,0 +1,51 @@
+en:
+  - title: Getting Started
+    url: /getting-started.html
+  - title: Theory
+    children:
+      - title: Overview
+        url: /theory/
+      - title: Boundary Integral Equation
+        url: /theory/boundary-integral.html
+      - title: Floating Body Dynamics
+        url: /theory/floating-body.html
+      - title: Wave Generation
+        url: /theory/wave-generation.html
+      - title: ALE Mesh
+        url: /theory/ale-mesh.html
+      - title: Fast Multipole Method
+        url: /theory/fmm.html
+  - title: Input Format
+    url: /input-format.html
+  - title: Examples
+    children:
+      - title: Goring (1979)
+        url: /examples/goring1979.html
+      - title: DeepCWind
+        url: /examples/deepcwind.html
+
+ja:
+  - title: はじめに
+    url: /ja/getting-started.html
+  - title: 理論
+    children:
+      - title: 概要
+        url: /ja/theory/
+      - title: 境界積分方程式
+        url: /ja/theory/boundary-integral.html
+      - title: 浮体動力学
+        url: /ja/theory/floating-body.html
+      - title: 造波理論
+        url: /ja/theory/wave-generation.html
+      - title: ALEメッシュ
+        url: /ja/theory/ale-mesh.html
+      - title: 高速多重極法
+        url: /ja/theory/fmm.html
+  - title: 入力ファイル形式
+    url: /ja/input-format.html
+  - title: 計算例
+    children:
+      - title: Goring (1979)
+        url: /ja/examples/goring1979.html
+      - title: DeepCWind
+        url: /ja/examples/deepcwind.html

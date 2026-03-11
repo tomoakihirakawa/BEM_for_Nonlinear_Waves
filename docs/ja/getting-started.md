@@ -1,9 +1,10 @@
 ---
 layout: default
 title: はじめに
+lang: ja
 ---
 
-[🇬🇧 English](../getting-started.html)
+[English](../getting-started.html)
 
 # はじめに
 

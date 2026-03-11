@@ -1,42 +1,191 @@
 ---
 layout: default
-title: "Example: Goring (1979)"
+title: "Example: Solitary Wave Generation (Goring, 1979)"
 ---
 
-[🇯🇵 日本語](../ja/examples/goring1979.html)
+[Japanese / 日本語](../ja/examples/goring1979.html)
 
-# Example: Solitary Wave Generation (Goring, 1979)
+# Solitary Wave Generation (Goring, 1979)
 
-This example demonstrates solitary wave generation using a piston-type wavemaker, following the method of Goring (1979).
+This example demonstrates solitary wave generation in a 2D numerical wave tank
+using a piston-type wavemaker, following the method described by Goring (1979).
 
 ## Reference
 
-Goring, D.G. (1979). *Tsunamis — The propagation of long waves onto a shelf*. W.M. Keck Laboratory of Hydraulics and Water Resources, California Institute of Technology, Report No. KH-R-38.
+Goring, D.G. (1979). *Tsunamis -- The propagation of long waves onto a shelf*.
+W.M. Keck Laboratory of Hydraulics and Water Resources, California Institute of
+Technology, Report No. KH-R-38.
 
-## Setup
+## Physical Setup
 
-A 2D numerical wave tank with:
-- Tank length: ~10 m
-- Water depth: 0.3 m
-- Piston wavemaker at the left end
-- Wave absorber at the right end
+The simulation models a 2D wave tank with the following configuration:
 
-The wavemaker displacement follows the solitary wave theory to generate a clean solitary wave of specified height.
+- **Water depth** h = 0.3 m
+- **Piston wavemaker** at the left end of the tank
+- **Wave absorber** at the right end to prevent reflection
+- **Wave gauges** placed along the tank to record surface elevation
 
-## Input Files
+The wavemaker displacement is computed from solitary wave theory so that a
+clean solitary wave of the target height is generated.
 
-The input files are located in `bem/input_files/` under the Goring1979 directories.
+### Solitary wave theory
 
-### Running
+The surface elevation of a solitary wave is:
+
+    eta(x, t) = H * sech^2( sqrt(3H / 4h^3) * (x - c*t) )
+
+where H is the wave height, h is the still water depth, and
+c = sqrt(g(h + H)) is the wave celerity. The depth-averaged horizontal
+velocity beneath the wave is:
+
+    u_bar = c * eta / (h + eta)
+
+The piston displacement is obtained by integrating this velocity at the
+wavemaker position.
+
+![Goring (1979) Fig. 5.1](../images/bem/Goring1979Fig5.1p122.png)
+
+![Goring (1979) Fig. 5.2](../images/bem/Goring1979Fig5.2p123.png)
+
+## Input File Structure
+
+The example input files are located in `bem/examples/goring1979/`. All paths in
+these files are specified relative to the settings directory, so the example can
+be run without modification.
+
+### settings.json
+
+The main configuration file that defines simulation parameters and references
+all other input files.
+
+```json
+{
+    "max_dt": 0.03,
+    "end_time_step": 100000,
+    "end_time": 20,
+    "element": "linear",
+    "ALE": "linear",
+    "ALEPERIOD": "1",
+    "output_directory": "./output",
+    "input_files": [
+        "tank.json",
+        "wavemaker.json",
+        "water.json",
+        "gauge1.json",
+        "gauge2.json",
+        "gauge3.json"
+    ],
+    "meshing_options": [
+        "surface_flip"
+    ]
+}
+```
+
+| Parameter | Description |
+|-----------|-------------|
+| `max_dt` | Maximum time step size (seconds) |
+| `end_time_step` | Maximum number of time steps |
+| `end_time` | Simulation end time (seconds) |
+| `element` | Element interpolation type (`linear`, `pseudo_quad`, `true_quadratic`) |
+| `ALE` | ALE mesh motion scheme (`linear`, `pseudo_quad`) |
+| `ALEPERIOD` | ALE remeshing period |
+| `output_directory` | Output directory (relative to settings.json location) |
+| `input_files` | List of component input files |
+
+### water.json
+
+Defines the fluid domain by referencing a surface mesh file.
+
+```json
+{
+    "name": "water",
+    "type": "Fluid",
+    "objfile": ["../../../obj/Goring1979/water0d06refined.obj"]
+}
+```
+
+The `objfile` path is resolved relative to the directory containing
+settings.json.
+
+### tank.json
+
+Defines the rigid tank walls (bottom and side boundaries).
+
+```json
+{
+    "name": "tank",
+    "type": "RigidBody",
+    "isFixed": true,
+    "objfile": ["../../../obj/Goring1979/tank.obj"]
+}
+```
+
+Setting `isFixed: true` means this body has zero velocity (Neumann condition
+phi_n = 0 on the tank walls).
+
+### wavemaker.json
+
+Defines the piston wavemaker with motion parameters derived from solitary wave
+theory.
+
+```json
+{
+    "name": "wavemaker",
+    "type": "RigidBody",
+    "velocity": [
+        "Goring1979",
+        3.0,
+        0.025,
+        0.25
+    ],
+    "objfile": ["../../../obj/Goring1979/wavemaker.obj"]
+}
+```
+
+The `velocity` array specifies:
+1. `"Goring1979"` -- the wave generation method
+2. `3.0` -- the start time of wavemaker motion (seconds)
+3. `0.025` -- wave height H (meters)
+4. `0.25` -- additional parameter for the wavemaker stroke
+
+### gauge*.json
+
+Wave gauges record the free surface elevation at specified positions. Each gauge
+is defined by a vertical line segment (top and bottom coordinates).
+
+```json
+{
+    "name": "gauge1",
+    "type": "wave gauge",
+    "position": [-5.75, 0, 0.4, -5.75, 0, 0.2]
+}
+```
+
+The `position` array contains [x1, y1, z1, x2, y2, z2], defining a vertical
+line segment along which the free surface intersection is detected.
+
+## Build and Run
+
+Build the time-domain solver and run the example:
 
 ```bash
 cd bem/build
-./main_time_domain ../../bem/input_files/Goring1979_DT0d03_.../
+cmake -DSOURCE_FILE=../main_time_domain.cpp ../..
+make -j$(sysctl -n hw.logicalcpu)
+./main ../../bem/examples/goring1979/
 ```
+
+The solver reads all input files from the specified directory and writes output
+to the `output_directory` defined in settings.json.
 
 ## Expected Results
 
-The solitary wave should propagate along the tank with:
-- Wave height matching the theoretical value
-- Minimal trailing oscillations
-- Good agreement with wave gauge measurements at multiple positions
+- A solitary wave is generated by the piston wavemaker starting at t = 3.0 s
+- The wave propagates along the tank with wave height close to the theoretical value
+- Minimal trailing oscillations behind the main wave
+- Wave gauge time histories show good agreement with the analytical solitary wave profile
+- The wave absorber at the right end reduces reflection
+
+## See Also
+
+- [Wave Generation Theory](../theory/wave-generation.html)

@@ -42,9 +42,11 @@ struct SimulationSettings {
     struct NodeRelocationSettings {
       enum class Method { none, ALE, interpolation };
       enum class Surface { linear, pseudo_quadratic, true_quadratic };
+      enum class MidpointMode { nearest, cubic_hermite };
       Method method = Method::none;
       int period = 0;
       Surface surface = Surface::pseudo_quadratic;
+      MidpointMode midpoint_mode = MidpointMode::nearest;
       bool surface_explicitly_set = false;
     } node_relocation;
   } time;
@@ -224,10 +226,12 @@ struct SimulationSettings {
     }
     (void)input_files_key;
 
-    // Helper: parse node_relocation from a string array ["method", period, "surface"]
+    // Helper: parse node_relocation from a string array
+    // ["method", period, "surface", "midpoint_mode"]
     auto parse_node_relocation = [&](const std::vector<std::string> &arr) {
       using M = TimeDomainSettings::NodeRelocationSettings::Method;
       using S = TimeDomainSettings::NodeRelocationSettings::Surface;
+      using MM = TimeDomainSettings::NodeRelocationSettings::MidpointMode;
       auto &nr = time.node_relocation;
       auto method_str = toLowerCase(arr[0]);
       if (method_str == "none")
@@ -253,6 +257,16 @@ struct SimulationSettings {
         else
           throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__,
                               "node_relocation surface must be linear, pseudo_quadratic, or true_quadratic (got: " + arr[2] + ")");
+      }
+      if (arr.size() >= 4) {
+        auto midpoint_mode_str = toLowerCase(arr[3]);
+        if (midpoint_mode_str == "nearest")
+          nr.midpoint_mode = MM::nearest;
+        else if (midpoint_mode_str == "cubic_hermite" || midpoint_mode_str == "hermite")
+          nr.midpoint_mode = MM::cubic_hermite;
+        else
+          throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__,
+                              "node_relocation midpoint_mode must be nearest or cubic_hermite (got: " + arr[3] + ")");
       }
     };
 
@@ -375,12 +389,16 @@ struct SimulationSettings {
       {
         using M = TimeDomainSettings::NodeRelocationSettings::Method;
         using S = TimeDomainSettings::NodeRelocationSettings::Surface;
+        using MM = TimeDomainSettings::NodeRelocationSettings::MidpointMode;
         auto &nr = time.node_relocation;
         if (nr.method == M::none)
           std::cout << "NODE_RELOCATION: none (pure Lagrangian)" << std::endl;
         else {
           std::cout << "NODE_RELOCATION: " << (nr.method == M::ALE ? "ALE" : "interpolation")
-                    << ", period=" << nr.period << std::endl;
+                    << ", period=" << nr.period;
+          if (nr.method == M::interpolation)
+            std::cout << ", midpoint_mode=" << (nr.midpoint_mode == MM::cubic_hermite ? "cubic_hermite" : "nearest");
+          std::cout << std::endl;
         }
       }
 

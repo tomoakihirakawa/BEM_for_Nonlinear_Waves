@@ -3,7 +3,7 @@ layout: default
 title: Home
 ---
 
-[🇯🇵 日本語](ja/)
+[日本語](ja/)
 
 # BEM for Nonlinear Waves
 
@@ -17,26 +17,36 @@ This software solves potential flow problems with nonlinear free-surface boundar
 
 ### Key Capabilities
 
-- **Nonlinear wave generation** — piston/flap wavemakers, solitary waves, irregular waves
-- **Wave-body interaction** — floating bodies with 6-DOF rigid body dynamics
-- **Fast Multipole Method** — O(N) evaluation of boundary integrals
-- **ALE mesh management** — adaptive remeshing with Laplacian smoothing
-- **Mooring line dynamics** — lumped-mass cable model
-- **Metal GPU acceleration** — M2L transformations on Apple Silicon
-
-## Getting Started
-
-See the [Getting Started](getting-started.html) guide for build instructions.
+- **Nonlinear wave generation** -- piston/flap wavemakers, solitary waves, irregular waves
+- **Wave-body interaction** -- floating bodies with 6-DOF rigid body dynamics
+- **Fast Multipole Method** -- O(N) evaluation of boundary integrals
+- **ALE mesh management** -- adaptive remeshing with Laplacian smoothing
+- **Mooring line dynamics** -- lumped-mass cable model
+- **Metal GPU acceleration** -- M2L transformations on Apple Silicon
 
 ## Documentation
 
-- [Getting Started](getting-started.html) — Build and run your first simulation
-- [Theory](theory.html) — Mathematical formulation
-- [Input Format](input-format.html) — JSON input file reference
+### Getting Started
 
-## Examples
+- [Getting Started](getting-started.html) -- Build and run your first simulation
 
-- [Goring (1979)](examples/goring1979.html) — Solitary wave generation and propagation
+### Theory
+
+- [Theory Overview](theory/) -- Mathematical formulation
+  - [Boundary Integral Equation](theory/boundary-integral.html) -- BIE derivation, linear elements, coefficient matrices
+  - [Floating Body Dynamics](theory/floating-body.html) -- 6-DOF motion, pressure computation, $\phi_t$ problem
+  - [Wave Generation](theory/wave-generation.html) -- Piston/flap wavemakers, solitary waves
+  - [ALE Mesh](theory/ale-mesh.html) -- Arbitrary Lagrangian-Eulerian mesh management
+  - [Fast Multipole Method](theory/fmm.html) -- FMM acceleration, M2L methods
+
+### Reference
+
+- [Input Format](input-format.html) -- JSON input file reference
+
+### Examples
+
+- [Goring (1979)](examples/goring1979.html) -- Solitary wave generation and propagation
+- [DeepCWind](examples/deepcwind.html) -- Floating wind turbine platform
 
 ## License
 

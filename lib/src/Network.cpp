@@ -744,7 +744,8 @@ inline void hash_combine(std::size_t& seed, std::size_t value) { seed ^= value +
 } // namespace
 
 std::size_t Network::computeTopologySignature() const {
-  // Face→Points接続のみハッシュ。Lines/Pointsの接続はFaceから導出されるため冗長。
+  // true_quadratic では Face->Lines の対応順も幾何に効くため、
+  // Face->Points だけでなく Face->Lines / Line->Points も含める。
   // サイズは3コンテナすべてチェック（追加/削除検出）。
   std::size_t h = 0;
   hash_combine(h, this->Points.size());
@@ -757,6 +758,17 @@ std::size_t Network::computeTopologySignature() const {
     hash_combine(h, reinterpret_cast<std::uintptr_t>(p0));
     hash_combine(h, reinterpret_cast<std::uintptr_t>(p1));
     hash_combine(h, reinterpret_cast<std::uintptr_t>(p2));
+    auto [l0, l1, l2] = f->getLines();
+    hash_combine(h, reinterpret_cast<std::uintptr_t>(l0));
+    hash_combine(h, reinterpret_cast<std::uintptr_t>(l1));
+    hash_combine(h, reinterpret_cast<std::uintptr_t>(l2));
+  }
+
+  for (const auto& l : this->Lines) {
+    hash_combine(h, reinterpret_cast<std::uintptr_t>(l));
+    auto [p0, p1] = l->getPoints();
+    hash_combine(h, reinterpret_cast<std::uintptr_t>(p0));
+    hash_combine(h, reinterpret_cast<std::uintptr_t>(p1));
   }
   return h;
 }
@@ -778,6 +790,21 @@ std::size_t Network::computeGeometrySignature(double /*inv_eps*/) const {
     hash_coord(std::get<0>(X));
     hash_coord(std::get<1>(X));
     hash_coord(std::get<2>(X));
+  }
+  for (const auto& l : this->Lines) {
+    auto hash_vec = [&](const Tddd& X) {
+      auto hash_coord = [&](double v) {
+        std::memcpy(&bits, &v, sizeof(double));
+        if (bits == 0x8000000000000000ULL)
+          bits = 0;
+        hash_combine(h, bits);
+      };
+      hash_coord(std::get<0>(X));
+      hash_coord(std::get<1>(X));
+      hash_coord(std::get<2>(X));
+    };
+    hash_vec(l->X_mid);
+    hash_vec(l->corner_midpoint_offset);
   }
   return h;
 }
@@ -858,16 +885,11 @@ void Network::setGeometricPropertiesImpl() {
   }
 };
 
-// 以前はforce版と通常版を分けていたが，現在は同じ処理を行うようにした．
-// void Network::setGeometricPropertiesForce() {
-//   this->setGeometricPropertiesImpl();
-//   topology_signature_cached = computeTopologySignature();
-//   geometry_signature_cached = computeGeometrySignature();
-//   geometry_signature_valid = true;
-// };
-
 void Network::setGeometricPropertiesForce() {
-  setGeometricProperties();
+  this->setGeometricPropertiesImpl();
+  topology_signature_cached = computeTopologySignature();
+  geometry_signature_cached = computeGeometrySignature();
+  geometry_signature_valid = true;
 };
 
 std::array<bool, 4> Network::validateConectivity() {

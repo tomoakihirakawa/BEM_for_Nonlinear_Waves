@@ -481,6 +481,13 @@ struct BEM_BVP {
     }
   }
 
+  void resetLastGmresDiagnosticsForDirectSolve() {
+    last_gmres_total_iter = 0;
+    last_gmres_residual_norm = 0.0;
+    last_gmres_converged = true;
+    last_gmres_hotspots.clear();
+  }
+
 // Solver-specific implementations are split into dedicated headers.
 #include "BEM_solveBVP_GMRES_FMM.hpp"
 #include "BEM_solveBVP_LU.hpp"

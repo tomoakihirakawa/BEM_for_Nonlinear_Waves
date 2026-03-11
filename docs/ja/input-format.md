@@ -1,9 +1,10 @@
 ---
 layout: default
 title: 入力ファイル形式
+lang: ja
 ---
 
-[🇬🇧 English](../input-format.html)
+[English](../input-format.html)
 
 # 入力ファイル形式
 

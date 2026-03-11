@@ -16,7 +16,7 @@
 #include "VPM.hpp"
 
 /*
- * BEM Checkpoint file format (version 3)
+ * BEM Checkpoint file format (version 5)
  *
  * [Header]
  *   magic:           char[8]   "BEMCKPT\0"
@@ -30,13 +30,19 @@
  *   per fluid: {
  *     name_length: uint32,  name: char[name_length]
  *     num_points: uint32
- *     per point: { X: double[3], phiphin: double[2], phiphin_t: double[2], phi_Dirichlet: double }
+ *     per point: { X: double[3], phiphin: double[2], phiphin_t: double[2], phi_Dirichlet: double,
+ *                  num_face_values: uint32,
+ *                  per face value: { checkpoint_face_id: int32, phi: double, phin: double, phit: double, phint: double } }
  *     num_faces: uint32
- *     per face:  { indices: uint32[3] }
+ *     per face:  { checkpoint_point_ids: uint32[3],
+ *                  num_bad_quality_events: uint32,
+ *                  per event: { time_step: int32, rk_step: int32, type: uint8, value: double, threshold: double } }
  *     has_quadratic: uint8
  *     if has_quadratic:
  *       num_lines: uint32
- *       per line: { endpoint_indices: uint32[2], X_mid: double[3], phiphin: double[2], phiphin_t: double[2], corner_offset: double[3] }
+ *       per line: { endpoint_checkpoint_point_ids: uint32[2], X_mid: double[3], phiphin: double[2], phiphin_t: double[2], corner_offset: double[3],
+ *                   num_face_values: uint32,
+ *                   per face value: { checkpoint_face_id: int32, phi: double, phin: double, phit: double, phint: double } }
  *   }
  *
  * [Rigid Bodies]
@@ -56,7 +62,26 @@
 namespace BEM_Checkpoint {
 
 static constexpr char MAGIC[8] = {'B', 'E', 'M', 'C', 'K', 'P', 'T', '\0'};
-static constexpr uint32_t VERSION = 3;
+static constexpr uint32_t VERSION = 5;
+
+using checkpoint_point_id_t = uint32_t;
+using checkpoint_face_id_t = int32_t;
+
+struct FaceValueRecord {
+   checkpoint_face_id_t checkpoint_face_id = -1;
+   double phi = 0.0;
+   double phin = 0.0;
+   double phit = 0.0;
+   double phint = 0.0;
+};
+
+struct FaceBadQualityEventRecord {
+   int32_t time_step = -1;
+   int32_t rk_step = -1;
+   uint8_t type = 0;
+   double value = 0.0;
+   double threshold = 0.0;
+};
 
 // ============================================================================
 // Low-level I/O helpers
@@ -124,12 +149,18 @@ inline void writeCheckpointToPath(const std::filesystem::path& path,
    for (const auto* water : FluidObject) {
       write_string(fp, water->getName());
 
-      // Build stable point ordering: unordered_set → vector + index map
+      // Build checkpoint-local stable IDs.
+      // These IDs are only for this checkpoint file and must not be confused
+      // with runtime p->index / f->index.
       const auto& pts_set = water->getPoints();
       std::vector<networkPoint*> pts(pts_set.begin(), pts_set.end());
-      std::map<networkPoint*, uint32_t> pt_idx;
-      for (uint32_t i = 0; i < pts.size(); ++i)
-         pt_idx[pts[i]] = i;
+      std::map<networkPoint*, checkpoint_point_id_t> checkpoint_point_id_of;
+      for (checkpoint_point_id_t i = 0; i < pts.size(); ++i)
+         checkpoint_point_id_of[pts[i]] = i;
+      auto faces = water->getBoundaryFaces();
+      std::map<networkFace*, checkpoint_face_id_t> checkpoint_face_id_of;
+      for (checkpoint_face_id_t i = 0; i < static_cast<checkpoint_face_id_t>(faces.size()); ++i)
+         checkpoint_face_id_of[faces[i]] = i;
 
       // Points
       write_val(fp, static_cast<uint32_t>(pts.size()));
@@ -139,15 +170,56 @@ inline void writeCheckpointToPath(const std::filesystem::path& path,
          write_raw(fp, &p->phiphin, sizeof(Tdd));
          write_raw(fp, &p->phiphin_t, sizeof(Tdd));
          write_val(fp, p->phi_Dirichlet);
+
+         std::vector<FaceValueRecord> face_values;
+         if (p->isMultipleNode) {
+            face_values.reserve(p->phiOnFace.size());
+            for (const auto& [f, phi] : p->phiOnFace) {
+               FaceValueRecord rec;
+               rec.checkpoint_face_id = (f == nullptr) ? -1 : checkpoint_face_id_of.at(f);
+               rec.phi = phi;
+               if (auto it = p->phinOnFace.find(f); it != p->phinOnFace.end())
+                  rec.phin = it->second;
+               if (auto it = p->phitOnFace.find(f); it != p->phitOnFace.end())
+                  rec.phit = it->second;
+               if (auto it = p->phintOnFace.find(f); it != p->phintOnFace.end())
+                  rec.phint = it->second;
+               face_values.emplace_back(rec);
+            }
+         }
+         write_val(fp, static_cast<uint32_t>(face_values.size()));
+         for (const auto& rec : face_values) {
+            write_val(fp, rec.checkpoint_face_id);
+            write_val(fp, rec.phi);
+            write_val(fp, rec.phin);
+            write_val(fp, rec.phit);
+            write_val(fp, rec.phint);
+         }
       }
 
       // Faces
-      auto faces = water->getBoundaryFaces();
       write_val(fp, static_cast<uint32_t>(faces.size()));
       for (const auto* f : faces) {
          auto [p0, p1, p2] = f->getPoints();
-         uint32_t idx[3] = {pt_idx.at(p0), pt_idx.at(p1), pt_idx.at(p2)};
-         write_raw(fp, idx, sizeof(idx));
+         checkpoint_point_id_t checkpoint_point_ids[3] = {
+            checkpoint_point_id_of.at(p0),
+            checkpoint_point_id_of.at(p1),
+            checkpoint_point_id_of.at(p2)};
+         write_raw(fp, checkpoint_point_ids, sizeof(checkpoint_point_ids));
+         write_val(fp, static_cast<uint32_t>(f->bad_quality_history.size()));
+         for (const auto& event : f->bad_quality_history) {
+            FaceBadQualityEventRecord rec;
+            rec.time_step = static_cast<int32_t>(event.time_step);
+            rec.rk_step = static_cast<int32_t>(event.rk_step);
+            rec.type = static_cast<uint8_t>(event.type);
+            rec.value = event.value;
+            rec.threshold = event.threshold;
+            write_val(fp, rec.time_step);
+            write_val(fp, rec.rk_step);
+            write_val(fp, rec.type);
+            write_val(fp, rec.value);
+            write_val(fp, rec.threshold);
+         }
       }
 
       // Quadratic line data
@@ -158,12 +230,38 @@ inline void writeCheckpointToPath(const std::filesystem::path& path,
          write_val(fp, static_cast<uint32_t>(lines.size()));
          for (const auto* l : lines) {
             auto [pA, pB] = l->getPoints();
-            uint32_t ep[2] = {pt_idx.at(pA), pt_idx.at(pB)};
-            write_raw(fp, ep, sizeof(ep));
+            checkpoint_point_id_t endpoint_checkpoint_point_ids[2] = {
+               checkpoint_point_id_of.at(pA),
+               checkpoint_point_id_of.at(pB)};
+            write_raw(fp, endpoint_checkpoint_point_ids, sizeof(endpoint_checkpoint_point_ids));
             write_raw(fp, &l->X_mid, sizeof(Tddd));
             write_raw(fp, &l->phiphin, sizeof(Tdd));
             write_raw(fp, &l->phiphin_t, sizeof(Tdd));
             write_raw(fp, &l->corner_midpoint_offset, sizeof(Tddd));
+            std::vector<FaceValueRecord> face_values;
+            if (l->isMultipleNode) {
+               face_values.reserve(l->phiOnFace.size());
+               for (const auto& [f, phi] : l->phiOnFace) {
+                  FaceValueRecord rec;
+                  rec.checkpoint_face_id = (f == nullptr) ? -1 : checkpoint_face_id_of.at(f);
+                  rec.phi = phi;
+                  if (auto it = l->phinOnFace.find(f); it != l->phinOnFace.end())
+                     rec.phin = it->second;
+                  if (auto it = l->phitOnFace.find(f); it != l->phitOnFace.end())
+                     rec.phit = it->second;
+                  if (auto it = l->phintOnFace.find(f); it != l->phintOnFace.end())
+                     rec.phint = it->second;
+                  face_values.emplace_back(rec);
+               }
+            }
+            write_val(fp, static_cast<uint32_t>(face_values.size()));
+            for (const auto& rec : face_values) {
+               write_val(fp, rec.checkpoint_face_id);
+               write_val(fp, rec.phi);
+               write_val(fp, rec.phin);
+               write_val(fp, rec.phit);
+               write_val(fp, rec.phint);
+            }
          }
       }
    }
@@ -289,8 +387,9 @@ readCheckpoint(const std::filesystem::path& filepath,
       throw std::runtime_error("BEM_Checkpoint: invalid magic in " + filepath.string());
 
    uint32_t version = read_val<uint32_t>(fp);
-   if (version < 1 || version > VERSION)
-      throw std::runtime_error("BEM_Checkpoint: unsupported version " + std::to_string(version));
+   if (version != VERSION)
+      throw std::runtime_error("BEM_Checkpoint: unsupported version " + std::to_string(version) +
+                               " (expected " + std::to_string(VERSION) + ")");
 
    int32_t ckpt_step = read_val<int32_t>(fp);
    double ckpt_time = read_val<double>(fp);
@@ -319,6 +418,7 @@ readCheckpoint(const std::filesystem::path& filepath,
          Tdd phiphin;
          Tdd phiphin_t;
          double phi_Dirichlet;
+         std::vector<FaceValueRecord> face_values;
       };
       std::vector<PointRecord> point_records(num_points);
       for (uint32_t i = 0; i < num_points; ++i) {
@@ -327,25 +427,61 @@ readCheckpoint(const std::filesystem::path& filepath,
          read_raw(fp, &r.phiphin, sizeof(Tdd));
          read_raw(fp, &r.phiphin_t, sizeof(Tdd));
          r.phi_Dirichlet = read_val<double>(fp);
+         uint32_t n_face_values = read_val<uint32_t>(fp);
+         r.face_values.resize(n_face_values);
+         for (uint32_t j = 0; j < n_face_values; ++j) {
+            auto& fv = r.face_values[j];
+            fv.checkpoint_face_id = read_val<checkpoint_face_id_t>(fp);
+            fv.phi = read_val<double>(fp);
+            fv.phin = read_val<double>(fp);
+            fv.phit = read_val<double>(fp);
+            fv.phint = read_val<double>(fp);
+         }
       }
 
-      // Read face indices
+      // Read face connectivity + per-face bad-quality history
       uint32_t num_faces = read_val<uint32_t>(fp);
-      std::vector<std::vector<int>> face_indices(num_faces);
+      struct FaceRecord {
+         std::vector<int> checkpoint_point_ids;
+         std::vector<FaceBadQualityEvent> bad_quality_history;
+      };
+      std::vector<FaceRecord> face_records(num_faces);
+      std::vector<std::vector<int>> checkpoint_face_point_ids(num_faces);
       for (uint32_t i = 0; i < num_faces; ++i) {
-         uint32_t idx[3];
-         read_raw(fp, idx, sizeof(idx));
-         face_indices[i] = {static_cast<int>(idx[0]), static_cast<int>(idx[1]), static_cast<int>(idx[2])};
+         checkpoint_point_id_t checkpoint_point_ids[3];
+         read_raw(fp, checkpoint_point_ids, sizeof(checkpoint_point_ids));
+         checkpoint_face_point_ids[i] = {static_cast<int>(checkpoint_point_ids[0]),
+                                         static_cast<int>(checkpoint_point_ids[1]),
+                                         static_cast<int>(checkpoint_point_ids[2])};
+         face_records[i].checkpoint_point_ids = checkpoint_face_point_ids[i];
+         const uint32_t n_bad_quality_events = read_val<uint32_t>(fp);
+         face_records[i].bad_quality_history.reserve(n_bad_quality_events);
+         for (uint32_t j = 0; j < n_bad_quality_events; ++j) {
+            FaceBadQualityEventRecord rec;
+            rec.time_step = read_val<int32_t>(fp);
+            rec.rk_step = read_val<int32_t>(fp);
+            rec.type = read_val<uint8_t>(fp);
+            rec.value = read_val<double>(fp);
+            rec.threshold = read_val<double>(fp);
+            face_records[i].bad_quality_history.push_back(
+                FaceBadQualityEvent{
+                    .time_step = static_cast<int>(rec.time_step),
+                    .rk_step = static_cast<int>(rec.rk_step),
+                    .type = static_cast<FaceBadQualityType>(rec.type),
+                    .value = rec.value,
+                    .threshold = rec.threshold});
+         }
       }
 
       // Read quadratic data
       uint8_t has_quad = read_val<uint8_t>(fp);
       struct LineRecord {
-         uint32_t ep[2];
+         checkpoint_point_id_t ep[2];
          Tddd X_mid;
          Tdd phiphin;
          Tdd phiphin_t;
          Tddd corner_offset;
+         std::vector<FaceValueRecord> face_values;
       };
       std::vector<LineRecord> line_records;
       if (has_quad) {
@@ -355,14 +491,19 @@ readCheckpoint(const std::filesystem::path& filepath,
             auto& r = line_records[i];
             read_raw(fp, r.ep, sizeof(r.ep));
             read_raw(fp, &r.X_mid, sizeof(Tddd));
-            if (version >= 3) {
-               read_raw(fp, &r.phiphin, sizeof(Tdd));
-               read_raw(fp, &r.phiphin_t, sizeof(Tdd));
-            } else {
-               r.phiphin = {read_val<double>(fp), 0.0};
-               r.phiphin_t = {0.0, 0.0};
-            }
+            read_raw(fp, &r.phiphin, sizeof(Tdd));
+            read_raw(fp, &r.phiphin_t, sizeof(Tdd));
             read_raw(fp, &r.corner_offset, sizeof(Tddd));
+            uint32_t n_face_values = read_val<uint32_t>(fp);
+            r.face_values.resize(n_face_values);
+            for (uint32_t j = 0; j < n_face_values; ++j) {
+               auto& fv = r.face_values[j];
+               fv.checkpoint_face_id = read_val<checkpoint_face_id_t>(fp);
+               fv.phi = read_val<double>(fp);
+               fv.phin = read_val<double>(fp);
+               fv.phit = read_val<double>(fp);
+               fv.phint = read_val<double>(fp);
+            }
          }
       }
 
@@ -391,9 +532,37 @@ readCheckpoint(const std::filesystem::path& filepath,
       for (uint32_t i = 0; i < num_points; ++i)
          vertices[i] = point_records[i].X;
       V_netPp points = new_net->setPoints(vertices);
+      std::map<networkPoint*, checkpoint_point_id_t> checkpoint_point_id_of_restored_point;
+      for (checkpoint_point_id_t i = 0; i < points.size(); ++i)
+         checkpoint_point_id_of_restored_point[points[i]] = i;
 
       // Set faces
-      new_net->setFaces(face_indices, points);
+      new_net->setFaces(checkpoint_face_point_ids, points);
+
+      auto face_key = [](int a, int b, int c) {
+         std::array<int, 3> key = {a, b, c};
+         std::sort(key.begin(), key.end());
+         return key;
+      };
+      std::map<std::array<int, 3>, networkFace*> restored_face_map;
+      for (auto* f : new_net->getBoundaryFaces()) {
+         auto [p0, p1, p2] = f->getPoints();
+         restored_face_map[face_key(static_cast<int>(checkpoint_point_id_of_restored_point.at(p0)),
+                                    static_cast<int>(checkpoint_point_id_of_restored_point.at(p1)),
+                                    static_cast<int>(checkpoint_point_id_of_restored_point.at(p2)))] = f;
+      }
+      std::vector<networkFace*> restored_faces_by_checkpoint_face_id(num_faces, nullptr);
+      for (uint32_t i = 0; i < num_faces; ++i) {
+         const auto& idx = checkpoint_face_point_ids[i];
+         auto it = restored_face_map.find(face_key(idx[0], idx[1], idx[2]));
+         if (it != restored_face_map.end())
+            restored_faces_by_checkpoint_face_id[i] = it->second;
+      }
+      for (uint32_t i = 0; i < num_faces; ++i) {
+         if (auto* f = restored_faces_by_checkpoint_face_id[i]) {
+            f->bad_quality_history = face_records[i].bad_quality_history;
+         }
+      }
 
       // Set physical quantities on each point
       // points[i] corresponds to vertex i — but setPoints may merge duplicates.
@@ -404,6 +573,23 @@ readCheckpoint(const std::filesystem::path& filepath,
          p->phiphin = point_records[i].phiphin;
          p->phiphin_t = point_records[i].phiphin_t;
          p->phi_Dirichlet = point_records[i].phi_Dirichlet;
+         if (!point_records[i].face_values.empty()) {
+            p->isMultipleNode = true;
+            p->phiOnFace.clear();
+            p->phinOnFace.clear();
+            p->phitOnFace.clear();
+            p->phintOnFace.clear();
+            for (const auto& fv : point_records[i].face_values) {
+               networkFace* f = (fv.checkpoint_face_id < 0) ? nullptr
+                                                            : ((static_cast<size_t>(fv.checkpoint_face_id) < restored_faces_by_checkpoint_face_id.size())
+                                                                  ? restored_faces_by_checkpoint_face_id[fv.checkpoint_face_id]
+                                                                  : nullptr);
+               p->phiOnFace[f] = fv.phi;
+               p->phinOnFace[f] = fv.phin;
+               p->phitOnFace[f] = fv.phit;
+               p->phintOnFace[f] = fv.phint;
+            }
+         }
       }
 
       // Restore quadratic line data
@@ -426,6 +612,23 @@ readCheckpoint(const std::filesystem::path& filepath,
                l->phiphin = lr.phiphin;
                l->phiphin_t = lr.phiphin_t;
                l->corner_midpoint_offset = lr.corner_offset;
+               if (!lr.face_values.empty()) {
+                  l->isMultipleNode = true;
+                  l->phiOnFace.clear();
+                  l->phinOnFace.clear();
+                  l->phitOnFace.clear();
+                  l->phintOnFace.clear();
+                  for (const auto& fv : lr.face_values) {
+                     networkFace* f = (fv.checkpoint_face_id < 0) ? nullptr
+                                                                  : ((static_cast<size_t>(fv.checkpoint_face_id) < restored_faces_by_checkpoint_face_id.size())
+                                                                        ? restored_faces_by_checkpoint_face_id[fv.checkpoint_face_id]
+                                                                        : nullptr);
+                     l->phiOnFace[f] = fv.phi;
+                     l->phinOnFace[f] = fv.phin;
+                     l->phitOnFace[f] = fv.phit;
+                     l->phintOnFace[f] = fv.phint;
+                  }
+               }
             }
          }
       } else if (!has_quad && use_true_quadratic_element) {

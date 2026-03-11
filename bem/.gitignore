@@ -1,0 +1,67 @@
+# =========================
+# Whitelist approach: ignore everything, then allow specific files
+# =========================
+
+# Ignore everything by default
+*
+
+# =========================
+# Allow: source code
+# =========================
+!*.hpp
+!*.cpp
+
+# =========================
+# Allow: documentation
+# =========================
+!README.md
+!EXAMPLES.md
+
+# =========================
+# Allow: git config
+# =========================
+!.gitignore
+
+# =========================
+# Allow: input_files (simulation settings)
+# =========================
+!input_files/
+!input_files/*/
+!input_files/*/*.json
+!input_files/*/*.obj
+
+# =========================
+# Allow: metal_m2l source (GPU shaders)
+# =========================
+!metal_m2l/
+!metal_m2l/CMakeLists.txt
+!metal_m2l/*.metal
+!metal_m2l/*.mm
+!metal_m2l/*.h
+!metal_m2l/*.hpp
+
+# =========================
+# Exclude: metal_m2l build artifacts
+# =========================
+metal_m2l/build/
+
+# =========================
+# Re-exclude: patterns within allowed extensions
+# =========================
+# Backup / conflict copies (matched despite *.hpp/*.cpp allow)
+*from backup*
+*競合コピー*
+*.modified
+
+# Test files (auto-generated, experimental)
+test_*.cpp
+vec_check_clang.cpp
+
+# Frequency domain (separate build target, not main source)
+frequency_domain_main.cpp
+frequency_domain_test.cpp
+main_freq_domain.cpp
+network_integrity_check.cpp
+
+# Test input directories
+input_files/test_*/

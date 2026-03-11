@@ -10,6 +10,7 @@
 #include "tetgen.h"
 #endif
 #include "vtkWriter.hpp"
+#include <cstdint>
 #include <concepts>
 #include <functional>
 #include <typeinfo>
@@ -63,6 +64,19 @@ using T_TT = std::array<networkTetra*, 2>;
 enum class TetraState {
   Air = 0,
   Water = 1,
+};
+
+enum class FaceBadQualityType : std::uint8_t {
+  TinyFace = 0,
+  SubsurfaceAltitude = 1,
+};
+
+struct FaceBadQualityEvent {
+  int time_step = -1;
+  int rk_step = -1;
+  FaceBadQualityType type = FaceBadQualityType::TinyFace;
+  double value = 0.0;
+  double threshold = 0.0;
 };
 
 /* ------------------------------------------------------ */
@@ -1533,6 +1547,7 @@ public:
   bool isPseudoQuadraticElement = false;
   bool isTrueQuadraticElement = false;
   bool isLinearElement = false;
+  std::vector<FaceBadQualityEvent> bad_quality_history;
 
   // # ------------------------------------------------------------------
   // # True quadratic 要素用の事前計算データ
@@ -1616,6 +1631,24 @@ public:
 
   Tdd phiphin = {0., 0.};
   Tddd phinTuple = {0., 0., 0.};
+
+  void clearBadQualityHistory() { bad_quality_history.clear(); }
+
+  void appendBadQualityEvent(const FaceBadQualityEvent& event, const std::size_t max_history = 16) {
+    if (!bad_quality_history.empty()) {
+      auto& last = bad_quality_history.back();
+      if (last.time_step == event.time_step &&
+          last.rk_step == event.rk_step &&
+          last.type == event.type) {
+        last.value = std::min(last.value, event.value);
+        last.threshold = event.threshold;
+        return;
+      }
+    }
+    bad_quality_history.emplace_back(event);
+    while (bad_quality_history.size() > max_history)
+      bad_quality_history.erase(bad_quality_history.begin());
+  }
 
   // # ========================================================================
 

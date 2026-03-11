@@ -27,8 +27,10 @@ bool use_pseudo_quadratic_element = false;
 bool use_true_quadratic_element = false;
 enum class NodeRelocationMethod { none, ALE, interpolation };
 enum class NodeRelocationSurface { linear, pseudo_quadratic, true_quadratic };
+enum class InterpolationMidpointMode { nearest, cubic_hermite };
 NodeRelocationMethod node_relocation_method = NodeRelocationMethod::none;
 NodeRelocationSurface node_relocation_surface = NodeRelocationSurface::pseudo_quadratic;
+InterpolationMidpointMode interpolation_midpoint_mode = InterpolationMidpointMode::nearest;
 std::string solver_type = "LU";
 std::string coupling_type = "NONE";
 double coupling_tol = 1e-10;
@@ -86,6 +88,155 @@ JSONoutput jsonout;
 #include "BEM_remesh_main.hpp"
 
 namespace {
+struct DebugCornerTarget {
+  bool enabled = false;
+  Tddd x = {0., 0., 0.};
+  double tol = 5e-2;
+};
+
+const DebugCornerTarget& getDebugCornerTarget() {
+  static const DebugCornerTarget target = [] {
+    DebugCornerTarget t;
+    if (const char* env = std::getenv("BEM_DEBUG_CORNER_POINT")) {
+      std::stringstream ss(env);
+      char comma0 = 0, comma1 = 0;
+      if (ss >> t.x[0] >> comma0 >> t.x[1] >> comma1 >> t.x[2]) {
+        if (comma0 == ',' && comma1 == ',')
+          t.enabled = true;
+      }
+    }
+    if (const char* env_tol = std::getenv("BEM_DEBUG_CORNER_TOL")) {
+      try {
+        t.tol = std::stod(env_tol);
+      } catch (...) {
+      }
+    }
+    return t;
+  }();
+  return target;
+}
+
+networkPoint* findDebugCornerPoint(Network* water, double* nearest_dist = nullptr) {
+  const auto& target = getDebugCornerTarget();
+  if (!target.enabled || water == nullptr)
+    return nullptr;
+
+  networkPoint* best = nullptr;
+  double best_dist = std::numeric_limits<double>::max();
+  for (auto* p : water->getBoundaryPoints()) {
+    const double d = Norm(p->X - target.x);
+    if (d < best_dist) {
+      best_dist = d;
+      best = p;
+    }
+  }
+  if (nearest_dist)
+    *nearest_dist = best_dist;
+  if (best_dist > target.tol)
+    return nullptr;
+  return best;
+}
+
+std::string faceKeySummary(networkFace* f) {
+  if (!f)
+    return "nullptr";
+  auto [p0, p1, p2] = f->getPoints();
+  std::array<int, 3> ids = {p0 ? p0->index : -1, p1 ? p1->index : -1, p2 ? p2->index : -1};
+  std::sort(ids.begin(), ids.end());
+  std::ostringstream oss;
+  oss << "ptr=" << f
+      << " idx=" << f->index
+      << " flags={D:" << f->Dirichlet << ",N:" << f->Neumann << "}"
+      << " pts={" << ids[0] << "," << ids[1] << "," << ids[2] << "}"
+      << " centroid=" << f->centroid
+      << " normal=" << f->normal;
+  return oss.str();
+}
+
+template <class MapType>
+void dumpFaceValueMap(const char* label,
+                      const MapType& m,
+                      const std::unordered_set<networkFace*>& boundary_face_set) {
+  std::vector<std::pair<networkFace*, double>> entries;
+  entries.reserve(m.size());
+  for (const auto& [f, v] : m)
+    entries.emplace_back(f, v);
+  std::stable_sort(entries.begin(), entries.end(), [](const auto& a, const auto& b) {
+    return reinterpret_cast<std::uintptr_t>(a.first) < reinterpret_cast<std::uintptr_t>(b.first);
+  });
+  std::cout << "  " << label << " size=" << entries.size() << std::endl;
+  for (const auto& [f, v] : entries) {
+    const bool alive = (f == nullptr) || boundary_face_set.count(f);
+    std::cout << "    key={" << faceKeySummary(f) << "} alive=" << alive
+              << " value=" << std::setprecision(17) << v << std::endl;
+  }
+}
+
+void dumpDebugCornerPointState(Network* water, const char* stage, int time_step, int rk_step) {
+  const auto& target = getDebugCornerTarget();
+  if (!target.enabled || water == nullptr)
+    return;
+
+  double nearest_dist = std::numeric_limits<double>::max();
+  auto* p = findDebugCornerPoint(water, &nearest_dist);
+  if (!p) {
+    std::cout << Magenta << "[corner_point_debug] stage=" << stage
+              << " water=" << water->getName()
+              << " time_step=" << time_step
+              << " rk_step=" << rk_step
+              << " target=" << target.x
+              << " no point within tol=" << target.tol
+              << " nearest_dist=" << nearest_dist
+              << colorReset << std::endl;
+    return;
+  }
+
+  auto boundary_faces = p->getBoundaryFaces();
+  std::unordered_set<networkFace*> boundary_face_set(boundary_faces.begin(), boundary_faces.end());
+  std::stable_sort(boundary_faces.begin(), boundary_faces.end(), [](const auto* a, const auto* b) {
+    return reinterpret_cast<std::uintptr_t>(a) < reinterpret_cast<std::uintptr_t>(b);
+  });
+
+  std::cout << Magenta << "[corner_point_debug] stage=" << stage
+            << " water=" << water->getName()
+            << " time_step=" << time_step
+            << " rk_step=" << rk_step
+            << " target=" << target.x
+            << " tol=" << target.tol
+            << " point_ptr=" << p
+            << " point_index=" << p->index
+            << " pos=" << p->X
+            << " dist=" << nearest_dist
+            << " flags={D:" << p->Dirichlet << ",N:" << p->Neumann << ",C:" << p->CORNER << ",M:" << p->isMultipleNode << "}"
+            << " face_count=" << boundary_faces.size()
+            << " contact_count=" << p->getContactFaces().size()
+            << colorReset << std::endl;
+
+  std::cout << "  boundary_faces:" << std::endl;
+  for (auto* f : boundary_faces) {
+    auto nearest = p->getNearestContactFace_(f);
+    auto* cf = std::get<0>(nearest);
+    const auto& cx = std::get<1>(nearest);
+    const double dist = std::get<2>(nearest);
+    std::cout << "    {" << faceKeySummary(f) << "} nearest_contact={"
+              << faceKeySummary(cf) << "} nearest_x=" << cx
+              << " nearest_dist=" << dist << std::endl;
+  }
+
+  std::vector<std::pair<networkFace*, int>> dofs(p->f2Index.begin(), p->f2Index.end());
+  std::stable_sort(dofs.begin(), dofs.end(), [](const auto& a, const auto& b) { return a.second < b.second; });
+  std::cout << "  f2Index size=" << dofs.size() << std::endl;
+  for (const auto& [f, idx] : dofs) {
+    const bool alive = (f == nullptr) || boundary_face_set.count(f);
+    std::cout << "    dof idx=" << idx << " key={" << faceKeySummary(f) << "} alive=" << alive << std::endl;
+  }
+
+  dumpFaceValueMap("phiOnFace", p->phiOnFace, boundary_face_set);
+  dumpFaceValueMap("phinOnFace", p->phinOnFace, boundary_face_set);
+  dumpFaceValueMap("phitOnFace", p->phitOnFace, boundary_face_set);
+  dumpFaceValueMap("phintOnFace", p->phintOnFace, boundary_face_set);
+}
+
 void crashBacktraceHandler(int sig) {
   const char* sig_name = strsignal(sig);
   if (!sig_name)
@@ -725,6 +876,13 @@ int main(int argc, char** argv) {
       default:                node_relocation_method = NodeRelocationMethod::none; break;
     }
   }
+  {
+    using MM = SimulationSettings::TimeDomainSettings::NodeRelocationSettings::MidpointMode;
+    switch (setting.time.node_relocation.midpoint_mode) {
+      case MM::cubic_hermite: interpolation_midpoint_mode = InterpolationMidpointMode::cubic_hermite; break;
+      default:                interpolation_midpoint_mode = InterpolationMidpointMode::nearest; break;
+    }
+  }
   // Node relocation: surface precision (auto-resolve from element type unless explicitly set)
   if (setting.time.node_relocation.surface_explicitly_set) {
     using S = SimulationSettings::TimeDomainSettings::NodeRelocationSettings::Surface;
@@ -804,13 +962,20 @@ int main(int argc, char** argv) {
 
   std::filesystem::create_directories(output_directory);
   std::filesystem::copy_file(setting.settings_file_path, output_directory / "settings.json", std::filesystem::copy_options::overwrite_existing);
-  std::filesystem::copy_file("./main_time_domain.cpp", output_directory / "main_time_domain.cpp", std::filesystem::copy_options::overwrite_existing);
-  std::filesystem::copy_file("./main.cpp", output_directory / "main.cpp", std::filesystem::copy_options::overwrite_existing);
-  //
+
+  // Copy source files to output directory for reproducibility.
+  // Resolve source directory from __FILE__ (works regardless of working directory).
+  const std::filesystem::path source_dir = std::filesystem::path(__FILE__).parent_path();
+  auto safe_copy = [&](const std::filesystem::path& src) {
+    if (std::filesystem::exists(src))
+      std::filesystem::copy_file(src, output_directory / src.filename(), std::filesystem::copy_options::overwrite_existing);
+  };
+  safe_copy(source_dir / "main_time_domain.cpp");
+  safe_copy(source_dir / "main.cpp");
   std::regex pattern("^BEM.*\\.hpp$");
-  for (auto& entry : std::filesystem::directory_iterator("."))
+  for (auto& entry : std::filesystem::directory_iterator(source_dir))
     if (std::regex_match(entry.path().filename().string(), pattern))
-      std::filesystem::copy_file(entry.path(), output_directory / entry.path().filename(), std::filesystem::copy_options::overwrite_existing);
+      safe_copy(entry.path());
 
   /* --------------------------------------------------------------------------*/
 
@@ -1239,6 +1404,7 @@ int main(int argc, char** argv) {
       constexpr int max_step_retries = 5;
       constexpr double dt_reduction_factor = 0.5;
       double dt_override = 0.0; // non-zero means use this dt instead of CFL
+      bool degraded_mode = false; // true = skip quality checks after max retries exceeded
       auto step_checkpoint_path = output_directory / "_step_retry.bin";
 
       // Save state before this step (for rollback on failure)
@@ -1256,7 +1422,31 @@ int main(int argc, char** argv) {
       }
 
       int current_rk_step = 0;
-      for (int step_retry = 0; step_retry <= max_step_retries; ++step_retry) {
+      enum class RetryAction { ContinueRetry, BreakStep };
+      auto handle_step_failure = [&](const step_failure& e, const int step_retry) -> RetryAction {
+        std::cerr << Red << "[step_reject] time_step " << time_step << ": " << e.reason << colorReset << std::endl;
+        remember_rejected_face(e);
+        if (degraded_mode) {
+          std::cerr << Yellow << "[step_reject] DEGRADED MODE also failed. Skipping time_step " << time_step
+                    << " and advancing." << colorReset << std::endl;
+          return RetryAction::BreakStep;
+        }
+        if (step_retry >= max_step_retries) {
+          std::cerr << Yellow << "[step_reject] writing failure snapshot before degraded continuation" << colorReset << std::endl;
+          write_failure_snapshot(current_rk_step, step_retry);
+          std::cerr << Yellow << "[step_reject] max retries exceeded. Entering DEGRADED CONTINUATION MODE — "
+                    << "quality checks will be skipped for this step." << colorReset << std::endl;
+          degraded_mode = true;
+          dt_override = std::max(1E-13, dt_override > 0 ? dt_override * dt_reduction_factor : last_successful_dt * 0.01);
+          return RetryAction::ContinueRetry;
+        }
+        if (dt_override <= 0)
+          dt_override = std::max(1E-13, std::min(dt, last_successful_dt) * dt_reduction_factor);
+        else
+          dt_override = std::max(1E-13, dt_override * dt_reduction_factor);
+        return RetryAction::ContinueRetry;
+      };
+      for (int step_retry = 0; step_retry <= max_step_retries + (degraded_mode ? 1 : 0); ++step_retry) {
         if (step_retry > 0) {
           // Rollback: reload mesh state from step checkpoint
           std::cout << Red << "[step_reject] retry " << step_retry << "/" << max_step_retries
@@ -1285,11 +1475,23 @@ int main(int argc, char** argv) {
         remesh_for_main_loop(*water, time_step, min_edge_length, tetrahedralize, surface_flip, setting.remeshing.collision,
                              setting.remeshing.surface_split, setting.remeshing.surface_collapse);
         collapse_repeatedly_rejected_faces(*water, step_retry);
-        monitorTinyFaceRelativeToLocalMean(*water, time_step, std::nullopt);
-        throwIfSubsurfaceFaceAltitudeTooSmall(*water, time_step, std::nullopt, subsurface_altitude_reject);
-        throwIfTinyFaceRelativeToLocalMean(*water, time_step, std::nullopt);
+        if (!degraded_mode) {
+          refreshFaceBadQualityHistory(*water, time_step, std::nullopt, 0.1, subsurface_altitude_reject);
+          monitorTinyFaceRelativeToLocalMean(*water, time_step, std::nullopt);
+          throwIfSubsurfaceFaceAltitudeTooSmall(*water, time_step, std::nullopt, subsurface_altitude_reject);
+          throwIfTinyFaceRelativeToLocalMean(*water, time_step, std::nullopt);
+        }
       }
       throwIfStructurePenetrated(FluidObject, Join(RigidBodyObject, SoftBodyObject), time_step, "post-remesh");
+
+      // Overwrite step checkpoint with post-remesh state.
+      // On BVP/RK failure, retry will restore this state and skip remesh,
+      // avoiding topology changes and interpolation noise from re-remeshing.
+      // Note: do NOT call sync_body_states_from_rk() here — RK is not yet
+      // initialized for this step, so reading RK state would corrupt body positions.
+      BEM_Checkpoint::writeCheckpointToPath(step_checkpoint_path, time_step, simulation_time, last_successful_dt,
+                                            FluidObject, RigidBodyObject, SoftBodyObject, vpm,
+                                            use_true_quadratic_element);
 
       // --------------------------------------------------------------------------
       // Initial condition: apply known analytical solution at t=0
@@ -1810,6 +2012,7 @@ int main(int argc, char** argv) {
                         << collapse_result.collapsed << " collapse(s)" << colorReset << std::endl;
             } else
               log_corner_connected_neumann_lines_after_boundary_types(water, "post-setBoundaryTypes");
+            dumpDebugCornerPointState(water, "post-setBoundaryTypes", time_step, RK_step);
           }
           rebuild_fluid_global_buckets();
           std::cout << Green << "setBoundaryTypes" << Blue << "\nElapsed time: " << Red << watch() << colorReset << " s\n";
@@ -1835,6 +2038,8 @@ int main(int argc, char** argv) {
         std::cout << Green << "setBodyVelocity" << Blue << "\nElapsed time: " << Red << watch() << colorReset << " s\n";
 
         setPhiPhinOnFace(FluidObject);
+        for (auto water : FluidObject)
+          dumpDebugCornerPointState(water, "post-setPhiPhinOnFace", time_step, RK_step);
         std::cout << Green << "setPhiPhinOnFace" << Blue << "\nElapsed time: " << Red << watch() << colorReset << " s\n";
 
         //% --------------------------------------------------------------------------*/
@@ -1885,8 +2090,10 @@ int main(int argc, char** argv) {
           }
         }
 
+        for (auto water : FluidObject)
+          dumpDebugCornerPointState(water, "pre-BVP.solve", time_step, RK_step);
         auto [time_setup_, time_solve_, unknownsize_] = BVP.solve();
-        if (!BVP.last_gmres_converged) {
+        if (solver_type == "GMRES" && !BVP.last_gmres_converged) {
           const double gmres_retry_threshold = std::max(1e-3, solver_tol * 1e6);
           std::cerr << Yellow << "[GMRES] time_step " << time_step
                     << " RK_step " << RK_step
@@ -1894,6 +2101,8 @@ int main(int argc, char** argv) {
                     << " iter=" << BVP.last_gmres_total_iter
                     << colorReset << std::endl;
           BVP.logLastGmresHotspots(std::cerr, 8);
+          for (auto water : FluidObject)
+            dumpDebugCornerPointState(water, "post-BVP.solve-gmres-failed", time_step, RK_step);
           if (BVP.last_gmres_residual_norm > gmres_retry_threshold) {
             throw step_failure("GMRES not converged at RK_step " + std::to_string(RK_step)
                                + ", residual=" + std::to_string(BVP.last_gmres_residual_norm));
@@ -2378,12 +2587,16 @@ int main(int argc, char** argv) {
 
         for (auto net : AllObjects)
           net->setGeometricPropertiesForce();
-        for (auto water : FluidObject)
-          monitorTinyFaceRelativeToLocalMean(*water, time_step, RK_step);
-        for (auto water : FluidObject)
-          throwIfSubsurfaceFaceAltitudeTooSmall(*water, time_step, RK_step, subsurface_altitude_reject);
-        for (auto water : FluidObject)
-          throwIfTinyFaceRelativeToLocalMean(*water, time_step, RK_step);
+        if (!degraded_mode) {
+          for (auto water : FluidObject)
+            refreshFaceBadQualityHistory(*water, time_step, RK_step, 0.1, subsurface_altitude_reject);
+          for (auto water : FluidObject)
+            monitorTinyFaceRelativeToLocalMean(*water, time_step, RK_step);
+          for (auto water : FluidObject)
+            throwIfSubsurfaceFaceAltitudeTooSmall(*water, time_step, RK_step, subsurface_altitude_reject);
+          for (auto water : FluidObject)
+            throwIfTinyFaceRelativeToLocalMean(*water, time_step, RK_step);
+        }
 
         for (auto water : FluidObject) {
           auto name = water->getName();
@@ -2415,6 +2628,16 @@ int main(int argc, char** argv) {
             for (auto* l : water->getBoundaryLines())
               if (l->Dirichlet || l->CORNER)
                 lagrangian_phi_mid[l] = l->phiphin[0];
+
+          auto find_point_phi = [&](networkPoint* q) -> double {
+            auto it = lagrangian_phi.find(q);
+            return it != lagrangian_phi.end() ? it->second : 0.0;
+          };
+
+          auto find_line_phi = [&](networkLine* q) -> double {
+            auto it = lagrangian_phi_mid.find(q);
+            return it != lagrangian_phi_mid.end() ? it->second : 0.0;
+          };
 
           // 2. Points: interpolate phi using cached (face, t0, t1)
           for (auto* p : water->getPoints()) {
@@ -2448,14 +2671,70 @@ int main(int argc, char** argv) {
           if (use_true_quadratic_element) {
             for (auto* l : water->getBoundaryLines()) {
               if (!(l->Dirichlet || l->CORNER)) continue;
+              if (interpolation_midpoint_mode == InterpolationMidpointMode::cubic_hermite && l->Dirichlet && !l->CORNER) {
+                const auto owner = selectHermiteOwnerFace(l);
+                if (owner.face != nullptr) {
+                  auto [p0, l0, p1, l1, p2, l2] = owner.face->PLPLPL;
+                  const std::array<double, 6> phi6 = {
+                      getPhi(p0, owner.face), getPhi(p1, owner.face), getPhi(p2, owner.face),
+                      getPhi(l0, owner.face), getPhi(l1, owner.face), getPhi(l2, owner.face)};
+
+                  auto eval_dphi_ds_local = [&](const Tdd& param) {
+                    const auto dN_dt0 = D_TriShape<6, 1, 0>(param[0], param[1]);
+                    const auto dN_dt1 = D_TriShape<6, 0, 1>(param[0], param[1]);
+                    double dphi_dt0 = 0.0, dphi_dt1 = 0.0;
+                    for (int j = 0; j < 6; ++j) {
+                      dphi_dt0 += dN_dt0[j] * phi6[j];
+                      dphi_dt1 += dN_dt1[j] * phi6[j];
+                    }
+                    switch (owner.local_edge) {
+                      case 0: return -dphi_dt0 + dphi_dt1;
+                      case 1: return -dphi_dt1;
+                      case 2: return dphi_dt0;
+                      default: return 0.0;
+                    }
+                  };
+
+                  Tdd param_A = {0., 0.};
+                  Tdd param_B = {0., 0.};
+                  switch (owner.local_edge) {
+                    case 0:
+                      param_A = {1.0, 0.0};
+                      param_B = {0.0, 1.0};
+                      break;
+                    case 1:
+                      param_A = {0.0, 1.0};
+                      param_B = {0.0, 0.0};
+                      break;
+                    case 2:
+                      param_A = {0.0, 0.0};
+                      param_B = {1.0, 0.0};
+                      break;
+                    default:
+                      break;
+                  }
+                  if (owner.reversed)
+                    std::swap(param_A, param_B);
+
+                  const double sign = owner.reversed ? -1.0 : 1.0;
+                  const auto [pA, pB] = l->getPoints();
+                  const double phi_A = getPhi(pA, owner.face);
+                  const double phi_B = getPhi(pB, owner.face);
+                  const double dphi_A = sign * eval_dphi_ds_local(param_A);
+                  const double dphi_B = sign * eval_dphi_ds_local(param_B);
+                  l->phiphin[0] = 0.5 * (phi_A + phi_B) + 0.125 * (dphi_A - dphi_B);
+                  continue;
+                }
+              }
+
               if (!l->relocation_face) continue;
 
               auto* f = l->relocation_face;
               auto [t0, t1] = l->relocation_param;
               auto [p0, l0, p1, l1, p2, l2] = f->PLPLPL;
               auto N = TriShape<6>(t0, t1);
-              l->phiphin[0] = N[0] * lagrangian_phi[p0] + N[1] * lagrangian_phi[p1] + N[2] * lagrangian_phi[p2]
-                            + N[3] * lagrangian_phi_mid[l0] + N[4] * lagrangian_phi_mid[l1] + N[5] * lagrangian_phi_mid[l2];
+              l->phiphin[0] = N[0] * find_point_phi(p0) + N[1] * find_point_phi(p1) + N[2] * find_point_phi(p2)
+                            + N[3] * find_line_phi(l0) + N[4] * find_line_phi(l1) + N[5] * find_line_phi(l2);
             }
           }
         }
@@ -2609,22 +2888,27 @@ int main(int argc, char** argv) {
       break;
 
         } catch (step_failure& e) {
-          std::cerr << Red << "[step_reject] time_step " << time_step << ": " << e.reason << colorReset << std::endl;
-          remember_rejected_face(e);
-          if (step_retry >= max_step_retries) {
-            std::cerr << Yellow << "[step_reject] writing failure snapshot before abort" << colorReset << std::endl;
-            write_failure_snapshot(current_rk_step, step_retry);
-            std::cerr << Red << "[step_reject] max retries exceeded, giving up" << colorReset << std::endl;
-            throw; // propagate as fatal
-          }
-          // Reduce dt for next retry
-          if (dt_override <= 0)
-            dt_override = std::max(1E-13, std::min(dt, last_successful_dt) * dt_reduction_factor);
-          else
-            dt_override = std::max(1E-13, dt_override * dt_reduction_factor);
-          continue; // retry
+          if (handle_step_failure(e, step_retry) == RetryAction::BreakStep)
+            break;
+          continue;
+        } catch (const std::exception& e) {
+          step_failure wrapped(std::string("[firewall] unexpected exception in time-step body: ") + e.what());
+          if (handle_step_failure(wrapped, step_retry) == RetryAction::BreakStep)
+            break;
+          continue;
+        } catch (...) {
+          step_failure wrapped("[firewall] unknown exception in time-step body");
+          if (handle_step_failure(wrapped, step_retry) == RetryAction::BreakStep)
+            break;
+          continue;
         }
       } // end retry loop
+
+      // Reset degraded mode for next time step
+      if (degraded_mode) {
+        std::cerr << Yellow << "[step_reject] Exiting DEGRADED MODE for next time step." << colorReset << std::endl;
+        degraded_mode = false;
+      }
 
       // Clean up temporary checkpoint
       std::filesystem::remove(step_checkpoint_path);
