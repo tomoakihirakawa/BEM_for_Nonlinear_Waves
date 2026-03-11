@@ -1,7 +1,6 @@
 ---
 layout: default
 title: ホーム
-lang: ja
 ---
 
 [English](../)
@@ -27,27 +26,13 @@ lang: ja
 
 ## ドキュメント
 
-### はじめに
-
 - [はじめに](getting-started.html) -- ビルドと最初のシミュレーション実行
-
-### 理論
-
-- [理論の概要](theory/) -- 数学的定式化
-  - [境界積分方程式](theory/boundary-integral.html) -- BIEの導出、線形要素、係数行列
-  - [浮体動力学](theory/floating-body.html) -- 6自由度運動、圧力計算、$\phi_t$問題
-  - [造波理論](theory/wave-generation.html) -- ピストン/フラップ型造波機、孤立波
-  - [ALEメッシュ](theory/ale-mesh.html) -- 任意ラグランジュ・オイラーメッシュ管理
-  - [高速多重極法](theory/fmm.html) -- FMM加速、M2L手法
-
-### リファレンス
-
 - [入力ファイル形式](input-format.html) -- JSON入力ファイルリファレンス
+- [Goring (1979) 計算例](examples/goring1979.html) -- 孤立波の生成と伝播
 
-### 計算例
+### 理論 (PDF)
 
-- [Goring (1979)](examples/goring1979.html) -- 孤立波の生成と伝播
-- [DeepCWind](examples/deepcwind.html) -- 浮体風車プラットフォーム
+- [理論マニュアル（全体）](../pdf/theory.pdf) -- 理論ドキュメント全体
 
 ## ライセンス
 
