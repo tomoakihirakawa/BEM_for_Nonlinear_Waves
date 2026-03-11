@@ -81,6 +81,22 @@ CLAUDE.md
 ROBUSTNESS_*.md
 
 # =========================
+# Papers & presentations (private)
+# =========================
+*.pdf
+*.tex
+*.bib
+*.bbl
+*.blg
+*.aux
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+*.pptx
+*.docx
+*.xlsx
+
+# =========================
 # Misc
 # =========================
 temp/
