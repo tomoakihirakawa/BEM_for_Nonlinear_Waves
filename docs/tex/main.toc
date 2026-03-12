@@ -1,0 +1,54 @@
+\contentsline {section}{\numberline {1}Boundary Integral Equation}{3}{section.1}%
+\contentsline {subsection}{\numberline {1.1}Laplace Equation}{3}{subsection.1.1}%
+\contentsline {subsection}{\numberline {1.2}Green's Theorem and the BIE}{3}{subsection.1.2}%
+\contentsline {subsection}{\numberline {1.3}Boundary Types}{3}{subsection.1.3}%
+\contentsline {subsection}{\numberline {1.4}Discretization with Linear Triangular Elements}{3}{subsection.1.4}%
+\contentsline {subsubsection}{\numberline {1.4.1}Shape Functions}{4}{subsubsection.1.4.1}%
+\contentsline {subsubsection}{\numberline {1.4.2}Jacobian for Linear Elements}{4}{subsubsection.1.4.2}%
+\contentsline {subsection}{\numberline {1.5}Coefficient Matrix Assembly}{4}{subsection.1.5}%
+\contentsline {subsubsection}{\numberline {1.5.1}Rigid-Mode Technique}{5}{subsubsection.1.5.1}%
+\contentsline {subsection}{\numberline {1.6}Rearranging into a Linear System}{5}{subsection.1.6}%
+\contentsline {subsection}{\numberline {1.7}Multi-Node Treatment at Boundary Transitions}{5}{subsection.1.7}%
+\contentsline {section}{\numberline {2}Floating Body Dynamics}{6}{section.2}%
+\contentsline {subsection}{\numberline {2.1}Rigid Body Equations of Motion}{6}{subsection.2.1}%
+\contentsline {subsubsection}{\numberline {2.1.1}Inertia Tensor Transformation}{6}{subsubsection.2.1.1}%
+\contentsline {subsection}{\numberline {2.2}Hydrodynamic Force and Pressure Integration}{6}{subsection.2.2}%
+\contentsline {subsection}{\numberline {2.3}Bernoulli Pressure}{7}{subsection.2.3}%
+\contentsline {subsection}{\numberline {2.4}The $\phi _t$ Problem}{7}{subsection.2.4}%
+\contentsline {subsubsection}{\numberline {2.4.1}Boundary Conditions for $\phi _t$}{7}{subsubsection.2.4.1}%
+\contentsline {subsubsection}{\numberline {2.4.2}The $\phi _{nt}$ Boundary Condition (Wu 1998)}{7}{subsubsection.2.4.2}%
+\contentsline {subsection}{\numberline {2.5}Methods for Computing Body Acceleration}{7}{subsection.2.5}%
+\contentsline {subsubsection}{\numberline {2.5.1}Indirect Method}{7}{subsubsection.2.5.1}%
+\contentsline {subsubsection}{\numberline {2.5.2}Mode-Decomposition Method}{8}{subsubsection.2.5.2}%
+\contentsline {subsubsection}{\numberline {2.5.3}Iterative Methods}{8}{subsubsection.2.5.3}%
+\contentsline {subsubsection}{\numberline {2.5.4}Auxiliary Function Method (Wu and Taylor 2003)}{8}{subsubsection.2.5.4}%
+\contentsline {subsubsection}{\numberline {2.5.5}Quasi-Newton Root Finding}{8}{subsubsection.2.5.5}%
+\contentsline {subsection}{\numberline {2.6}Time Integration}{8}{subsection.2.6}%
+\contentsline {section}{\numberline {3}Wave Generation and Absorption}{9}{section.3}%
+\contentsline {subsection}{\numberline {3.1}Piston Wavemaker}{9}{subsection.3.1}%
+\contentsline {subsection}{\numberline {3.2}Flap Wavemaker (Sch\"affer 1996)}{9}{subsection.3.2}%
+\contentsline {subsection}{\numberline {3.3}Solitary Wave Generation (Goring 1979)}{9}{subsection.3.3}%
+\contentsline {subsection}{\numberline {3.4}Second-Order Wave Velocity Field}{11}{subsection.3.4}%
+\contentsline {subsection}{\numberline {3.5}Wave Absorber / Damping Region}{11}{subsection.3.5}%
+\contentsline {section}{\numberline {4}ALE Mesh Management}{12}{section.4}%
+\contentsline {subsection}{\numberline {4.1}Motivation}{12}{subsection.4.1}%
+\contentsline {subsection}{\numberline {4.2}ALE Formulation}{12}{subsection.4.2}%
+\contentsline {subsubsection}{\numberline {4.2.1}Modified Material Derivative}{12}{subsubsection.4.2.1}%
+\contentsline {subsubsection}{\numberline {4.2.2}Free-Surface Conditions in ALE Form}{12}{subsubsection.4.2.2}%
+\contentsline {subsection}{\numberline {4.3}Node Relocation Strategies}{13}{subsection.4.3}%
+\contentsline {subsubsection}{\numberline {4.3.1}Dirichlet Nodes (Free Surface)}{13}{subsubsection.4.3.1}%
+\contentsline {subsubsection}{\numberline {4.3.2}Neumann Nodes (Solid Walls)}{13}{subsubsection.4.3.2}%
+\contentsline {subsection}{\numberline {4.4}Mesh Quality Metric}{13}{subsection.4.4}%
+\contentsline {subsection}{\numberline {4.5}Connection to Time Integration}{13}{subsection.4.5}%
+\contentsline {section}{\numberline {5}Fast Multipole Method}{14}{section.5}%
+\contentsline {subsection}{\numberline {5.1}Motivation}{14}{subsection.5.1}%
+\contentsline {subsection}{\numberline {5.2}Spherical Harmonic Expansions}{14}{subsection.5.2}%
+\contentsline {subsection}{\numberline {5.3}Adaptive Octree Decomposition}{14}{subsection.5.3}%
+\contentsline {subsection}{\numberline {5.4}Translation Operators}{14}{subsection.5.4}%
+\contentsline {subsubsection}{\numberline {5.4.1}Particle to Multipole (P2M)}{15}{subsubsection.5.4.1}%
+\contentsline {subsubsection}{\numberline {5.4.2}Multipole to Multipole (M2M)}{15}{subsubsection.5.4.2}%
+\contentsline {subsubsection}{\numberline {5.4.3}Multipole to Local (M2L)}{15}{subsubsection.5.4.3}%
+\contentsline {subsubsection}{\numberline {5.4.4}Local to Local (L2L)}{15}{subsubsection.5.4.4}%
+\contentsline {subsubsection}{\numberline {5.4.5}Local to Particle (L2P)}{15}{subsubsection.5.4.5}%
+\contentsline {subsection}{\numberline {5.5}M2L Translation Methods}{15}{subsection.5.5}%
+\contentsline {subsection}{\numberline {5.6}Connection to GMRES}{15}{subsection.5.6}%

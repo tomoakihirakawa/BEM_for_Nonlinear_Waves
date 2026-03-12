@@ -27,6 +27,7 @@ title: ホーム
 ## ドキュメント
 
 - [はじめに](getting-started.html) -- ビルドと最初のシミュレーション実行
+- [GUI利用ガイド](gui.html) -- 入力ファイル作成・編集のビジュアルインターフェース
 - [入力ファイル形式](input-format.html) -- JSON入力ファイルリファレンス
 - [Goring (1979) 計算例](examples/goring1979.html) -- 孤立波の生成と伝播
 

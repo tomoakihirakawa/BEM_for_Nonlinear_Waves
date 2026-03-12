@@ -27,6 +27,7 @@ This software solves potential flow problems with nonlinear free-surface boundar
 ## Documentation
 
 - [Getting Started](getting-started.html) -- Build and run your first simulation
+- [GUI User Guide](gui.html) -- Visual interface for creating and editing input files
 - [Input Format](input-format.html) -- JSON input file reference
 - [Goring (1979) Example](examples/goring1979.html) -- Solitary wave generation and propagation
 
