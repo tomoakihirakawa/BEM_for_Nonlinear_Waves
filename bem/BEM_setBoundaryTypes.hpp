@@ -740,12 +740,20 @@ inline Tddd getNormalNeumann(const networkLine* l) { return getNormalNeumann_mid
 
 inline double& phi_ref(auto* p) { return std::get<0>(p->phiphin); }
 inline double& phin_ref(auto* p) { return std::get<1>(p->phiphin); }
+inline double& phit_ref(auto* p) { return std::get<0>(p->phiphin_t); }
 inline double& phint_ref(auto* p) { return std::get<1>(p->phiphin_t); }
 
 inline double getDirichletPhit(networkPoint* p) { return p->aphiat(0.); }
 inline double getDirichletPhit(networkLine* l) {
   auto [pA, pB] = l->getPoints();
   return 0.5 * (std::get<0>(pA->phiphin_t) + std::get<0>(pB->phiphin_t));
+}
+
+inline double sanitizePhiTInitialGuess(double candidate, double fallback = 0.) {
+  constexpr double sentinel_threshold = 1e20;
+  if (!std::isfinite(candidate) || std::abs(candidate) >= sentinel_threshold)
+    return fallback;
+  return candidate;
 }
 
 // --- 統一テンプレート: setPhiPhinOnFace の per-face 処理 ---
@@ -894,19 +902,27 @@ inline void setPhiPhin_t(std::vector<Network*> WATERS) {
         else
           node->phintOnFace[f] = phint_Neumann(node, f);
       }
+      const double fallback_phit = sanitizePhiTInitialGuess(phit_ref(node), 0.);
       if (node->isMultipleNode) {
         auto it = old_phit_on_face.find(f);
-        node->phitOnFace[f] = (it != old_phit_on_face.end()) ? it->second : 0.;
+        node->phitOnFace[f] = (it != old_phit_on_face.end())
+                                  ? sanitizePhiTInitialGuess(it->second, fallback_phit)
+                                  : fallback_phit;
       } else
-        node->phitOnFace[f] = 0.;
+        node->phitOnFace[f] = fallback_phit;
     }
     if (isDirichletID_BEM(node, f)) {
       node->phitOnFace[f] = getDirichletPhit(node);
+      if (f == nullptr)
+        phit_ref(node) = node->phitOnFace[f];
+      const double fallback_phint = sanitizePhiTInitialGuess(phint_ref(node), 0.);
       if (node->isMultipleNode) {
         auto it = old_phint_on_face.find(f);
-        node->phintOnFace[f] = (it != old_phint_on_face.end()) ? it->second : 0.;
+        node->phintOnFace[f] = (it != old_phint_on_face.end())
+                                   ? sanitizePhiTInitialGuess(it->second, fallback_phint)
+                                   : fallback_phint;
       } else
-        node->phintOnFace[f] = 0.;
+        node->phintOnFace[f] = fallback_phint;
     }
   };
 

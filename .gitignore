@@ -49,6 +49,7 @@ predicates.cxx
 # =========================
 __pycache__/
 *.pyc
+.venv/
 
 # =========================
 # Simulation outputs
