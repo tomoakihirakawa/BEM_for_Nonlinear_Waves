@@ -30,7 +30,7 @@
  *   per fluid: {
  *     name_length: uint32,  name: char[name_length]
  *     num_points: uint32
- *     per point: { X: double[3], phiphin: double[2], phiphin_t: double[2], phi_Dirichlet: double,
+ *     per point: { X: double[3], phiphin: double[2], phiphin_t: double[2],
  *                  num_face_values: uint32,
  *                  per face value: { checkpoint_face_id: int32, phi: double, phin: double, phit: double, phint: double } }
  *     num_faces: uint32
@@ -124,7 +124,7 @@ inline std::string read_string(FILE* fp) {
 // writeCheckpoint
 // ============================================================================
 
-inline void writeCheckpointToPath(const std::filesystem::path& path,
+void writeCheckpointToPath(const std::filesystem::path& path,
                                   int time_step,
                                   double simulation_time,
                                   double dt,
@@ -169,21 +169,18 @@ inline void writeCheckpointToPath(const std::filesystem::path& path,
          write_raw(fp, &X, sizeof(Tddd));
          write_raw(fp, &p->phiphin, sizeof(Tdd));
          write_raw(fp, &p->phiphin_t, sizeof(Tdd));
-         write_val(fp, p->phi_Dirichlet);
-
          std::vector<FaceValueRecord> face_values;
          if (p->isMultipleNode) {
-            face_values.reserve(p->phiOnFace.size());
-            for (const auto& [f, phi] : p->phiOnFace) {
+            face_values.reserve(p->dofs.size());
+            for (const auto& [f, d] : p->dofs) {
+               if (f != nullptr && !checkpoint_face_id_of.count(f))
+                  continue;  // stale dof entry — skip
                FaceValueRecord rec;
                rec.checkpoint_face_id = (f == nullptr) ? -1 : checkpoint_face_id_of.at(f);
-               rec.phi = phi;
-               if (auto it = p->phinOnFace.find(f); it != p->phinOnFace.end())
-                  rec.phin = it->second;
-               if (auto it = p->phitOnFace.find(f); it != p->phitOnFace.end())
-                  rec.phit = it->second;
-               if (auto it = p->phintOnFace.find(f); it != p->phintOnFace.end())
-                  rec.phint = it->second;
+               rec.phi = d.phi;
+               rec.phin = d.phin;
+               rec.phit = d.phi_t;
+               rec.phint = d.phin_t;
                face_values.emplace_back(rec);
             }
          }
@@ -240,17 +237,16 @@ inline void writeCheckpointToPath(const std::filesystem::path& path,
             write_raw(fp, &l->corner_midpoint_offset, sizeof(Tddd));
             std::vector<FaceValueRecord> face_values;
             if (l->isMultipleNode) {
-               face_values.reserve(l->phiOnFace.size());
-               for (const auto& [f, phi] : l->phiOnFace) {
+               face_values.reserve(l->dofs.size());
+               for (const auto& [f, d] : l->dofs) {
+                  if (f != nullptr && !checkpoint_face_id_of.count(f))
+                     continue;  // stale dof entry — skip
                   FaceValueRecord rec;
                   rec.checkpoint_face_id = (f == nullptr) ? -1 : checkpoint_face_id_of.at(f);
-                  rec.phi = phi;
-                  if (auto it = l->phinOnFace.find(f); it != l->phinOnFace.end())
-                     rec.phin = it->second;
-                  if (auto it = l->phitOnFace.find(f); it != l->phitOnFace.end())
-                     rec.phit = it->second;
-                  if (auto it = l->phintOnFace.find(f); it != l->phintOnFace.end())
-                     rec.phint = it->second;
+                  rec.phi = d.phi;
+                  rec.phin = d.phin;
+                  rec.phit = d.phi_t;
+                  rec.phint = d.phin_t;
                   face_values.emplace_back(rec);
                }
             }
@@ -321,7 +317,7 @@ inline void writeCheckpointToPath(const std::filesystem::path& path,
              << colorReset << std::endl;
 }
 
-inline void writeCheckpoint(const std::filesystem::path& dir,
+void writeCheckpoint(const std::filesystem::path& dir,
                             int time_step,
                             double simulation_time,
                             double dt,
@@ -348,7 +344,7 @@ struct CheckpointHeader {
    double dt;
 };
 
-inline bool readCheckpointHeader(const std::filesystem::path& filepath, CheckpointHeader& hdr) {
+bool readCheckpointHeader(const std::filesystem::path& filepath, CheckpointHeader& hdr) {
    FILE* fp = std::fopen(filepath.c_str(), "rb");
    if (!fp) return false;
 
@@ -369,7 +365,7 @@ inline bool readCheckpointHeader(const std::filesystem::path& filepath, Checkpoi
 // readCheckpoint
 // ============================================================================
 
-inline std::tuple<int, double, double>
+std::tuple<int, double, double>
 readCheckpoint(const std::filesystem::path& filepath,
                std::vector<Network*>& FluidObject,
                const std::vector<Network*>& RigidBodyObject,
@@ -417,7 +413,6 @@ readCheckpoint(const std::filesystem::path& filepath,
          Tddd X;
          Tdd phiphin;
          Tdd phiphin_t;
-         double phi_Dirichlet;
          std::vector<FaceValueRecord> face_values;
       };
       std::vector<PointRecord> point_records(num_points);
@@ -426,7 +421,6 @@ readCheckpoint(const std::filesystem::path& filepath,
          read_raw(fp, &r.X, sizeof(Tddd));
          read_raw(fp, &r.phiphin, sizeof(Tdd));
          read_raw(fp, &r.phiphin_t, sizeof(Tdd));
-         r.phi_Dirichlet = read_val<double>(fp);
          uint32_t n_face_values = read_val<uint32_t>(fp);
          r.face_values.resize(n_face_values);
          for (uint32_t j = 0; j < n_face_values; ++j) {
@@ -572,22 +566,19 @@ readCheckpoint(const std::filesystem::path& filepath,
          if (!p) continue;
          p->phiphin = point_records[i].phiphin;
          p->phiphin_t = point_records[i].phiphin_t;
-         p->phi_Dirichlet = point_records[i].phi_Dirichlet;
          if (!point_records[i].face_values.empty()) {
             p->isMultipleNode = true;
-            p->phiOnFace.clear();
-            p->phinOnFace.clear();
-            p->phitOnFace.clear();
-            p->phintOnFace.clear();
+            p->dofs.clear();
             for (const auto& fv : point_records[i].face_values) {
                networkFace* f = (fv.checkpoint_face_id < 0) ? nullptr
                                                             : ((static_cast<size_t>(fv.checkpoint_face_id) < restored_faces_by_checkpoint_face_id.size())
                                                                   ? restored_faces_by_checkpoint_face_id[fv.checkpoint_face_id]
                                                                   : nullptr);
-               p->phiOnFace[f] = fv.phi;
-               p->phinOnFace[f] = fv.phin;
-               p->phitOnFace[f] = fv.phit;
-               p->phintOnFace[f] = fv.phint;
+               auto& d = p->dof(f);
+               d.phi = fv.phi;
+               d.phin = fv.phin;
+               d.phi_t = fv.phit;
+               d.phin_t = fv.phint;
             }
          }
       }
@@ -608,25 +599,23 @@ readCheckpoint(const std::filesystem::path& filepath,
             auto it = edge_map.find({pA, pB});
             if (it != edge_map.end()) {
                networkLine* l = it->second;
-               l->X_mid = lr.X_mid;
+               l->setXSingle(lr.X_mid);
                l->phiphin = lr.phiphin;
                l->phiphin_t = lr.phiphin_t;
                l->corner_midpoint_offset = lr.corner_offset;
                if (!lr.face_values.empty()) {
                   l->isMultipleNode = true;
-                  l->phiOnFace.clear();
-                  l->phinOnFace.clear();
-                  l->phitOnFace.clear();
-                  l->phintOnFace.clear();
+                  l->dofs.clear();
                   for (const auto& fv : lr.face_values) {
                      networkFace* f = (fv.checkpoint_face_id < 0) ? nullptr
                                                                   : ((static_cast<size_t>(fv.checkpoint_face_id) < restored_faces_by_checkpoint_face_id.size())
                                                                         ? restored_faces_by_checkpoint_face_id[fv.checkpoint_face_id]
                                                                         : nullptr);
-                     l->phiOnFace[f] = fv.phi;
-                     l->phinOnFace[f] = fv.phin;
-                     l->phitOnFace[f] = fv.phit;
-                     l->phintOnFace[f] = fv.phint;
+                     auto& d = l->dof(f);
+                     d.phi = fv.phi;
+                     d.phin = fv.phin;
+                     d.phi_t = fv.phit;
+                     d.phin_t = fv.phint;
                   }
                }
             }
@@ -781,7 +770,7 @@ readCheckpoint(const std::filesystem::path& filepath,
 // pruneCheckpoints — keep only the most recent `max_keep` checkpoint files
 // ============================================================================
 
-inline void pruneCheckpoints(const std::filesystem::path& dir, int max_keep) {
+void pruneCheckpoints(const std::filesystem::path& dir, int max_keep) {
    if (max_keep <= 0) return; // 0 = keep all
 
    std::regex pattern(R"(checkpoint_(\d+)\.bin)");

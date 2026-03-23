@@ -11,9 +11,18 @@
 // Format: {lambda0, lambda1, lambda2, weight}
 // Weights are normalized so that sum(weights) = 0.5 (= triangle reference area)
 //
+// Usage: ∫∫_T f dA = |J| * Σ wᵢ f(λᵢ),  where |J| = |Cross(X1-X0, X2-X0)|
+//   (no extra 0.5 factor needed — it is already in the weights)
+//
 // Source: Dunavant, "High Degree Efficient Symmetrical Gaussian Quadrature
 // Rules for the Triangle", IJNME 21, 1129-1148 (1985).
 // Weights from Burkardt's tables (sum=1.0 convention) are halved to match sum=0.5.
+//
+// BEM kernel benchmark results (G=1/4πr, ∂G/∂n on flat triangular elements):
+//   Non-singular faces (r/h > 2): D6 matches GW11x11 (121-pt) reference
+//   Near-singular faces (r/h ~ 1): D7+ needed for <0.1% relative error
+//   Singular faces (target is a vertex): Dunavant alone is insufficient;
+//     use Duffy transform or analytical integration
 
 // D1: 1-point centroid rule (degree 1, error order n=2)
 static constexpr std::array<std::array<double, 4>, 1> __dunavant_p2m_1__ = {{

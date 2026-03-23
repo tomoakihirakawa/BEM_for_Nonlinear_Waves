@@ -5,86 +5,115 @@
 #include <cstring>
 #include <limits>
 
+namespace {
+
+using ContactFaceCandidate = std::tuple<networkFace*, Tddd, double>;
+
+constexpr int max_contact_faces = 10;
+constexpr double normal_angle_diff_detection_range = 60 * M_PI / 180;
+
+double contactAngleThreshold(const double distance, const double contact_range) {
+  const auto max_deg = 90.;
+  const auto min_deg = 30.;
+  const auto r = std::abs(distance) / contact_range;
+  auto deg = max_deg - (max_deg - min_deg) * r;
+  deg = std::clamp(deg, min_deg, max_deg);
+  return M_PI * deg / 180.;
+}
+
+std::vector<ContactFaceCandidate> collectBroadPhaseCandidates(const ContactDetectable& detectable,
+                                                             const std::vector<Network*>& objects,
+                                                             const bool include_self_network,
+                                                             const std::vector<networkFace*>& check_faces) {
+  const auto& pos = detectable.getPosition();
+  std::vector<ContactFaceCandidate> candidates;
+  for (const auto& object : objects) {
+    object->BucketSurfaces.apply(pos, detectable.contact_range, [&](networkFace* const& f) {
+      if (!include_self_network && f->getNetwork() == detectable.getNetwork())
+        return;
+      if (std::ranges::any_of(candidates, [&](const auto& candidate) { return f == std::get<0>(candidate); }))
+        return;
+      const auto f_vertices = ToX(f);
+      const auto Y = Nearest(pos, f_vertices);
+      const auto distance = Norm(Y - pos);
+      if (detectable.contact_range < distance)
+        return;
+      const bool any_close_normal = std::ranges::any_of(check_faces, [&](const auto& F) {
+        return isFacing(F->normal, f_vertices, M_PI / 2);
+      });
+      if (any_close_normal)
+        candidates.emplace_back(f, Y, distance);
+    });
+  }
+  std::stable_sort(candidates.begin(), candidates.end(), [](const auto& a, const auto& b) { return std::get<2>(a) < std::get<2>(b); });
+  return candidates;
+}
+
+std::vector<ContactFaceCandidate> selectNarrowPhaseCandidates(const ContactDetectable& detectable,
+                                                              const std::vector<networkFace*>& check_faces,
+                                                              const std::vector<ContactFaceCandidate>& candidates) {
+  std::vector<bool> keep(candidates.size(), true);
+
+  for (size_t i = 0; i < candidates.size(); ++i) {
+    if (!keep[i])
+      continue;
+
+    const auto [fi, _, distance] = candidates[i];
+    const auto angle = contactAngleThreshold(distance, detectable.contact_range);
+    if (std::ranges::none_of(check_faces, [&](const auto& f) { return isFlat(fi->normal, -f->normal, angle); })) {
+      keep[i] = false;
+      continue;
+    }
+
+    for (size_t j = i + 1; j < candidates.size(); ++j) {
+      if (!keep[j])
+        continue;
+      const auto [fj, __, ___] = candidates[j];
+      if (isFlat(fi->normal, fj->normal, M_PI / 180))
+        keep[j] = false;
+    }
+  }
+
+  std::vector<ContactFaceCandidate> filtered;
+  filtered.reserve(std::min(candidates.size(), static_cast<size_t>(max_contact_faces)));
+  for (size_t i = 0; i < candidates.size(); ++i) {
+    if (!keep[i])
+      continue;
+    filtered.emplace_back(candidates[i]);
+    if (filtered.size() >= max_contact_faces)
+      break;
+  }
+  return filtered;
+}
+
+void mapBoundaryFacesToNearestContactFaces(ContactDetectable& detectable,
+                                           const std::vector<networkFace*>& surfaces,
+                                           const std::vector<ContactFaceCandidate>& contact_faces) {
+  for (const auto& f : surfaces) {
+    auto& d = detectable.dof(f);
+    d.contact_opponent_faces.clear();
+    for (const auto& F_X : contact_faces) {
+      auto* contact_face = std::get<0>(F_X);
+      if (isFlat(f->normal, contact_face->normal, normal_angle_diff_detection_range) ||
+          isFlat(f->normal, -contact_face->normal, normal_angle_diff_detection_range)) {
+        d.contact_opponent_faces.push_back(contact_face);
+      }
+    }
+  }
+}
+
+}  // namespace
+
 /* -------------------------------------------------------------------------- */
 /*                  ContactDetectable::addContactFaces                        */
 /* -------------------------------------------------------------------------- */
 
 void ContactDetectable::addContactFaces(const std::vector<Network*>& objects, bool include_self_network) {
-  const auto& pos = this->getPosition();
   auto check_faces = this->getFacesForContactCheck();
   auto surfaces = this->getBoundaryFaces();
-
-  // 1. Collect candidate contact faces within contact_range
-  std::vector<std::tuple<networkFace*, Tddd, double>> F_cX;
-  for (const auto& object : objects) {
-    object->BucketSurfaces.apply(pos, this->contact_range, [&](networkFace* const& f) {
-      if (!include_self_network && f->getNetwork() == this->getNetwork())
-        return;
-      if (std::ranges::any_of(F_cX, [&](const auto& F) { return f == std::get<0>(F); }))
-        return;
-      auto f_vertices = ToX(f);
-      auto Y = Nearest(pos, f_vertices);
-      if (this->contact_range < Norm(Y - pos))
-        return;
-      bool any_close_normal = std::ranges::any_of(check_faces, [&](const auto& F) {
-        return isFacing(F->normal, f_vertices, M_PI / 2);
-      });
-      if (any_close_normal)
-        F_cX.emplace_back(f, Y, Norm(Y - pos));
-    });
-  }
-
-  std::stable_sort(F_cX.begin(), F_cX.end(), [](const auto& a, const auto& b) { return std::get<2>(a) < std::get<2>(b); });
-
-  std::vector<bool> F_cX_flag(F_cX.size(), true);
-
-  auto angle = [&](double distance) {
-    auto max_deg = 90.;
-    auto min_deg = 30.;
-    auto r = std::abs(distance) / this->contact_range;
-    auto deg = max_deg - (max_deg - min_deg) * r;
-    deg = std::clamp(deg, min_deg, max_deg);
-    return M_PI * deg / 180.;
-  };
-
-  // 2. Filter: keep only faces whose normal opposes one of our check faces, dedup same-direction
-  for (size_t i = 0; i < F_cX.size(); ++i) {
-    if (F_cX_flag[i]) {
-      auto [fi, _, distance] = F_cX[i];
-      if (std::ranges::none_of(check_faces, [&](const auto& f) { return isFlat(fi->normal, -f->normal, angle(distance)); })) {
-        F_cX_flag[i] = false;
-        continue;
-      }
-      for (size_t j = i + 1; j < F_cX.size(); ++j)
-        if (F_cX_flag[j]) {
-          auto [fj, _2, __] = F_cX[j];
-          if (isFlat(fi->normal, fj->normal, M_PI / 180))
-            F_cX_flag[j] = false;
-        }
-    }
-  }
-
-  // 3. Store filtered results
-  const int max_contact_faces = 10;
-  std::vector<std::tuple<networkFace*, Tddd, double>> F_cX_sorted;
-  for (size_t i = 0; i < F_cX.size(); ++i) {
-    if (F_cX_flag[i])
-      F_cX_sorted.emplace_back(F_cX[i]);
-    if (F_cX_sorted.size() >= max_contact_faces)
-      break;
-  }
-  this->ContactFaces = F_cX_sorted;
-
-  // 4. Map each boundary face to its nearest contact face
-  const double normal_angle_diff_detection_range = 60 * M_PI / 180;
-  this->f_nearestContactFaces.clear();
-  for (const auto& f : surfaces)
-    for (const auto& F_X : this->ContactFaces) {
-      if (isFlat(f->normal, std::get<0>(F_X)->normal, normal_angle_diff_detection_range) || isFlat(f->normal, -std::get<0>(F_X)->normal, normal_angle_diff_detection_range)) {
-        f_nearestContactFaces[f] = F_X;
-        break;
-      }
-    }
+  const auto broad_phase = collectBroadPhaseCandidates(*this, objects, include_self_network, check_faces);
+  const auto narrow_phase = selectNarrowPhaseCandidates(*this, check_faces, broad_phase);
+  mapBoundaryFacesToNearestContactFaces(*this, surfaces, narrow_phase);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -169,7 +198,7 @@ void Network::makeBuckets(const double spacing) {
 void Network::makeBucketTetras(double spacing) {
   if (spacing > 1E+10)
     spacing = this->getScale() / 10.;
-  std::cout << this->getName() << " makeBucketTetras(" << spacing << ")" << std::endl;
+  VerbosePrint(this->getName(), " makeBucketTetras(", spacing, ")");
   this->setGeometricPropertiesForce();
   this->BucketTetras.clear();
   this->BucketTetras.initialize(this->scaledBounds(expand_bounds), spacing);
@@ -195,24 +224,24 @@ void Network::makeBucketTetras(double spacing) {
     }
   }
   this->BucketTetras.setVector();
-  std::cout << this->getName() << " makeBucketTetras done" << std::endl;
+  VerbosePrint(this->getName(), " makeBucketTetras done");
 };
 
 /*面は点と違って，複数のバケツ（セル）と接することがある*/
 void Network::makeBucketFaces(double spacing) {
   if (spacing > 1E+10)
     spacing = this->getScale() / 10.;
-  std::cout << this->getName() << " makeBucketFaces(" << spacing << ")" << std::endl;
+  VerbosePrint(this->getName(), " makeBucketFaces(", spacing, ")");
   this->setGeometricPropertiesForce();
-  std::cout << "setGeometricProperties done" << std::endl;
+  VerbosePrint("setGeometricProperties done");
   this->BucketFaces.clear();
-  std::cout << "BucketFaces.clear done" << std::endl;
+  VerbosePrint("BucketFaces.clear done");
   this->BucketSurfaces.clear();
-  std::cout << "BucketSurfaces.clear done" << std::endl;
+  VerbosePrint("BucketSurfaces.clear done");
   this->BucketFaces.initialize(this->scaledBounds(expand_bounds), spacing);
-  std::cout << "BucketFaces.initialize done" << std::endl;
+  VerbosePrint("BucketFaces.initialize done");
   this->BucketSurfaces.initialize(this->scaledBounds(expand_bounds), spacing);
-  std::cout << "BucketSurfaces.initialize done" << std::endl;
+  VerbosePrint("BucketSurfaces.initialize done");
 
   auto insert = [&spacing](networkFace* f, Buckets<networkFace*>& bucket) {
     //! add extra points to make sure that the face is included in the bucket
@@ -230,25 +259,26 @@ void Network::makeBucketFaces(double spacing) {
     if (f->BoundaryQ())
       insert(f, this->BucketSurfaces);
   }
-  std::cout << "insert done" << std::endl;
+  VerbosePrint("insert done");
   this->BucketFaces.setVector();
-  std::cout << "BucketFaces.setVector done" << std::endl;
+  VerbosePrint("BucketFaces.setVector done");
   this->BucketSurfaces.setVector();
-  std::cout << "BucketSurfaces.setVector done" << std::endl;
-  std::cout << this->getName() << " makeBucketFaces done" << std::endl;
+  VerbosePrint("BucketSurfaces.setVector done");
+  VerbosePrint(this->getName(), " makeBucketFaces done");
 };
 
 void Network::makeBucketPoints(double spacing) {
   TimeWatch tw;
   if (spacing > 1E+10)
     spacing = this->getScale() / 10.;
-  std::cout << this->getName() << " makeBucketPoints(" << spacing << ")" << std::endl;
+  VerbosePrint(this->getName(), " makeBucketPoints(", spacing, ")");
   this->last_makeBucketPoints_spacing = spacing;
   this->setGeometricPropertiesForce();
   this->BucketPoints.initialize_add(this->scaledBounds(expand_bounds), spacing, this->getPoints());
-  std::cout << green << "BucketPoints.data1D.size() = " << this->BucketPoints.data1D.size() << colorReset << std::endl;
+  VerbosePrint(green, "BucketPoints.data1D.size() = ", this->BucketPoints.data1D.size(), colorReset);
   this->BucketPoints.setVector();
-  std::cout << this->getName() << " makeBucketPoints done" << Blue << " Elapsed time: " << Red << tw() << colorReset << " s\n";
+  if (bem_verbose())
+    std::cout << this->getName() << " makeBucketPoints done" << Blue << " Elapsed time: " << Red << tw() << colorReset << " s\n";
 };
 
 //! ------------------------------------------------------ */
@@ -458,7 +488,13 @@ void Network::applyTransformations(const JSON& json) {
   if (json.find("ignore")) {
     this->IGNORE = stob(json.at("ignore"))[0];
   }
-  if (json.find("rotate")) {
+  // "rotation" [x, y, z, angle] format (used by GUI and BEM_inputfile_reader)
+  // Legacy "rotate" [angle, x, y, z] format also supported for backward compatibility
+  if (json.find("rotation")) {
+    auto rot = stod(json()["rotation"]);
+    if (rot.size() >= 4)
+      this->rotate(rot[3], Tddd{rot[0], rot[1], rot[2]});
+  } else if (json.find("rotate")) {
     auto rotate = stod(json()["rotate"]);
     if (rotate.size() > 1)
       this->rotate(rotate[0], Tddd{rotate[1], rotate[2], rotate[3]});
@@ -470,11 +506,15 @@ void Network::applyTransformations(const JSON& json) {
     else
       this->scale(scale[0]);
   }
-  if (json.find("translate")) {
-    auto translate = stod(json.at("translate"));
-    if (translate.size() > 1)
-      this->translate({translate[0], translate[1], translate[2]});
-    resetInitialX();
+  // "translation" (used by GUI) or legacy "translate"
+  {
+    const char* tr_key = json.find("translation") ? "translation" : (json.find("translate") ? "translate" : nullptr);
+    if (tr_key) {
+      auto tr = stod(json.at(tr_key));
+      if (tr.size() >= 3)
+        this->translate({tr[0], tr[1], tr[2]});
+      resetInitialX();
+    }
   }
 
   if (json.find("radius"))
@@ -501,12 +541,22 @@ void Network::applyTransformations(const JSON& json) {
     this->COM = this->initial_center_of_mass = Tddd{stod(json.at("COM"))[0], stod(json.at("COM"))[1], stod(json.at("COM"))[2]};
 
   // Set isFixed and adjust inertia accordingly
-  if (json.find("isFixed")) {
-    auto is_fixed = stob(json.at("isFixed"));
-    for (auto i = 0; i < is_fixed.size(); ++i) {
-      this->isFixed[i] = is_fixed[i];
-      if (is_fixed[i])
-        this->inertia[i] = 1E+20;
+  // 後方互換: "fixed" キーも受け入れる（"isFixed" を優先）
+  {
+    const char* fixed_key = json.find("isFixed") ? "isFixed" : (json.find("fixed") ? "fixed" : nullptr);
+    if (fixed_key) {
+      auto is_fixed = stob(json.at(fixed_key));
+      if (is_fixed.size() == 1) {
+        this->isFixed.fill(is_fixed[0]);
+        if (is_fixed[0])
+          this->inertia.fill(1E+20);
+      } else {
+        for (auto i = 0; i < is_fixed.size(); ++i) {
+          this->isFixed[i] = is_fixed[i];
+          if (is_fixed[i])
+            this->inertia[i] = 1E+20;
+        }
+      }
     }
   }
 
@@ -560,7 +610,7 @@ std::unordered_set<networkPoint*> Network::getPointsNeumann() const {
   std::unordered_set<networkPoint*> ret;
   ret.reserve(this->Points.size());
   for (const auto& p : this->Points)
-    if (p->Neumann)
+    if (!p->getFacesNeumann().empty())
       ret.emplace(p);
   return ret;
 };
@@ -568,7 +618,7 @@ std::unordered_set<networkPoint*> Network::getPointsDirichlet() const {
   std::unordered_set<networkPoint*> ret;
   ret.reserve(this->Points.size());
   for (const auto& p : this->Points)
-    if (p->Dirichlet)
+    if (!p->getFacesDirichlet().empty())
       ret.emplace(p);
   return ret;
 };
@@ -880,8 +930,10 @@ void Network::setGeometricPropertiesImpl() {
     } else {
       CoordinateBounds::setBounds(Tddd{{0., 0., 0.}});
     }
+  } catch (const error_message&) {
+    throw;
   } catch (const std::exception& e) {
-    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "Error in Network::setGeometricPropertiesForce()");
+    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "Error in Network::setGeometricPropertiesForce(): " + std::string(e.what()));
   }
 };
 
@@ -1186,9 +1238,10 @@ void Network::setFaces(const VV_i& f_v, const V_netPp& points) {
         throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, ss.str());
       }
     }
-  } catch (std::exception& e) {
-    std::cerr << e.what() << colorReset << std::endl;
-    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "");
+  } catch (const error_message&) {
+    throw;
+  } catch (const std::exception& e) {
+    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, e.what());
   };
   this->setGeometricPropertiesForce();
 };
@@ -1209,9 +1262,10 @@ void Network::setLines(const VV_i& l_v, const V_netPp& points) {
         }
       }
     }
-  } catch (std::exception& e) {
-    std::cerr << e.what() << colorReset << std::endl;
-    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "");
+  } catch (const error_message&) {
+    throw;
+  } catch (const std::exception& e) {
+    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, e.what());
   };
   this->setGeometricPropertiesForce();
 };
@@ -1720,11 +1774,9 @@ std::vector<netL*> link(const V_netPp& obj, Network* net) {
     }
     return ret;
   } catch (const error_message& e) {
-    Print(obj);
-    if (DuplicateFreeQ(obj))
-      throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "no duplication.....???");
-    else
-      throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "duplication found!");
+    std::cerr << Red << "[link] diagnostic: obj=" << obj << colorReset << '\n';
+    std::cerr << Red << "[link] " << (DuplicateFreeQ(obj) ? "no duplication...???" : "duplication found!") << colorReset << '\n';
+    throw;
   }
 };
 netL* unlink(netP* obj, netP* obj_) {
@@ -1962,9 +2014,10 @@ netF* genFace(Network* const net, netL* const l0, netL* const l1, netL* const l2
       ss << "{l0,l1,l2} = {" << l0 << "," << l1 << "," << l2 << "}";
       throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, ss.str());
     }
-  } catch (std::exception& e) {
-    std::cerr << e.what() << colorReset << std::endl;
-    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "");
+  } catch (const error_message&) {
+    throw;
+  } catch (const std::exception& e) {
+    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, e.what());
   };
 };
 
@@ -2051,9 +2104,10 @@ std::tuple<bool, networkTetra*> genTetra(Network* const net, netP* const p0, net
       }
     } else
       throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "contradictions");
-  } catch (std::exception& e) {
-    std::cerr << e.what() << colorReset << std::endl;
-    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "");
+  } catch (const error_message&) {
+    throw;
+  } catch (const std::exception& e) {
+    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, e.what());
   }
 };
 

@@ -2,12 +2,208 @@
 #define BEM_calculateVelocities_H
 
 #include "BEM_BoundaryValues.hpp"
+#include "BEM_midpoint_debug.hpp"
 #include "Network.hpp"
 #include "minMaxOfFunctions.hpp"
+#include <filesystem>
 
 //$ -------------------------------------------------------------------------- */
 //$                         calculateVecToSurface                              */
 //$ -------------------------------------------------------------------------- */
+
+inline void writeNodeRelocationQuadraticDebugVTU(
+    const std::filesystem::path& filename,
+    const V_netFp& faces,
+    const std::function<Tddd(const networkPoint*)>& point_position_of,
+    const std::unordered_map<networkPoint*, Tddd>& point_correction,
+    const std::unordered_map<networkPoint*, Tddd>& point_nearest,
+    const std::unordered_map<networkLine*, Tddd>& line_correction,
+    const std::unordered_map<networkLine*, Tddd>& line_nearest,
+    const double stage_id) {
+  FILE* fp = fopen(filename.string().c_str(), "wb");
+  if (!fp)
+    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, filename.string() + " can not be opened");
+
+  struct DebugPoint {
+    Tddd position;
+    Tddd correction;
+    Tddd nearest;
+  };
+
+  std::vector<DebugPoint> all_points;
+  all_points.reserve(faces.size() * 6);
+
+  for (const auto* f : faces) {
+    auto [p0, l0, p1, l1, p2, l2] = f->PLPLPL;
+
+    auto push_vertex = [&](networkPoint* p) {
+      const auto pos = point_position_of(p);
+      const auto it_corr = point_correction.find(p);
+      const auto it_near = point_nearest.find(p);
+      all_points.push_back({pos,
+                            (it_corr != point_correction.end()) ? it_corr->second : Tddd{0., 0., 0.},
+                            (it_near != point_nearest.end()) ? it_near->second : Tddd{0., 0., 0.}});
+    };
+    auto push_midpoint = [&](networkLine* l) {
+      auto [pa, pb] = l->getPoints();
+      const auto pos = 0.5 * (point_position_of(pa) + point_position_of(pb));
+      const auto it_corr = line_correction.find(l);
+      const auto it_near = line_nearest.find(l);
+      all_points.push_back({pos,
+                            (it_corr != line_correction.end()) ? it_corr->second : Tddd{0., 0., 0.},
+                            (it_near != line_nearest.end()) ? it_near->second : Tddd{0., 0., 0.}});
+    };
+
+    push_vertex(p0);
+    push_vertex(p1);
+    push_vertex(p2);
+    push_midpoint(l0);
+    push_midpoint(l1);
+    push_midpoint(l2);
+  }
+
+  fprintf(fp, "<?xml version='1.0' encoding='UTF-8'?>\n");
+  fprintf(fp, "<VTKFile xmlns='VTK' byte_order='LittleEndian' version='0.1' type='UnstructuredGrid'>\n");
+  fprintf(fp, "<UnstructuredGrid>\n");
+  fprintf(fp, "<Piece NumberOfCells='%d' NumberOfPoints='%d'>\n", (int)faces.size(), (int)all_points.size());
+
+  fprintf(fp, "<Points>\n");
+  fprintf(fp, "<DataArray NumberOfComponents='3' type='Float32' Name='Position' format='ascii'>\n");
+  for (const auto& p : all_points)
+    fprintf(fp, "%s %s %s ",
+            NumtoString(std::get<0>(p.position)).c_str(),
+            NumtoString(std::get<1>(p.position)).c_str(),
+            NumtoString(std::get<2>(p.position)).c_str());
+  fprintf(fp, "\n</DataArray>\n");
+  fprintf(fp, "</Points>\n");
+
+  fprintf(fp, "<PointData>\n");
+
+  fprintf(fp, "<DataArray NumberOfComponents='1' type='Float32' Name='stage' format='ascii'>\n");
+  for (std::size_t i = 0; i < all_points.size(); ++i)
+    fprintf(fp, "%s ", NumtoString(stage_id).c_str());
+  fprintf(fp, "\n</DataArray>\n");
+
+  auto write_vec = [&](const char* name, const auto getter) {
+    fprintf(fp, "<DataArray NumberOfComponents='3' type='Float32' Name='%s' format='ascii'>\n", name);
+    for (const auto& p : all_points) {
+      const auto v = getter(p);
+      fprintf(fp, "%s %s %s ",
+              NumtoString(std::get<0>(v)).c_str(),
+              NumtoString(std::get<1>(v)).c_str(),
+              NumtoString(std::get<2>(v)).c_str());
+    }
+    fprintf(fp, "\n</DataArray>\n");
+  };
+  write_vec("correction", [](const auto& p) { return p.correction; });
+  write_vec("vectorToNextSurface", [](const auto& p) { return p.nearest; });
+
+  fprintf(fp, "</PointData>\n");
+
+  fprintf(fp, "<Cells>\n");
+  fprintf(fp, "<DataArray type='Int32' Name='connectivity' format='ascii'>\n");
+  for (int i = 0; i < (int)faces.size(); ++i)
+    fprintf(fp, "%d %d %d %d %d %d ", 6 * i + 0, 6 * i + 1, 6 * i + 2, 6 * i + 3, 6 * i + 4, 6 * i + 5);
+  fprintf(fp, "\n</DataArray>\n");
+  fprintf(fp, "<DataArray type='Int32' Name='offsets' format='ascii'>\n");
+  for (int i = 0; i < (int)faces.size(); ++i)
+    fprintf(fp, "%d ", 6 * (i + 1));
+  fprintf(fp, "\n</DataArray>\n");
+  fprintf(fp, "<DataArray type='UInt8' Name='types' format='ascii'>\n");
+  for (std::size_t i = 0; i < faces.size(); ++i)
+    fprintf(fp, "22 ");
+  fprintf(fp, "\n</DataArray>\n");
+  fprintf(fp, "</Cells>\n");
+
+  fprintf(fp, "</Piece>\n");
+  fprintf(fp, "</UnstructuredGrid>\n");
+  fprintf(fp, "</VTKFile>\n");
+  fclose(fp);
+}
+
+inline void logNodeRelocationMidpointStats(
+    const int steps,
+    const std::unordered_map<networkLine*, Tddd>& midpoint_line_nearest_raw,
+    const std::unordered_map<networkLine*, Tddd>& midpoint_line_correction,
+    const std::vector<std::tuple<networkLine*, networkPoint*, Tddd, networkPoint*, Tddd>>& linear_midpoint_endpoint_corrections,
+    const std::vector<Tddd>& midpoint_stage_delta) {
+  std::size_t line_nearest_nonzero = 0, line_corr_nonzero = 0, penaltyA_nonzero = 0, penaltyB_nonzero = 0, point_delta_nonzero = 0;
+  double line_nearest_sum = 0., line_nearest_max = 0.;
+  double line_corr_sum = 0., line_corr_max = 0.;
+  double penaltyA_sum = 0., penaltyA_max = 0.;
+  double penaltyB_sum = 0., penaltyB_max = 0.;
+  double point_delta_sum = 0., point_delta_max = 0.;
+
+  for (const auto& [l, nearest] : midpoint_line_nearest_raw) {
+    const double n = Norm(nearest);
+    if (n > 1e-12) {
+      ++line_nearest_nonzero;
+      line_nearest_sum += n;
+      line_nearest_max = std::max(line_nearest_max, n);
+    }
+  }
+  for (const auto& [l, corr] : midpoint_line_correction) {
+    const double n = Norm(corr);
+    if (n > 1e-12) {
+      ++line_corr_nonzero;
+      line_corr_sum += n;
+      line_corr_max = std::max(line_corr_max, n);
+    }
+  }
+  for (const auto& [l, pA, linear_midpoint_penaltyA, pB, linear_midpoint_penaltyB] : linear_midpoint_endpoint_corrections) {
+    const double nA = Norm(linear_midpoint_penaltyA);
+    const double nB = Norm(linear_midpoint_penaltyB);
+    if (nA > 1e-12) {
+      ++penaltyA_nonzero;
+      penaltyA_sum += nA;
+      penaltyA_max = std::max(penaltyA_max, nA);
+    }
+    if (nB > 1e-12) {
+      ++penaltyB_nonzero;
+      penaltyB_sum += nB;
+      penaltyB_max = std::max(penaltyB_max, nB);
+    }
+  }
+  for (const auto& delta : midpoint_stage_delta) {
+    const double n = Norm(delta);
+    if (n > 1e-12) {
+      ++point_delta_nonzero;
+      point_delta_sum += n;
+      point_delta_max = std::max(point_delta_max, n);
+    }
+  }
+
+  auto mean_or_zero = [](const double sum, const std::size_t count) {
+    return count ? sum / static_cast<double>(count) : 0.0;
+  };
+
+  std::cout << "[midpoint debug] iter=" << steps
+            << " lines=" << linear_midpoint_endpoint_corrections.size()
+            << " nearest_nonzero=" << line_nearest_nonzero
+            << " nearest_mean=" << mean_or_zero(line_nearest_sum, line_nearest_nonzero)
+            << " nearest_max=" << line_nearest_max
+            << " corr_nonzero=" << line_corr_nonzero
+            << " corr_mean=" << mean_or_zero(line_corr_sum, line_corr_nonzero)
+            << " corr_max=" << line_corr_max
+            << " penaltyA_nonzero=" << penaltyA_nonzero
+            << " penaltyA_mean=" << mean_or_zero(penaltyA_sum, penaltyA_nonzero)
+            << " penaltyA_max=" << penaltyA_max
+            << " penaltyB_nonzero=" << penaltyB_nonzero
+            << " penaltyB_mean=" << mean_or_zero(penaltyB_sum, penaltyB_nonzero)
+            << " penaltyB_max=" << penaltyB_max
+            << " point_nonzero=" << point_delta_nonzero
+            << " point_mean=" << mean_or_zero(point_delta_sum, point_delta_nonzero)
+            << " point_max=" << point_delta_max
+            << std::endl;
+}
+
+inline void setNodeRelocationStageBuffer(
+    const std::vector<networkPoint*>& points,
+    const std::vector<Tddd>& point_stage_delta,
+    const std::unordered_map<networkLine*, Tddd>&) {
+  for (std::size_t i = 0; i < points.size(); ++i)
+    points[i]->vecToSurface_BUFFER = (i < point_stage_delta.size()) ? point_stage_delta[i] : Tddd{0., 0., 0.};
+}
 
 inline Tddd RK_without_Ubuff(const networkPoint* p) {
   return p->RK_X.getX(p->u_node);
@@ -86,6 +282,8 @@ inline void add_vecToSurface_BUFFER_to_vecToSurface(const auto& p, const double 
 
 /* ---------- midpoint RK helpers ---------- */
 inline Tddd RK_without_Ubuff(const networkLine* l) {
+  if (l->RK_X.steps == 0)
+    return l->X_mid;
   return l->RK_X.getX(l->u_node);
 }
 inline Tddd RK_with_Ubuff(const networkLine* l) {
@@ -95,168 +293,6 @@ inline Tddd RK_with_Ubuff(const networkLine* l) {
   return l->RK_X.getX(U);
 }
 
-struct HermiteLineOwnerFaceInfo {
-  networkFace* face = nullptr;
-  int local_edge = -1;
-  bool reversed = false;
-  Tdd param_mid = {0., 0.};
-};
-
-inline bool hermiteEndpointParams(const HermiteLineOwnerFaceInfo& info, Tdd& param_A, Tdd& param_B) {
-  switch (info.local_edge) {
-    case 0:
-      param_A = {1.0, 0.0};
-      param_B = {0.0, 1.0};
-      break;
-    case 1:
-      param_A = {0.0, 1.0};
-      param_B = {0.0, 0.0};
-      break;
-    case 2:
-      param_A = {0.0, 0.0};
-      param_B = {1.0, 0.0};
-      break;
-    default:
-      return false;
-  }
-  if (info.reversed)
-    std::swap(param_A, param_B);
-  return true;
-}
-
-inline HermiteLineOwnerFaceInfo selectHermiteOwnerFace(const networkLine* l) {
-  HermiteLineOwnerFaceInfo info;
-  if (l == nullptr)
-    return info;
-
-  const auto faces = l->getBoundaryFaces();
-  auto pick_face = [&](auto&& pred) -> networkFace* {
-    for (auto* f : faces)
-      if (f != nullptr && f->isTrueQuadraticElement && pred(f))
-        return f;
-    return nullptr;
-  };
-
-  info.face = pick_face([](const networkFace* f) { return f->Dirichlet; });
-  if (info.face == nullptr)
-    info.face = pick_face([](const networkFace*) { return true; });
-  if (info.face == nullptr)
-    return info;
-
-  auto [pA, pB] = l->getPoints();
-  auto [p0, l0, p1, l1, p2, l2] = info.face->PLPLPL;
-
-  networkPoint* local_start = nullptr;
-  networkPoint* local_end = nullptr;
-  if (l == l0) {
-    info.local_edge = 0;
-    local_start = p0;
-    local_end = p1;
-    info.param_mid = {0.5, 0.5};
-  } else if (l == l1) {
-    info.local_edge = 1;
-    local_start = p1;
-    local_end = p2;
-    info.param_mid = {0.0, 0.5};
-  } else if (l == l2) {
-    info.local_edge = 2;
-    local_start = p2;
-    local_end = p0;
-    info.param_mid = {0.5, 0.0};
-  } else {
-    info.face = nullptr;
-    return info;
-  }
-
-  if (pA == local_end && pB == local_start)
-    info.reversed = true;
-  else if (!(pA == local_start && pB == local_end))
-    info.face = nullptr;
-
-  return info;
-}
-
-inline Tddd hermiteOwnerFaceEdgeTangent(const HermiteLineOwnerFaceInfo& info, const Tdd& param, const double sign) {
-  if (info.face == nullptr)
-    return {0., 0., 0.};
-
-  auto [p0, l0, p1, l1, p2, l2] = info.face->PLPLPL;
-  const std::array<Tddd, 6> X6 = {
-      RK_with_Ubuff(p0), RK_with_Ubuff(p1), RK_with_Ubuff(p2),
-      RK_without_Ubuff(l0), RK_without_Ubuff(l1), RK_without_Ubuff(l2)};
-
-  const auto dN_dt0 = D_TriShape<6, 1, 0>(param[0], param[1]);
-  const auto dN_dt1 = D_TriShape<6, 0, 1>(param[0], param[1]);
-  const Tddd dX_dt0 = Dot(dN_dt0, X6);
-  const Tddd dX_dt1 = Dot(dN_dt1, X6);
-
-  Tddd dX_ds_local = {0., 0., 0.};
-  switch (info.local_edge) {
-    case 0:
-      dX_ds_local = -dX_dt0 + dX_dt1;
-      break;
-    case 1:
-      dX_ds_local = -dX_dt1;
-      break;
-    case 2:
-      dX_ds_local = dX_dt0;
-      break;
-    default:
-      break;
-  }
-  const Tddd tangent = sign * dX_ds_local;
-  if (!(Norm(tangent) > 1e-14) || !isFinite(tangent))
-    return {0., 0., 0.};
-  return tangent;
-}
-
-inline Tddd cubicHermiteMidpointFromOwnerFace(const networkLine* l) {
-  auto [pA, pB] = l->getPoints();
-  const Tddd XA = RK_with_Ubuff(pA);
-  const Tddd XB = RK_with_Ubuff(pB);
-  const Tddd linear_mid = 0.5 * (XA + XB);
-  const Tddd edge = XB - XA;
-  const double edge_len = Norm(edge);
-  if (!(edge_len > 1e-14) || !isFinite(edge))
-    return linear_mid;
-
-  Tddd TA = edge;
-  Tddd TB = edge;
-  const auto owner = selectHermiteOwnerFace(l);
-  Tdd param_A = {0., 0.}, param_B = {0., 0.};
-  if (owner.face != nullptr && hermiteEndpointParams(owner, param_A, param_B)) {
-    const double sign = owner.reversed ? -1.0 : 1.0;
-    const auto face_tangent_A = hermiteOwnerFaceEdgeTangent(owner, param_A, sign);
-    const auto face_tangent_B = hermiteOwnerFaceEdgeTangent(owner, param_B, sign);
-    if (Norm(face_tangent_A) > 1e-14 && isFinite(face_tangent_A))
-      TA = face_tangent_A;
-    if (Norm(face_tangent_B) > 1e-14 && isFinite(face_tangent_B))
-      TB = face_tangent_B;
-  } else {
-    auto tangent_from_normal = [&](const networkPoint* p) {
-      Tddd normal = RK_with_Ubuff_Normal(p);
-      if (!isFinite(normal) || !(Norm(normal) > 1e-14))
-        return edge;
-      Tddd tangent = edge - Dot(edge, normal) * normal;
-      if (!(Norm(tangent) > 1e-14) || !isFinite(tangent))
-        tangent = edge;
-      return tangent;
-    };
-    TA = tangent_from_normal(pA);
-    TB = tangent_from_normal(pB);
-  }
-
-  Tddd X_mid = linear_mid + 0.125 * (TA - TB);
-  if (!isFinite(X_mid))
-    return linear_mid;
-
-  const Tddd offset = X_mid - linear_mid;
-  const double offset_norm = Norm(offset);
-  const double max_offset = 0.5 * edge_len;
-  if (offset_norm > max_offset && std::isfinite(offset_norm) && max_offset > 0.)
-    X_mid = linear_mid + (max_offset / offset_norm) * offset;
-  return X_mid;
-}
 
 // mooringで利用
 inline std::array<double, 3> nextPositionOnBody(Network* net, networkPoint* p) {
@@ -496,7 +532,11 @@ template <typename Entity>
 inline Tddd vectorToNextSurface(Entity entity, Tddd X_shifted) {
 
   try {
-    if (!(entity->Dirichlet || entity->Neumann || entity->CORNER))
+    const bool has_dirichlet_state = hasAnyDirichletBoundaryState(entity);
+    const bool has_neumann_state = hasAnyNeumannBoundaryState(entity);
+    const bool is_mixed_state = has_dirichlet_state && has_neumann_state;
+
+    if (!has_dirichlet_state && !has_neumann_state)
       return {0., 0., 0.};
 
     Tddd X_not_shifted = RK_without_Ubuff(entity);
@@ -517,10 +557,10 @@ inline Tddd vectorToNextSurface(Entity entity, Tddd X_shifted) {
 
     //! CORNERは２段階処理する必要がある．まずDirichlet面に張り付く．その後，Neumann面に張り付く．
     //! Dirichlet境界面への接近ベクトルを計算
-    if (entity->Dirichlet || entity->CORNER) {
-
+    if (has_dirichlet_state) {
+      //! Neumann面には後で境界条件が付与されるので問題ない
       for (const auto& f : faces) {
-        if (f->Dirichlet) {
+        if (getNodeFaceBoundaryType(entity, f) == NodeFaceBoundaryType::Dirichlet) {
           Tdd face_param;
           X = NearestOnDirichletFace(X_shifted, f, &face_param);
 
@@ -534,11 +574,11 @@ inline Tddd vectorToNextSurface(Entity entity, Tddd X_shifted) {
       if (closest_face != nullptr) {
         entity->relocation_face = closest_face;
         entity->relocation_param = best_face_param;
-        if (entity->Dirichlet)
+        if (!has_neumann_state)
           return vecToDirichlet;
         X_shifted += vecToDirichlet; // for CORNER, shift the position to the closest Dirichlet surface
       } else {
-        if (entity->Dirichlet)
+        if (!has_neumann_state)
           return {0., 0., 0.};
         vecToDirichlet = {0., 0., 0.};
       }
@@ -560,11 +600,12 @@ inline Tddd vectorToNextSurface(Entity entity, Tddd X_shifted) {
     // ! Neumann境界面への接近ベクトルを計算
     std::vector<T3Tddd> next_triangles;
     int isInContact_pass_count = 0;
-    if (entity->Neumann || entity->CORNER) {
+    if (has_neumann_state) {
 
       const double short_range = 0.01; //@ short_range * radius is the detection range of the structure face
 
-      if (entity->getContactFaces().empty() && entity->penetratedBody != nullptr) {
+      bool has_contact = std::ranges::any_of(entity->dofs, [](const auto& kv) { return !kv.second.contact_opponent_faces.empty(); });
+      if (!has_contact && entity->penetratedBody != nullptr) {
         auto [f, X_nearest] = entity->penetratedBody->Nearest(X_shifted, [&](const networkPoint* p) { return RK_without_Ubuff(p); });
         if (f != nullptr) {
           add_vector(X_nearest - X_shifted, Normalize(X_nearest - X_shifted));
@@ -585,7 +626,7 @@ inline Tddd vectorToNextSurface(Entity entity, Tddd X_shifted) {
 
       if (!Vec_CurrentX012_NextX012.empty()) {
         for (const auto& f : faces)
-          if (f->Neumann) {
+          if (getNodeFaceBoundaryType(entity, f) == NodeFaceBoundaryType::Neumann) {
             for (const auto& [struct_vertex, next_struct_vertex] : Vec_CurrentX012_NextX012) {
               if (!isInContact(X_not_shifted, f->normal, struct_vertex, entity->contact_range))
                 continue;
@@ -610,11 +651,11 @@ inline Tddd vectorToNextSurface(Entity entity, Tddd X_shifted) {
     }
 
     entity->debug_direction_info_count = static_cast<int>(direction_infos.size());
-    entity->debug_contact_faces_count = static_cast<int>(entity->getContactFaces().size());
+    entity->debug_contact_faces_count = static_cast<int>(std::ranges::count_if(entity->dofs, [](const auto& kv) { return !kv.second.contact_opponent_faces.empty(); }));
     entity->debug_isInContact_pass_count = isInContact_pass_count;
 
     if (distances.empty())
-      return (entity->CORNER ? vecToDirichlet : Tddd{0., 0., 0.});
+      return (is_mixed_state ? vecToDirichlet : Tddd{0., 0., 0.});
 
     auto V_opt = optimalVector(distances, directions, {0., 0., 0.});
     if (!next_triangles.empty()) {
@@ -623,12 +664,14 @@ inline Tddd vectorToNextSurface(Entity entity, Tddd X_shifted) {
       V_opt = X_projected - X_shifted;
     }
     // CORNER: Neumann補正後の最終位置でDirichlet面上の(t0,t1)を再計算
-    if (entity->CORNER && closest_face != nullptr) {
+    if (/*entity->CORNER && */ closest_face != nullptr) {
       Tdd updated_param;
       NearestOnDirichletFace(X_shifted + V_opt, closest_face, &updated_param);
       entity->relocation_param = updated_param;
     }
-    return V_opt + (entity->CORNER ? vecToDirichlet : Tddd{0., 0., 0.});
+    return V_opt + (is_mixed_state ? vecToDirichlet : Tddd{0., 0., 0.});
+  } catch (const error_message&) {
+    throw;
   } catch (const std::exception& e) {
     throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, e.what());
   }
@@ -778,16 +821,23 @@ Tddd DistorsionMeasureWeightedSmoothingVector_modified(const networkPoint* p, co
 
 /* -------------------------------------------------------------------------- */
 
-void calculateVecToSurface(const Network& net, const int loop, const double coefIN) {
+void calculateVecToSurface(const Network& net,
+                           const int loop,
+                           const double coefIN,
+                           const std::filesystem::path* debug_output_directory = nullptr) {
   auto points = ToVector(net.getPoints());
   const std::size_t n_points = points.size();
+  const bool enable_stage_debug = loop > 0 && debug_output_directory && !debug_output_directory->empty();
 
   //! 初期化
   for (const auto& p : points) {
-    p->temporary_bool = true;
     p->vecToSurface.fill(0.);
     p->vecToSurface_BUFFER.fill(0.);
     p->vecToSurface_BUFFER_BUFFER.fill(0.);
+  }
+
+  for (const auto& l : net.getBoundaryLines()) {
+    l->vecToSurface.fill(0.);
   }
 
   // 最適化: RK_with_Ubuff結果をキャッシュ
@@ -797,13 +847,9 @@ void calculateVecToSurface(const Network& net, const int loop, const double coef
   // once a point drifts, local element sizes appear larger -> larger allowed shifts -> runaway.
   std::vector<Tddd> base_positions(n_points);
 
-  _Pragma("omp parallel for") for (std::size_t i = 0; i < n_points; ++i)
-      base_positions[i] = RK_without_Ubuff(points[i]);
+  _Pragma("omp parallel for") for (std::size_t i = 0; i < n_points; ++i) base_positions[i] = RK_without_Ubuff(points[i]);
 
-  auto update_cache = [&]() {
-    _Pragma("omp parallel for") for (std::size_t i = 0; i < n_points; ++i)
-        cached_positions[i] = RK_with_Ubuff(points[i]);
-  };
+  auto update_cache = [&]() { _Pragma("omp parallel for") for (std::size_t i = 0; i < n_points; ++i) cached_positions[i] = RK_with_Ubuff(points[i]); };
 
   // ポイントからインデックスへのマップ（隣接点の位置取得用）
   std::unordered_map<const networkPoint*, std::size_t> point_to_index;
@@ -824,6 +870,66 @@ void calculateVecToSurface(const Network& net, const int loop, const double coef
       return base_positions[it->second];
     return RK_without_Ubuff(p); // フォールバック（他のネットワークの点など）
   };
+
+  auto lines = net.getBoundaryLines();
+
+  PVDWriter node_relocation_debug_pvd(((enable_stage_debug ? *debug_output_directory : std::filesystem::path{}) / (net.getName() + "_node_relocation_debug.pvd")).string());
+  auto write_node_relocation_stage = [&](const std::string& stage_name,
+                                         const int stage_id,
+                                         const int iter,
+                                         const double stage_time,
+                                         const auto& position_of,
+                                         const std::vector<Tddd>& stage_delta,
+                                         const std::vector<Tddd>& stage_nearest,
+                                         const std::unordered_map<networkLine*, Tddd>& line_correction) {
+    // stage ごとの補正量を実際の BUFFER に載せる。
+    // debug 出力を切っていても，現在反復の補正量はオブジェクト側に残す。
+    setNodeRelocationStageBuffer(points, stage_delta, line_correction);
+    if (!enable_stage_debug)
+      return;
+    std::unordered_map<networkPoint*, Tddd> point_correction;
+    std::unordered_map<networkPoint*, Tddd> point_nearest;
+    point_correction.reserve(n_points);
+    point_nearest.reserve(n_points);
+    for (std::size_t i = 0; i < n_points; ++i) {
+      point_correction[points[i]] = stage_delta[i];
+      point_nearest[points[i]] = stage_nearest[i];
+    }
+    std::unordered_map<networkLine*, Tddd> line_nearest;
+    line_nearest.reserve(lines.size());
+    for (const auto* l : lines) {
+      auto* mutable_line = const_cast<networkLine*>(l);
+      auto [pA, pB] = l->getPoints();
+      Tddd nearest = vectorToNextSurface(mutable_line, 0.5 * (position_of(pA) + position_of(pB)));
+      if (!isFinite(nearest))
+        nearest.fill(0.);
+      line_nearest[mutable_line] = nearest;
+    }
+    const std::string filename = net.getName() + "_node_relocation_" + std::to_string(iter) + "_" + stage_name + ".vtu";
+    writeNodeRelocationQuadraticDebugVTU(
+        *debug_output_directory / filename,
+        net.getBoundaryFaces(),
+        std::function<Tddd(const networkPoint*)>(position_of),
+        point_correction,
+        point_nearest,
+        line_correction,
+        line_nearest,
+        static_cast<double>(stage_id));
+    node_relocation_debug_pvd.push(filename, stage_time);
+  };
+
+  auto compute_point_stage_vectorToNextSurface = [&](const auto& position_of, std::vector<Tddd>& point_nearest) {
+    if (!enable_stage_debug)
+      return;
+    _Pragma("omp parallel for") for (std::size_t i = 0; i < n_points; ++i) {
+      Tddd nearest = vectorToNextSurface(points[i], position_of(points[i]));
+      if (!isFinite(nearest))
+        nearest.fill(0.);
+      point_nearest[i] = nearest;
+    }
+  };
+
+  /* -------------------------------------------------------------------------- */
 
   auto shiftable_distance = [&](const networkPoint* p, std::size_t idx) -> double {
     double ret = 1E+20;
@@ -853,9 +959,8 @@ void calculateVecToSurface(const Network& net, const int loop, const double coef
   constexpr double convergence_tol = 1e-10; // 全体収束判定の閾値
 
   auto noThroughCondition = [&](const networkPoint* p, Tddd vec) {
-    if (p->Neumann || p->CORNER) {
+    if (p->Neumann || p->CORNER)
       vec = Chop(vec, RK_with_Ubuff_Normal(p));
-    }
     return vec;
   };
 
@@ -864,7 +969,7 @@ void calculateVecToSurface(const Network& net, const int loop, const double coef
   const std::size_t vec_size = n_points * 3;
   AndersonAcceleration<std::vector<double>> anderson(5); // history_size = 5
   const bool enable_anderson = []() {
-    // true quadratic ALE is more sensitive to overshoot in accelerated fixed-point updates.
+    // true quadratic node relocation is more sensitive to overshoot in accelerated fixed-point updates.
     // Keep Anderson off by default there; allow explicit opt-in.
     if (node_relocation_surface == NodeRelocationSurface::true_quadratic) {
       if (const char* env = std::getenv("BEM_ALE_TRUEQ_ANDERSON"))
@@ -893,16 +998,31 @@ void calculateVecToSurface(const Network& net, const int loop, const double coef
   };
 
   std::vector<double> X_curr(vec_size), X_next(vec_size), F(vec_size);
+
+  std::vector<std::tuple<networkLine*, networkPoint*, Tddd, networkPoint*, Tddd>> linear_midpoint_endpoint_corrections; // (line, pA, penaltyA, pB, penaltyB)
+  linear_midpoint_endpoint_corrections.reserve(lines.size());
+  for (const auto* l : lines) {
+    if (l->Neumann || l->CORNER)
+      linear_midpoint_endpoint_corrections.emplace_back(const_cast<networkLine*>(l), l->Point_A, std::array<double, 3>{0., 0., 0.}, l->Point_B, std::array<double, 3>{0., 0., 0.});
+  }
+
   for (auto steps = 0; steps < loop; ++steps) {
     coef = coefIN;
+    std::vector<Tddd> quality_stage_delta(n_points, Tddd{0., 0., 0.});
+    std::vector<Tddd> quality_stage_nearest(n_points, Tddd{0., 0., 0.});
+    std::vector<Tddd> midpoint_stage_delta(n_points, Tddd{0., 0., 0.});
+    std::vector<Tddd> midpoint_stage_nearest(n_points, Tddd{0., 0., 0.});
+    std::vector<Tddd> cling_stage_delta(n_points, Tddd{0., 0., 0.});
+    std::vector<Tddd> cling_stage_nearest(n_points, Tddd{0., 0., 0.});
 
     // 現在のvecToSurfaceを保存
     flattenVecToSurface_into(X_curr);
 
+    /* -------------------------------------------------------------------------- */
+
     // キャッシュを更新
     update_cache();
 
-    /* -------------------------------------------------------------------------- */
     _Pragma("omp parallel for") for (std::size_t i = 0; i < n_points; ++i) {
       const auto& p = points[i];
       auto current_pX = cached_positions[i];
@@ -912,11 +1032,16 @@ void calculateVecToSurface(const Network& net, const int loop, const double coef
       if (v_norm > 1E-12) {
         double shift_limit = coef * shiftable_distance(p, i);
         p->vecToSurface_BUFFER = std::min(v_norm, shift_limit) * Normalize(V);
-      } else {
+      } else
         p->vecToSurface_BUFFER.fill(0.);
-      }
+      quality_stage_delta[i] = p->vecToSurface_BUFFER;
       points[i]->vecToSurface += p->vecToSurface_BUFFER;
     }
+    update_cache();
+    compute_point_stage_vectorToNextSurface([&](const networkPoint* p) { return RK_with_Ubuff(p); }, quality_stage_nearest);
+    write_node_relocation_stage("quality", 0, steps, 3.0 * steps + 0.0, [&](const networkPoint* p) { return RK_without_Ubuff(p) + p->vecToSurface; }, quality_stage_delta, quality_stage_nearest, {});
+
+    /* -------------------------------------------------------------------------- */
 
     // キャッシュを更新（clungSurface計算用）
     update_cache();
@@ -933,10 +1058,16 @@ void calculateVecToSurface(const Network& net, const int loop, const double coef
       double clung_norm = Norm(p->clungSurface);
       if (clung_norm > 1E-12) {
         double shift_limit = shiftable_distance(p, i);
-        p->vecToSurface += std::min(clung_norm, shift_limit) * Normalize(p->clungSurface);
+        cling_stage_delta[i] = std::min(clung_norm, shift_limit) * Normalize(p->clungSurface);
+        p->vecToSurface += cling_stage_delta[i];
       }
       p->clungSurface.fill(0.);
     }
+    update_cache();
+    compute_point_stage_vectorToNextSurface([&](const networkPoint* p) { return RK_with_Ubuff(p); }, cling_stage_nearest);
+    write_node_relocation_stage("cling", 2, steps, 3.0 * steps + 2.0, [&](const networkPoint* p) { return RK_without_Ubuff(p) + p->vecToSurface; }, cling_stage_delta, cling_stage_nearest, {});
+
+    /* -------------------------------------------------------------------------- */
 
     // Anderson acceleration: 残差 F = G(X) - X を計算
     flattenVecToSurface_into(X_next);
@@ -964,11 +1095,15 @@ void calculateVecToSurface(const Network& net, const int loop, const double coef
     /* -------------------------------------------------------------------------- */
   }
 
+  if (enable_stage_debug) {
+    node_relocation_debug_pvd.output();
+  }
+
   /* -------------------------------------------------------------------------- */
-  /*  midpoint ALE: 頂点の品質改善後、midpointを面上にスナッピング               */
+  /*  midpoint relocation: 頂点の品質改善後、midpointを面上にスナッピング         */
   /* -------------------------------------------------------------------------- */
   for (auto* l : net.getBoundaryLines()) {
-    if (std::ranges::none_of(l->getBoundaryFaces(), [](const auto* f) { return f->isTrueQuadraticElement; }))
+    if (!l->hasActiveBieDof())
       continue;
     l->vecToSurface.fill(0.);
     l->clungSurface.fill(0.);
@@ -977,34 +1112,15 @@ void calculateVecToSurface(const Network& net, const int loop, const double coef
   // midpointの面スナッピング: 頂点の補正に追従 + Neumann面制約
   int corner_mid_count = 0, dirichlet_mid_count = 0;
   for (auto* l : net.getBoundaryLines()) {
-    if (std::ranges::none_of(l->getBoundaryFaces(), [](const auto* f) { return f->isTrueQuadraticElement; }))
+    if (!l->hasActiveBieDof())
       continue;
     auto [pA, pB] = l->getPoints();
     auto X_shidted = 0.5 * (RK_with_Ubuff(pA) + RK_with_Ubuff(pB));
-    const bool use_cubic_hermite_midpoint =
-        node_relocation_method == NodeRelocationMethod::interpolation &&
-        interpolation_midpoint_mode == InterpolationMidpointMode::cubic_hermite &&
-        l->Dirichlet && !l->CORNER;
 
-    if (use_cubic_hermite_midpoint) {
-      const auto owner = selectHermiteOwnerFace(l);
-      if (owner.face != nullptr) {
-        l->relocation_face = owner.face;
-        l->relocation_param = owner.param_mid;
-      }
-      const Tddd X_target = cubicHermiteMidpointFromOwnerFace(l);
-      l->clungSurface = X_target - X_shidted;
-      l->vecToSurface = X_target - RK_without_Ubuff(l);
-      if (!isFinite(l->clungSurface))
-        l->clungSurface.fill(0.);
-      if (!isFinite(l->vecToSurface))
-        l->vecToSurface = X_shidted - RK_without_Ubuff(l);
-    } else {
-      l->clungSurface = vectorToNextSurface(l, X_shidted);
-      if (!isFinite(l->clungSurface))
-        l->clungSurface.fill(0.);
-      l->vecToSurface = l->clungSurface + (X_shidted - RK_without_Ubuff(l));
-    }
+    l->clungSurface = vectorToNextSurface(l, X_shidted);
+    if (!isFinite(l->clungSurface))
+      l->clungSurface.fill(0.);
+    l->vecToSurface = l->clungSurface + (X_shidted - RK_without_Ubuff(l));
 
     // Diagnostic: measure how far midpoint is shifted from linear center
     double edge_len = Norm(RK_with_Ubuff(pA) - RK_with_Ubuff(pB));
@@ -1035,11 +1151,17 @@ inline void set_u_potential_BEM(const Network& net) {
   // instead of the linear average of endpoint velocities.
   for (auto* l : net.getBoundaryLines()) {
     auto [pA, pB] = l->getPoints();
-    l->u_potential_BEM = 0.5 * (pA->u_potential_BEM + pB->u_potential_BEM); // default
-    bool has_true_quad = std::ranges::any_of(l->getBoundaryFaces(), [](const auto* f) { return f->isTrueQuadraticElement; });
-    if (has_true_quad)
+    l->u_potential_BEM = 0.5 * (pA->u_potential_BEM + pB->u_potential_BEM); // default: linear
+    if (l->hasActiveBieDof())
       l->u_potential_BEM = gradPhi(l);
   }
+}
+
+inline void set_u_potential_BEM(Network* net) { set_u_potential_BEM(*net); }
+
+inline void set_u_potential_BEM(const std::vector<Network*>& nets) {
+  for (auto* net : nets)
+    set_u_potential_BEM(*net);
 }
 
 inline double DphiDt_at_midpoint(const networkLine* l) {
@@ -1055,16 +1177,25 @@ inline void set_u_total(const Network& net) {
 
   for (auto* l : net.getBoundaryLines()) {
     auto [pA, pB] = l->getPoints();
-    l->u_total = 0.5 * (pA->u_total + pB->u_total); //default
-    bool has_true_quad = std::ranges::any_of(l->getBoundaryFaces(), [](const auto* f) { return f->isTrueQuadraticElement; });
-    if (has_true_quad)
+    l->u_total = 0.5 * (pA->u_total + pB->u_total); // default: linear
+    if (l->hasActiveBieDof())
       l->u_total = l->u_potential_BEM + l->u_omega_VPM;
   }
 }
 
+inline void set_u_total(Network* net) { set_u_total(*net); }
+
+inline void set_u_total(const std::vector<Network*>& nets) {
+  for (auto* net : nets)
+    set_u_total(*net);
+}
+
 /* -------------------------------------------------------------------------- */
 
-inline void setNodeVelocity(const Network& net, const int loop = 0, const double coef = 0.) {
+inline void setNodeVelocity(const Network& net,
+                            const int loop = 0,
+                            const double coef = 0.,
+                            const std::filesystem::path* debug_output_directory = nullptr) {
   for (const auto& p : ToVector(net.getPoints())) {
     p->u_node = p->u_total;
     // CAUTIION : 以下のようにNeuamnnだけことなる時間発展の方法を使うのはよくないようだ．
@@ -1072,6 +1203,9 @@ inline void setNodeVelocity(const Network& net, const int loop = 0, const double
     // CORNERで見られた，内部との若干のズレもこのあたりが原因の可能性がある．
     // if (p->Neumann)
     //   p->u_node = velocity_of_Body(std::get<0>(getEffectiveNearestContactFace(p)), getPosition(p));
+    p->vecToSurface.fill(0.);
+    p->vecToSurface_BUFFER.fill(0.);
+    p->vecToSurface_BUFFER_BUFFER.fill(0.);
   }
 
   for (const auto& l : net.getBoundaryLines()) {
@@ -1083,6 +1217,7 @@ inline void setNodeVelocity(const Network& net, const int loop = 0, const double
     //   if (f)
     //     l->u_node = velocity_of_Body(f, getPosition(l));
     // }
+    l->vecToSurface.fill(0.);
   }
 
   for (const auto& p : net.getPoints()) {
@@ -1101,7 +1236,51 @@ inline void setNodeVelocity(const Network& net, const int loop = 0, const double
   if (loop <= 0 || !(coef > 0.))
     return;
 
-  calculateVecToSurface(net, loop, coef);
+  calculateVecToSurface(net, loop, coef, debug_output_directory);
+
+  // relocation_face / relocation_param を最終位置（Anderson加速後）で再計算
+  // calculateVecToSurface 内では Anderson 加速が relocation_param 設定後に
+  // vecToSurface を変更するため、ここで正しい最終位置から再投影する。
+  // relocation_face も最近面が変わっている可能性があるため再選択する。
+  auto reproject_relocation = [](auto* entity) {
+    const bool has_dirichlet_state = std::ranges::any_of(entity->getBoundaryFaces(), [&](const auto* f) {
+      return getNodeFaceBoundaryType(entity, f) == NodeFaceBoundaryType::Dirichlet;
+    });
+    if (!has_dirichlet_state) {
+      entity->relocation_face = nullptr;
+      entity->relocation_param = {0., 0.};
+      return;
+    }
+    const Tddd target = entity->vecToSurface + RK_without_Ubuff(entity);
+    double best_dist = 1E+20;
+    networkFace* best_face = nullptr;
+    Tdd best_param = {0., 0.};
+    for (auto* f : entity->getBoundaryFaces()) {
+      // Dirichlet-side faces only. Mixed nodes/edges may touch both Dirichlet and
+      // Neumann faces; interpolation parameters must stay on the Dirichlet side.
+      if (f->penetratedBody || getNodeFaceBoundaryType(entity, f) != NodeFaceBoundaryType::Dirichlet)
+        continue;
+      Tdd param;
+      Tddd X_near = NearestOnDirichletFace(target, f, &param);
+      double dist = Norm(X_near - target);
+      if (dist < best_dist) {
+        best_dist = dist;
+        best_face = f;
+        best_param = param;
+      }
+    }
+    if (best_face) {
+      entity->relocation_face = best_face;
+      entity->relocation_param = best_param;
+    } else {
+      entity->relocation_face = nullptr;
+      entity->relocation_param = {0., 0.};
+    }
+  };
+  for (const auto& p : net.getPoints())
+    reproject_relocation(p);
+  for (auto* l : net.getBoundaryLines())
+    reproject_relocation(l);
 
   for (const auto& p : net.getPoints()) {
     const Tddd target = p->vecToSurface + RK_without_Ubuff(p);
@@ -1112,9 +1291,9 @@ inline void setNodeVelocity(const Network& net, const int loop = 0, const double
       p->u_node = isFinite(p->u_total) ? p->u_total : Tddd{0., 0., 0.};
   }
 
-  // midpoint ALE correction: vecToSurface を反映
+  // midpoint relocation correction: vecToSurface を反映
   for (auto* l : net.getBoundaryLines()) {
-    if (std::ranges::none_of(l->getBoundaryFaces(), [](const auto* f) { return f->isTrueQuadraticElement; }))
+    if (!l->hasActiveBieDof())
       continue;
     const Tddd target = l->vecToSurface + RK_without_Ubuff(l);
     const Tddd u_new = l->RK_X.getVectorToReachAtNextTimeQ(target);
@@ -1123,6 +1302,16 @@ inline void setNodeVelocity(const Network& net, const int loop = 0, const double
     else
       l->u_node = isFinite(l->u_total) ? l->u_total : Tddd{0., 0., 0.};
   }
+
+  dumpDebugMidpointLineState(&net, "post-ale-relocation", -1, -1);
+}
+
+inline void setNodeVelocity(const std::vector<Network*>& nets,
+                            const int loop = 0,
+                            const double coef = 0.,
+                            const std::filesystem::path* debug_output_directory = nullptr) {
+  for (auto* net : nets)
+    setNodeVelocity(*net, loop, coef, debug_output_directory);
 }
 
 /* ========================================================================== */

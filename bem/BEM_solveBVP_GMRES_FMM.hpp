@@ -76,8 +76,10 @@ V_d compute_Ax_minus_b(bool is_time_derivative = false) {
       // Near/Far integrals are functions of the target point a (and the current unknown vector),
       // not of the particular (face,id) row. Compute them once per point and reuse for all IDs.
       bool need_integrals = false;
-      for (const auto& [f, i] : a->f2Index) {
-        if (!(a->CORNER && isNeumannID_BEM(a, f))) {
+      for (const auto& [f, d_] : a->dofs) {
+        if (d_.index < 0) continue;
+        const auto i = d_.index;
+        if (!(a->CORNER && isNeumannBieDofKey(a, f))) {
           need_integrals = true;
           break;
         }
@@ -99,11 +101,13 @@ V_d compute_Ax_minus_b(bool is_time_derivative = false) {
       }
       const auto [GPhin_point, GnPhi_point] = near + far;
 
-      for (const auto& [f, i] : a->f2Index) {
-        if (a->CORNER && isNeumannID_BEM(a, f)) {
-          Av[i] = a->phiOnFace_FMM.at(f);
+      for (const auto& [f, d_] : a->dofs) {
+        if (d_.index < 0) continue;
+        const auto i = d_.index;
+        if (a->CORNER && isNeumannBieDofKey(a, f)) {
+          Av[i] = a->dof(f).phi_FMM;
         } else {
-          Av[i] = GPhin_point - (GnPhi_point + diag_coeffs[i] * a->phiOnFace_FMM.at(f));
+          Av[i] = GPhin_point - (GnPhi_point + diag_coeffs[i] * a->dof(f).phi_FMM);
         }
       }
     }
@@ -130,14 +134,16 @@ V_d compute_Ax_minus_b(bool is_time_derivative = false) {
         const auto [GPhin_mid, GnPhi_mid] = near + far;
 
         // Write rows for all DOFs of this midpoint (mirrors vertex f2Index pattern)
-        for (const auto& [f, i] : l->f2Index) {
-          if (i < 0 || i >= static_cast<int>(Av.size()))
+        for (const auto& [f, d_] : l->dofs) {
+          if (d_.index < 0) continue;
+          const auto i = d_.index;
+          if (i >= static_cast<int>(Av.size()))
             continue;
-          if (l->CORNER && isNeumannID_BEM(l, f)) {
+          if (l->CORNER && isNeumannBieDofKey(l, f)) {
             // CORNER constraint row: Av[i] = phi (phi_N = phi_D enforced)
-            Av[i] = l->phiOnFace_FMM.at(f);
+            Av[i] = l->dof(f).phi_FMM;
           } else {
-            Av[i] = GPhin_mid - (GnPhi_mid + diag_coeffs[i] * l->phiOnFace_FMM.at(f));
+            Av[i] = GPhin_mid - (GnPhi_mid + diag_coeffs[i] * l->dof(f).phi_FMM);
           }
         }
       }
@@ -174,13 +180,15 @@ void buildDiagonalPreconditionerForKRing0() {
 
   _Pragma("omp parallel for") for (int k = 0; k < static_cast<int>(points.size()); ++k) {
     auto* p = points[k];
-    for (const auto& [f, i] : p->f2Index) {
+    for (const auto& [f, d_] : p->dofs) {
+      if (d_.index < 0) continue;
+      const auto i = d_.index;
       double diag = 1.0;
 
       // Corner constraint row: A = I on the Neumann ID
-      if (p->CORNER && isNeumannID_BEM(p, f)) {
+      if (p->CORNER && isNeumannBieDofKey(p, f)) {
         diag = 1.0;
-      } else if (isNeumannID_BEM(p, f)) {
+      } else if (isNeumannBieDofKey(p, f)) {
         // Use only the diagonal jump/free-term coefficient (no face integration).
         diag = -diag_coeffs[i];
       } else {
@@ -444,8 +452,8 @@ void buildSparseMatrixForILU() {
 
       auto accumulate_coeff = [&](networkPoint* p, networkFace* integ_f, const double ig, const double ign) {
         const auto key_f = std::get<1>(pf2ID(p, integ_f));
-        const int col_idx = p->f2Index.at(key_f);
-        const bool col_is_neumann = isNeumannID_BEM(p, key_f);
+        const int col_idx = p->dof(key_f).index;
+        const bool col_is_neumann = isNeumannBieDofKey(p, key_f);
         const double val = col_is_neumann ? (-ign) : ig; // G*phin - Gn*phi
         if (val != 0.)
           coeffs[col_idx] += val;
@@ -612,7 +620,7 @@ void buildSparseMatrixForILU() {
               if (col_idx < 0)
                 continue;
               auto lf_key = std::get<1>(lf2ID(face_lines_tq[kk - 3], integ_f));
-              bool col_neumann = isNeumannID_BEM(face_lines_tq[kk - 3], lf_key);
+              bool col_neumann = isNeumannBieDofKey(face_lines_tq[kk - 3], lf_key);
               double val = col_neumann ? (-WGN[kk][1]) : WGN[kk][0];
               if (val != 0.)
                 coeffs[col_idx] += val;
@@ -622,11 +630,13 @@ void buildSparseMatrixForILU() {
       }
 
       // 4) Write rows for all IDs at the target point
-      for (const auto& [target_f, row_idx] : origin->f2Index) {
+      for (const auto& [target_f, d_] : origin->dofs) {
+        if (d_.index < 0) continue;
+        const auto row_idx = d_.index;
         auto& row = crs_nodes[row_idx];
 
         // Corner constraint row: A = I on the Neumann ID
-        if (origin->CORNER && isNeumannID_BEM(origin, target_f)) {
+        if (origin->CORNER && isNeumannBieDofKey(origin, target_f)) {
           row.clearColumnValue();
           row.set(crs_ptrs[row_idx], 1.0);
           continue;
@@ -636,7 +646,7 @@ void buildSparseMatrixForILU() {
           row.increment(crs_ptrs[col_idx], v);
 
         // Diagonal jump term alpha (only multiplies unknown phi)
-        if (isNeumannID_BEM(origin, target_f)) {
+        if (isNeumannBieDofKey(origin, target_f)) {
           const double alpha = diag_coeffs[row_idx];
           row.increment(crs_ptrs[row_idx], -alpha);
         }
@@ -794,13 +804,13 @@ void buildSparseMatrixForILU() {
             if (kk < 3) {
               col_idx = pf2Index(face_pts_m[kk], integ_f);
               const auto key_f = std::get<1>(pf2ID(face_pts_m[kk], integ_f));
-              col_neumann = isNeumannID_BEM(face_pts_m[kk], key_f);
+              col_neumann = isNeumannBieDofKey(face_pts_m[kk], key_f);
             } else {
               col_idx = dof_idx[kk];
               if (col_idx < 0)
                 continue;
               auto lf_key = std::get<1>(lf2ID(face_lines_m[kk - 3], integ_f));
-              col_neumann = isNeumannID_BEM(face_lines_m[kk - 3], lf_key);
+              col_neumann = isNeumannBieDofKey(face_lines_m[kk - 3], lf_key);
             }
             double val = col_neumann ? (-WGN_m[kk][1]) : WGN_m[kk][0];
             if (val != 0.)
@@ -809,11 +819,13 @@ void buildSparseMatrixForILU() {
         }
 
         // Write rows for all DOFs of this midpoint (mirrors vertex f2Index pattern)
-        for (const auto& [target_f, row_idx] : l->f2Index) {
+        for (const auto& [target_f, d_] : l->dofs) {
+          if (d_.index < 0) continue;
+          const auto row_idx = d_.index;
           auto& row = crs_nodes[row_idx];
 
           // CORNER constraint row: A = I on the Neumann DOF
-          if (l->CORNER && isNeumannID_BEM(l, target_f)) {
+          if (l->CORNER && isNeumannBieDofKey(l, target_f)) {
             row.clearColumnValue();
             row.set(crs_ptrs[row_idx], 1.0);
             continue;
@@ -823,7 +835,7 @@ void buildSparseMatrixForILU() {
             row.increment(crs_ptrs[col_idx], v);
 
           // Diagonal jump term for Neumann midpoint
-          if (isNeumannID_BEM(l, target_f)) {
+          if (isNeumannBieDofKey(l, target_f)) {
             const double alpha = diag_coeffs[row_idx];
             row.increment(crs_ptrs[row_idx], -alpha);
           }
@@ -849,7 +861,9 @@ void buildSparseMatrixForILU() {
     std::vector<char> is_midpoint_row(static_cast<std::size_t>(matrix_size), 0);
     if (use_true_quadratic_element) {
       for (auto* l : midpoint_lines) {
-        for (const auto& [f, i] : l->f2Index) {
+        for (const auto& [f, d_] : l->dofs) {
+          if (d_.index < 0) continue;
+          const auto i = d_.index;
           if (i >= 0 && i < matrix_size)
             is_midpoint_row[static_cast<std::size_t>(i)] = 1;
         }
@@ -1055,15 +1069,23 @@ void createCopyMap() {
   copy_map_t.clear();
   copy_map_t.reserve(points.size() * 2 * 5);
   for (const auto& p : points) {
-    p->phiOnFace_copy = p->phiOnFace;
-    p->phinOnFace_copy = p->phinOnFace;
-    p->phitOnFace_copy = p->phitOnFace;
-    p->phintOnFace_copy = p->phintOnFace;
-    for (const auto& [f, i] : p->f2Index) {
-      copy_map.push_back({&p->phiOnFace_copy.at(f), &p->phiOnFace.at(f)});
-      copy_map.push_back({&p->phinOnFace_copy.at(f), &p->phinOnFace.at(f)});
-      copy_map_t.push_back({&p->phitOnFace_copy.at(f), &p->phitOnFace.at(f)});
-      copy_map_t.push_back({&p->phintOnFace_copy.at(f), &p->phintOnFace.at(f)});
+    // Populate checkpoint copies from dofs
+    p->phiOnFace_copy.clear();
+    p->phinOnFace_copy.clear();
+    p->phitOnFace_copy.clear();
+    p->phintOnFace_copy.clear();
+    for (const auto& [f, d_] : p->dofs) {
+      p->phiOnFace_copy[f] = d_.phi;
+      p->phinOnFace_copy[f] = d_.phin;
+      p->phitOnFace_copy[f] = d_.phi_t;
+      p->phintOnFace_copy[f] = d_.phin_t;
+    }
+    for (auto& [f, d_] : p->dofs) {
+      if (d_.index < 0) continue;
+      copy_map.push_back({&p->phiOnFace_copy.at(f), &d_.phi});
+      copy_map.push_back({&p->phinOnFace_copy.at(f), &d_.phin});
+      copy_map_t.push_back({&p->phitOnFace_copy.at(f), &d_.phi_t});
+      copy_map_t.push_back({&p->phintOnFace_copy.at(f), &d_.phin_t});
     }
   }
 }
@@ -1108,30 +1130,27 @@ void cacheBoundaryValues(std::vector<networkPoint*>& points, int total_unknowns)
   cache_phi_val_D_by_index.assign(total_unknowns, 0.0);
   cache_phin_val_D_by_index.assign(total_unknowns, 0.0);
   for (const auto& p : points) {
-    // Ensure pointer/reference stability: avoid unordered_map rehash during operator[] inserts.
-    p->phiOnFace_FMM.reserve(p->f2Index.size());
-    p->phinOnFace_FMM.reserve(p->f2Index.size());
-    for (const auto& [f, i] : p->f2Index) {
-      cache_DorN_phi_phin.emplace_back(isDirichletID_BEM(p, f), i, p->phiOnFace_FMM[f], p->phinOnFace_FMM[f]);
+    for (auto& [f, d_] : p->dofs) {
+      if (d_.index < 0) continue;
+      const auto i = d_.index;
+      cache_DorN_phi_phin.emplace_back(isDirichletBieDofKey(p, f), i, d_.phi_FMM, d_.phin_FMM);
       if (i >= 0 && i < total_unknowns) {
-        cache_phi_val_D_by_index[i] = p->phiOnFace_FMM[f];
-        cache_phin_val_D_by_index[i] = p->phinOnFace_FMM[f];
+        cache_phi_val_D_by_index[i] = d_.phi_FMM;
+        cache_phin_val_D_by_index[i] = d_.phin_FMM;
       }
     }
   }
-  // Cache edge midpoint DOFs for true quadratic elements (per-face maps)
-  // Note: For phi_t solve, phiOnFace/phinOnFace are swapped with phitOnFace/phintOnFace
-  // before calling this function, so we always read from phiOnFace_FMM/phinOnFace_FMM.
+  // Cache edge midpoint DOFs for true quadratic elements
   if (use_true_quadratic_element) {
     for (auto* water : WATERS) {
       for (auto* l : water->getBoundaryLines()) {
-        l->phiOnFace_FMM.reserve(l->f2Index.size());
-        l->phinOnFace_FMM.reserve(l->f2Index.size());
-        for (const auto& [f, i] : l->f2Index) {
+        for (auto& [f, d_] : l->dofs) {
+          if (d_.index < 0) continue;
+          const auto i = d_.index;
           if (i >= 0 && i < total_unknowns) {
-            cache_DorN_phi_phin.emplace_back(isDirichletID_BEM(l, f), i, l->phiOnFace_FMM[f], l->phinOnFace_FMM[f]);
-            cache_phi_val_D_by_index[i] = l->phiOnFace_FMM[f];
-            cache_phin_val_D_by_index[i] = l->phinOnFace_FMM[f];
+            cache_DorN_phi_phin.emplace_back(isDirichletBieDofKey(l, f), i, d_.phi_FMM, d_.phin_FMM);
+            cache_phi_val_D_by_index[i] = d_.phi_FMM;
+            cache_phin_val_D_by_index[i] = d_.phin_FMM;
           }
         }
       }
@@ -1208,70 +1227,47 @@ void copyToFMM(bool is_time_derivative) {
   if (is_time_derivative) {
     _Pragma("omp parallel for") for (int i = 0; i < points.size(); ++i) {
       auto& p = points[i];
-      if (p->phiOnFace_FMM.empty()) {
-        p->phiOnFace_FMM = p->phitOnFace;
-        p->phinOnFace_FMM = p->phintOnFace;
-        // Apply scaling to Neumann BCs
-        if (phin_scale != 1.0) {
-          for (auto& [f, val] : p->phinOnFace_FMM) {
-            if (isNeumannID_BEM(p, f))
-              val *= phin_scale;
-          }
-        }
-      } else {
-        for (const auto& [f, val] : p->phitOnFace) {
-          p->phiOnFace_FMM[f] = val;
-        }
-        for (const auto& [f, val] : p->phintOnFace) {
-          double scaled_val = val;
-          if (phin_scale != 1.0 && isNeumannID_BEM(p, f))
-            scaled_val *= phin_scale;
-          p->phinOnFace_FMM[f] = scaled_val;
-        }
+      for (auto& [f, d] : p->dofs) {
+        if (d.index < 0) continue;
+        d.phi_FMM = d.phi_t;
+        d.phin_FMM = d.phin_t;
+        if (phin_scale != 1.0 && isNeumannBieDofKey(p, f))
+          d.phin_FMM *= phin_scale;
+        // dofs.phi_FMM/phin_FMM is canonical; no old map sync needed
       }
     }
   } else {
     _Pragma("omp parallel for") for (int i = 0; i < points.size(); ++i) {
       auto& p = points[i];
-      if (p->phiOnFace_FMM.empty()) {
-        p->phiOnFace_FMM = p->phiOnFace;
-        p->phinOnFace_FMM = p->phinOnFace;
-        // Apply scaling to Neumann BCs
-        if (phin_scale != 1.0) {
-          for (auto& [f, val] : p->phinOnFace_FMM) {
-            if (isNeumannID_BEM(p, f))
-              val *= phin_scale;
-          }
-        }
-      } else {
-        for (const auto& [f, val] : p->phiOnFace) {
-          p->phiOnFace_FMM[f] = val;
-        }
-        for (const auto& [f, val] : p->phinOnFace) {
-          double scaled_val = val;
-          if (phin_scale != 1.0 && isNeumannID_BEM(p, f))
-            scaled_val *= phin_scale;
-          p->phinOnFace_FMM[f] = scaled_val;
-        }
+      for (auto& [f, d] : p->dofs) {
+        if (d.index < 0) continue;
+        d.phi_FMM = d.phi;
+        d.phin_FMM = d.phin;
+        if (phin_scale != 1.0 && isNeumannBieDofKey(p, f))
+          d.phin_FMM *= phin_scale;
+        // dofs.phi_FMM/phin_FMM is canonical; no old map sync needed
       }
     }
   }
 
-  // Copy midpoint per-face maps to FMM copies (with Neumann phin scaling)
-  // Note: always use phiOnFace/phinOnFace regardless of is_time_derivative,
-  // because the phi_t solve uses a swap mechanism (phi_mid <-> phi_t_mid,
-  // phiOnFace <-> phitOnFace) so the "current working values" are always
-  // in phiOnFace/phinOnFace.
+  // Copy midpoint per-face maps to FMM copies (with Neumann phin scaling).
+  // Use the same canonical storage as points: phi/phin for the ordinary solve,
+  // phi_t/phin_t for the time-derivative solve.
   if (use_true_quadratic_element) {
     for (auto* water : WATERS) {
       for (auto* l : water->getBoundaryLines()) {
-        l->phiOnFace_FMM = l->phiOnFace;
-        l->phinOnFace_FMM = l->phinOnFace;
-        if (phin_scale != 1.0) {
-          for (auto& [f, val] : l->phinOnFace_FMM) {
-            if (isNeumannID_BEM(l, f))
-              val *= phin_scale;
+        for (auto& [f, d] : l->dofs) {
+          if (d.index < 0) continue;
+          if (is_time_derivative) {
+            d.phi_FMM = d.phi_t;
+            d.phin_FMM = d.phin_t;
+          } else {
+            d.phi_FMM = d.phi;
+            d.phin_FMM = d.phin;
           }
+          if (phin_scale != 1.0 && isNeumannBieDofKey(l, f))
+            d.phin_FMM *= phin_scale;
+          // dofs.phi_FMM/phin_FMM is canonical; no old map sync needed
         }
       }
     }
@@ -1371,12 +1367,12 @@ bool createSourcesOnSurfaces() {
       auto lf_key0 = std::get<1>(lf2ID(l0, F));
       auto lf_key1 = std::get<1>(lf2ID(l1, F));
       auto lf_key2 = std::get<1>(lf2ID(l2, F));
-      std::array<std::array<double*, 2>, 6> pair_pointer_phiphin_6 = {{{&p0->phiOnFace_FMM.at(key0), &p0->phinOnFace_FMM.at(key0)},
-                                                                       {&p1->phiOnFace_FMM.at(key1), &p1->phinOnFace_FMM.at(key1)},
-                                                                       {&p2->phiOnFace_FMM.at(key2), &p2->phinOnFace_FMM.at(key2)},
-                                                                       {&l0->phiOnFace_FMM.at(lf_key0), &l0->phinOnFace_FMM.at(lf_key0)},
-                                                                       {&l1->phiOnFace_FMM.at(lf_key1), &l1->phinOnFace_FMM.at(lf_key1)},
-                                                                       {&l2->phiOnFace_FMM.at(lf_key2), &l2->phinOnFace_FMM.at(lf_key2)}}};
+      std::array<std::array<double*, 2>, 6> pair_pointer_phiphin_6 = {{{&p0->dof(key0).phi_FMM, &p0->dof(key0).phin_FMM},
+                                                                       {&p1->dof(key1).phi_FMM, &p1->dof(key1).phin_FMM},
+                                                                       {&p2->dof(key2).phi_FMM, &p2->dof(key2).phin_FMM},
+                                                                       {&l0->dof(lf_key0).phi_FMM, &l0->dof(lf_key0).phin_FMM},
+                                                                       {&l1->dof(lf_key1).phi_FMM, &l1->dof(lf_key1).phin_FMM},
+                                                                       {&l2->dof(lf_key2).phi_FMM, &l2->dof(lf_key2).phin_FMM}}};
       if (debug_line_factor2) {
         auto check_ratio = [&](const char* label,
                                int edge_local,
@@ -1662,7 +1658,7 @@ bool createSourcesOnSurfaces() {
         int i = 0;
         for (auto& [p, f] : points_faces) {
           auto key = std::get<1>(pf2ID(p, f));
-          insert_to[i++] = {&p->phiOnFace_FMM.at(key), &p->phinOnFace_FMM.at(key)}; //! updateされる値へのポインタ かつ キー．
+          insert_to[i++] = {&p->dof(key).phi_FMM, &p->dof(key).phin_FMM}; //! updateされる値へのポインタ かつ キー．
         }
       };
       std::array<std::array<std::array<double*, 2>, 6>, 4> pair_pointer_phiphin;
@@ -1707,7 +1703,7 @@ bool createSourcesOnSurfaces() {
               auto [p, _] = quadpoints->points_faces[j];
               ij_WGN_WGnN[6 * i + j] += std::array<double, 2>{WG * Nc_N0_N1_N2[i][j], p == origin ? 0. : WGn * Nc_N0_N1_N2[i][j]};
               auto [p_id, key] = pf2ID(quadpoints->points_faces[j]);
-              ij_indices[6 * i + j] = static_cast<int32_t>(p_id->f2Index.at(key));
+              ij_indices[6 * i + j] = static_cast<int32_t>(p_id->dof(key).index);
             }
           }
         }
@@ -1740,7 +1736,7 @@ bool createSourcesOnSurfaces() {
             for (int j = 0; j < 6; ++j) {
               ij_WGN_WGnN[6 * i + j] += std::array<double, 2>{WG * Nc_N0_N1_N2[i][j], WGn_ * Nc_N0_N1_N2[i][j]};
               auto [p_id, key] = pf2ID(quadpoints->points_faces[j]);
-              ij_indices[6 * i + j] = static_cast<int32_t>(p_id->f2Index.at(key));
+              ij_indices[6 * i + j] = static_cast<int32_t>(p_id->dof(key).index);
             }
           }
         }
@@ -1800,12 +1796,12 @@ bool createSourcesOnSurfaces() {
       auto key0 = std::get<1>(pf2ID(p0, F));
       auto key1 = std::get<1>(pf2ID(p1, F));
       auto key2 = std::get<1>(pf2ID(p2, F));
-      std::array<double*, 2> pair_pointer_phiphin0 = {&p0->phiOnFace_FMM.at(key0), &p0->phinOnFace_FMM.at(key0)};
-      std::array<double*, 2> pair_pointer_phiphin1 = {&p1->phiOnFace_FMM.at(key1), &p1->phinOnFace_FMM.at(key1)};
-      std::array<double*, 2> pair_pointer_phiphin2 = {&p2->phiOnFace_FMM.at(key2), &p2->phinOnFace_FMM.at(key2)};
-      const int32_t idx0 = static_cast<int32_t>(p0->f2Index.at(key0));
-      const int32_t idx1 = static_cast<int32_t>(p1->f2Index.at(key1));
-      const int32_t idx2 = static_cast<int32_t>(p2->f2Index.at(key2));
+      std::array<double*, 2> pair_pointer_phiphin0 = {&p0->dof(key0).phi_FMM, &p0->dof(key0).phin_FMM};
+      std::array<double*, 2> pair_pointer_phiphin1 = {&p1->dof(key1).phi_FMM, &p1->dof(key1).phin_FMM};
+      std::array<double*, 2> pair_pointer_phiphin2 = {&p2->dof(key2).phi_FMM, &p2->dof(key2).phin_FMM};
+      const int32_t idx0 = static_cast<int32_t>(p0->dof(key0).index);
+      const int32_t idx1 = static_cast<int32_t>(p1->dof(key1).index);
+      const int32_t idx2 = static_cast<int32_t>(p2->dof(key2).index);
 
       // b% [1] P2Mソース: Dunavant求積則による多点配置
       auto X012 = ToX(F->getPoints(p0));
@@ -2012,14 +2008,17 @@ V_d solveSystemGMRES(bool is_time_derivative, V_d x0, bool allow_ilu_rebuild_ret
   copyToFMM(is_time_derivative); // phi,phitを選択してFMM用にコピー
   cacheBoundaryValues(points, x0.size());
 
-  // Save midpoint per-face FMM maps before GMRES iteration.
-  // The cache references point into phiOnFace_FMM/phinOnFace_FMM,
+  // Save midpoint per-face FMM values before GMRES iteration.
+  // The cache references point into dofs phi_FMM/phin_FMM,
   // which get zeroed by setKnowns/setUnknowns. We restore after GMRES.
-  std::vector<std::pair<std::unordered_map<networkFace*, double>, std::unordered_map<networkFace*, double>>> saved_midpoint_bc;
+  std::vector<std::unordered_map<networkFace*, std::pair<double,double>>> saved_midpoint_bc;
   if (use_true_quadratic_element) {
     saved_midpoint_bc.reserve(midpoint_lines.size());
-    for (auto* l : midpoint_lines)
-      saved_midpoint_bc.emplace_back(l->phiOnFace_FMM, l->phinOnFace_FMM);
+    for (auto* l : midpoint_lines) {
+      std::unordered_map<networkFace*, std::pair<double,double>> m;
+      for (const auto& [f, d] : l->dofs) m[f] = {d.phi_FMM, d.phin_FMM};
+      saved_midpoint_bc.emplace_back(std::move(m));
+    }
   }
 
   this->setUnknowns(0.);
@@ -2030,26 +2029,29 @@ V_d solveSystemGMRES(bool is_time_derivative, V_d x0, bool allow_ilu_rebuild_ret
   // コーナー点（DirichletとNeumannの交点）では，phi=phi の条件に変更
   _Pragma("omp parallel for") for (const auto& p : points) {
     if (p->CORNER)
-      for (const auto& [f, i] : p->f2Index)
-        if (isNeumannID_BEM(p, f))
+      for (const auto& [f, d_] : p->dofs) { if (d_.index < 0) continue; const auto i = d_.index;
+        if (isNeumannBieDofKey(p, f))
           b[i] = is_time_derivative ? p->phiphin_t[0] : p->phiphin[0];
+      }
   }
 
   // CORNER midpoint constraint: phi_N = phi_D (same pattern as vertex CORNER above)
   if (use_true_quadratic_element) {
     for (auto* l : midpoint_lines) {
       if (l->CORNER && l->isMultipleNode) {
-        for (const auto& [f, idx] : l->f2Index)
-          if (isNeumannID_BEM(l, f))
+        for (const auto& [f, d_] : l->dofs) { if (d_.index < 0) continue; const auto idx = d_.index;
+          if (isNeumannBieDofKey(l, f))
             b[idx] = is_time_derivative ? l->phiphin_t[0] : l->phiphin[0];
+        }
       }
     }
   }
 
   if (!is_time_derivative) {
     for (const auto& p : points)
-      for (const auto& [f, i] : p->f2Index)
+      for (const auto& [f, d_] : p->dofs) { if (d_.index < 0) continue; const auto i = d_.index;
         p->b_RHS_FMM = b[i];
+      }
   }
 
   // === Check 3: GMRES RHS breakdown (set BEM_BIE_CHECK=1 to enable) ===
@@ -2060,7 +2062,7 @@ V_d solveSystemGMRES(bool is_time_derivative, V_d x0, bool allow_ilu_rebuild_ret
       double max_b_mid = 0, sum_b_mid = 0;
       int n_mid = 0;
       for (const auto& p : points) {
-        for (const auto& [f, i] : p->f2Index) {
+        for (const auto& [f, d_] : p->dofs) { if (d_.index < 0) continue; const auto i = d_.index;
           if (i >= 0 && i < static_cast<int>(b.size())) {
             max_b_vtx = std::max(max_b_vtx, std::abs(b[i]));
             sum_b_vtx += std::abs(b[i]);
@@ -2069,7 +2071,7 @@ V_d solveSystemGMRES(bool is_time_derivative, V_d x0, bool allow_ilu_rebuild_ret
         }
       }
       for (auto* l : midpoint_lines) {
-        for (const auto& [f, i] : l->f2Index) {
+        for (const auto& [f, d_] : l->dofs) { if (d_.index < 0) continue; const auto i = d_.index;
           if (i >= 0 && i < static_cast<int>(b.size())) {
             max_b_mid = std::max(max_b_mid, std::abs(b[i]));
             sum_b_mid += std::abs(b[i]);
@@ -2437,14 +2439,14 @@ V_d solveSystemGMRES(bool is_time_derivative, V_d x0, bool allow_ilu_rebuild_ret
 
     std::vector<row_location_t> row_locations(matrix_size);
     for (auto* p : points) {
-      for (const auto& [f, row_idx] : p->f2Index) {
+      for (const auto& [f, d_] : p->dofs) { if (d_.index < 0) continue; const auto row_idx = d_.index;
         if (0 <= row_idx && row_idx < static_cast<int>(row_locations.size()))
           row_locations[row_idx] = row_location_t{p, nullptr, f, false};
       }
     }
     if (use_true_quadratic_element) {
       for (auto* l : midpoint_lines) {
-        for (const auto& [f, row_idx] : l->f2Index) {
+        for (const auto& [f, d_] : l->dofs) { if (d_.index < 0) continue; const auto row_idx = d_.index;
           if (0 <= row_idx && row_idx < static_cast<int>(row_locations.size()))
             row_locations[row_idx] = row_location_t{nullptr, l, f, true};
         }
@@ -2467,14 +2469,7 @@ V_d solveSystemGMRES(bool is_time_derivative, V_d x0, bool allow_ilu_rebuild_ret
     const auto face_flag_label = [](const networkFace* f) {
       if (!f)
         return std::string("-");
-      std::string s;
-      if (f->Dirichlet)
-        s += "D";
-      if (f->Neumann)
-        s += "N";
-      if (s.empty())
-        s = "-";
-      return s;
+      return std::string("F");
     };
     const auto make_face_flag_summary = [&](const auto& boundary_faces) {
       std::ostringstream oss;
@@ -2494,7 +2489,7 @@ V_d solveSystemGMRES(bool is_time_derivative, V_d x0, bool allow_ilu_rebuild_ret
       std::ostringstream oss;
       oss << "{";
       bool first = true;
-      for (const auto& [f, idx] : p->f2Index) {
+      for (const auto& [f, d_] : p->dofs) { if (d_.index < 0) continue; const auto idx = d_.index;
         if (!first)
           oss << "; ";
         first = false;
@@ -2511,7 +2506,7 @@ V_d solveSystemGMRES(bool is_time_derivative, V_d x0, bool allow_ilu_rebuild_ret
       std::ostringstream oss;
       oss << "{";
       bool first = true;
-      for (const auto& [f, idx] : l->f2Index) {
+      for (const auto& [f, d_] : l->dofs) { if (d_.index < 0) continue; const auto idx = d_.index;
         if (!first)
           oss << "; ";
         first = false;
@@ -2532,7 +2527,9 @@ V_d solveSystemGMRES(bool is_time_derivative, V_d x0, bool allow_ilu_rebuild_ret
         if (!first)
           oss << "; ";
         first = false;
-        const auto [cf, Xc, dist] = p->getNearestContactFace_(f);
+        auto* cf = p->getNearestContactFace(f);
+        Tddd Xc = cf ? Nearest(p->getPosition(), ToX(cf)) : Tddd{0., 0., 0.};
+        double dist = cf ? Norm(p->getPosition() - Xc) : 1E+20;
         oss << "adj=" << (f ? f->index : -1)
             << ":" << face_flag_label(f)
             << "->contact=" << (cf ? cf->index : -1)
@@ -2553,7 +2550,9 @@ V_d solveSystemGMRES(bool is_time_derivative, V_d x0, bool allow_ilu_rebuild_ret
         if (!first)
           oss << "; ";
         first = false;
-        const auto [cf, Xc, dist] = l->getNearestContactFace_(f);
+        auto* cf = l->getNearestContactFace(f);
+        Tddd Xc = cf ? Nearest(l->getPosition(), ToX(cf)) : Tddd{0., 0., 0.};
+        double dist = cf ? Norm(l->getPosition() - Xc) : 1E+20;
         oss << "adj=" << (f ? f->index : -1)
             << ":" << face_flag_label(f)
             << "->contact=" << (cf ? cf->index : -1)
@@ -2589,7 +2588,7 @@ V_d solveSystemGMRES(bool is_time_derivative, V_d x0, bool allow_ilu_rebuild_ret
         hotspot.neumann = loc.line->Neumann;
         hotspot.corner = loc.line->CORNER;
         hotspot.is_multiple_node = loc.line->isMultipleNode;
-        hotspot.contact_faces_count = static_cast<int>(loc.line->ContactFaces.size());
+        hotspot.contact_faces_count = static_cast<int>(loc.line->getContactFaces().size());
         hotspot.adjacent_face_flags = make_face_flag_summary(loc.line->getBoundaryFaces());
         hotspot.dof_summary = make_line_dof_summary(loc.line);
         hotspot.contact_summary = make_line_contact_summary(loc.line);
@@ -2600,7 +2599,7 @@ V_d solveSystemGMRES(bool is_time_derivative, V_d x0, bool allow_ilu_rebuild_ret
         hotspot.neumann = loc.point->Neumann;
         hotspot.corner = loc.point->CORNER;
         hotspot.is_multiple_node = loc.point->isMultipleNode;
-        hotspot.contact_faces_count = static_cast<int>(loc.point->ContactFaces.size());
+        hotspot.contact_faces_count = static_cast<int>(loc.point->getContactFaces().size());
         hotspot.adjacent_face_flags = make_face_flag_summary(loc.point->getBoundaryFaces());
         hotspot.dof_summary = make_point_dof_summary(loc.point);
         hotspot.contact_summary = make_point_contact_summary(loc.point);
@@ -2635,12 +2634,14 @@ V_d solveSystemGMRES(bool is_time_derivative, V_d x0, bool allow_ilu_rebuild_ret
     std::cout << "  build=" << Magenta << last_ilu_build_time << "s" << Cyan << "  apply=" << Magenta << last_ilu_apply_time_sum << "s" << Cyan << "  gmres_iter_time=" << Magenta << last_gmres_iter_time_sum << "s" << colorReset << std::endl;
   }
 
-  // Restore midpoint per-face FMM maps destroyed by setKnowns(0.) during GMRES.
+  // Restore midpoint per-face FMM values destroyed by setKnowns(0.) during GMRES.
   if (use_true_quadratic_element && !saved_midpoint_bc.empty()) {
     for (std::size_t k = 0; k < midpoint_lines.size(); ++k) {
       auto* l = midpoint_lines[k];
-      l->phiOnFace_FMM = saved_midpoint_bc[k].first;
-      l->phinOnFace_FMM = saved_midpoint_bc[k].second;
+      for (const auto& [f, phi_phin] : saved_midpoint_bc[k]) {
+        l->dof(f).phi_FMM = phi_phin.first;
+        l->dof(f).phin_FMM = phi_phin.second;
+      }
     }
   }
 
@@ -2663,20 +2664,23 @@ void updateGeometricProperties() {
   diag_coeffs.assign(total_unknowns, 1.0);
   cacheBoundaryValues(points, total_unknowns);
 
-  // Save midpoint per-face FMM maps before rigid-mode test modifies them.
-  std::vector<std::pair<std::unordered_map<networkFace*, double>, std::unordered_map<networkFace*, double>>> saved_midpoint_phi_phin;
+  // Save midpoint per-face FMM values before rigid-mode test modifies them.
+  std::vector<std::unordered_map<networkFace*, std::pair<double,double>>> saved_midpoint_phi_phin;
   if (use_true_quadratic_element) {
     saved_midpoint_phi_phin.reserve(midpoint_lines.size());
-    for (auto* l : midpoint_lines)
-      saved_midpoint_phi_phin.emplace_back(l->phiOnFace_FMM, l->phinOnFace_FMM);
+    for (auto* l : midpoint_lines) {
+      std::unordered_map<networkFace*, std::pair<double,double>> m;
+      for (const auto& [f, d] : l->dofs) m[f] = {d.phi_FMM, d.phin_FMM};
+      saved_midpoint_phi_phin.emplace_back(std::move(m));
+    }
   }
 
   if (this->use_rigid_mode) {
     std::cout << "calculate diagonal coefficient (Rigid Mode)" << std::endl;
     _Pragma("omp parallel for") for (const auto& p : points) {
-      for (const auto& [f, i] : p->f2Index) {
-        p->phinOnFace_FMM[f] = 0.;
-        p->phiOnFace_FMM[f] = 1.;
+      for (auto& [f, d_] : p->dofs) { if (d_.index < 0) continue; const auto i = d_.index;
+        d_.phin_FMM = 0.;
+        d_.phi_FMM = 1.;
         // Keep dense caches consistent for any subsequent near-field evaluation.
         if (i >= 0 && i < static_cast<int>(cache_phi_val_D_by_index.size())) {
           cache_phi_val_D_by_index[i] = 1.0;
@@ -2687,11 +2691,13 @@ void updateGeometricProperties() {
     // Set midpoint phi=1, phin=0 for P2M and near-field consistency
     if (use_true_quadratic_element) {
       for (auto* l : midpoint_lines) {
-        for (auto& [f, val] : l->phiOnFace_FMM)
-          val = 1.0;
-        for (auto& [f, val] : l->phinOnFace_FMM)
-          val = 0.0;
-        for (const auto& [f, mi] : l->f2Index) {
+        for (auto& [f, d_] : l->dofs) { if (d_.index < 0) continue;
+          d_.phi_FMM = 1.0;
+        }
+        for (auto& [f, d_] : l->dofs) { if (d_.index < 0) continue;
+          d_.phin_FMM = 0.0;
+        }
+        for (const auto& [f, d_] : l->dofs) { if (d_.index < 0) continue; const auto mi = d_.index;
           if (mi >= 0 && mi < static_cast<int>(cache_phi_val_D_by_index.size())) {
             cache_phi_val_D_by_index[mi] = 1.0;
             cache_phin_val_D_by_index[mi] = 0.0;
@@ -2703,7 +2709,7 @@ void updateGeometricProperties() {
     std::array<double, 6> tmp_elapsed_time{};
     updateFMM(B_poles, tmp_elapsed_time);
     _Pragma("omp parallel for") for (const auto& a : points) {
-      for (const auto& [f, i] : a->f2Index) {
+      for (const auto& [f, d_] : a->dofs) { if (d_.index < 0) continue; const auto i = d_.index;
         // This path is not performance critical (only during diagonal-coefficient setup),
         // but keep it consistent with the current dense caches.
         auto GPhin_GnPhi_near = integrateNearField(*a);
@@ -2717,7 +2723,7 @@ void updateGeometricProperties() {
   } else {
     std::cout << "calculate diagonal coefficient (Solid Angle)" << std::endl;
     _Pragma("omp parallel for") for (const auto& a : points) {
-      for (const auto& [f, i] : a->f2Index) {
+      for (const auto& [f, d_] : a->dofs) { if (d_.index < 0) continue; const auto i = d_.index;
         diag_coeffs[i] = a->getSolidAngle();
       }
     }
@@ -2731,9 +2737,9 @@ void updateGeometricProperties() {
       setUnknowns(0.0);
       // Set all phi=1 for rigid body test
       _Pragma("omp parallel for") for (const auto& p : points) {
-        for (const auto& [f, i] : p->f2Index) {
-          p->phiOnFace_FMM[f] = 1.0;
-          p->phinOnFace_FMM[f] = 0.0;
+        for (auto& [f, d_] : p->dofs) { if (d_.index < 0) continue; const auto i = d_.index;
+          d_.phi_FMM = 1.0;
+          d_.phin_FMM = 0.0;
           if (i >= 0 && i < static_cast<int>(cache_phi_val_D_by_index.size())) {
             cache_phi_val_D_by_index[i] = 1.0;
             cache_phin_val_D_by_index[i] = 0.0;
@@ -2741,11 +2747,13 @@ void updateGeometricProperties() {
         }
       }
       for (auto* l : midpoint_lines) {
-        for (auto& [f, val] : l->phiOnFace_FMM)
-          val = 1.0;
-        for (auto& [f, val] : l->phinOnFace_FMM)
-          val = 0.0;
-        for (const auto& [f, mi] : l->f2Index) {
+        for (auto& [f, d_] : l->dofs) { if (d_.index < 0) continue;
+          d_.phi_FMM = 1.0;
+        }
+        for (auto& [f, d_] : l->dofs) { if (d_.index < 0) continue;
+          d_.phin_FMM = 0.0;
+        }
+        for (const auto& [f, d_] : l->dofs) { if (d_.index < 0) continue; const auto mi = d_.index;
           if (mi >= 0 && mi < static_cast<int>(cache_phi_val_D_by_index.size())) {
             cache_phi_val_D_by_index[mi] = 1.0;
             cache_phin_val_D_by_index[mi] = 0.0;
@@ -2761,8 +2769,8 @@ void updateGeometricProperties() {
         auto GPhin_GnPhi_far = mt.integrateFarField();
         auto [GPhin, GnPhi] = GPhin_GnPhi_near + GPhin_GnPhi_far;
         // BIE-derived diag_coeff applies to primary DOF; CORNER Neumann DOF gets 1.0 (constraint row)
-        for (const auto& [f, i] : l->f2Index) {
-          if (l->CORNER && isNeumannID_BEM(l, f)) {
+        for (const auto& [f, d_] : l->dofs) { if (d_.index < 0) continue; const auto i = d_.index;
+          if (l->CORNER && isNeumannBieDofKey(l, f)) {
             diag_coeffs[i] = 1.0; // constraint row diagonal
           } else {
             diag_coeffs[i] = -GnPhi;
@@ -2774,9 +2782,9 @@ void updateGeometricProperties() {
     } else {
       // Solid angle at midpoint: 0.5 for smooth surface
       for (auto* l : midpoint_lines) {
-        for (const auto& [f, i] : l->f2Index) {
+        for (const auto& [f, d_] : l->dofs) { if (d_.index < 0) continue; const auto i = d_.index;
           if (i >= 0 && i < static_cast<int>(diag_coeffs.size())) {
-            if (l->CORNER && isNeumannID_BEM(l, f))
+            if (l->CORNER && isNeumannBieDofKey(l, f))
               diag_coeffs[i] = 1.0; // constraint row
             else
               diag_coeffs[i] = 0.5;
@@ -2797,8 +2805,8 @@ void updateGeometricProperties() {
         double max_res_vtx = 0, max_res_mid = 0;
         double max_GPhin_vtx = 0, max_GPhin_mid = 0;
         for (const auto& a : points) {
-          for (const auto& [f, i] : a->f2Index) {
-            if (a->CORNER && isNeumannID_BEM(a, f))
+          for (const auto& [f, d_] : a->dofs) { if (d_.index < 0) continue; const auto i = d_.index;
+            if (a->CORNER && isNeumannBieDofKey(a, f))
               continue;
             auto [GPhin, GnPhi] = integrateNearField(*a) + a->integrateFarField();
             double res = GPhin - (GnPhi + diag_coeffs[i] * 1.0);
@@ -2824,11 +2832,13 @@ void updateGeometricProperties() {
       // Tests the G kernel path which rigid-mode (phin=0) does NOT test.
       {
         for (auto& p : points) {
-          for (auto& [f, val] : p->phiOnFace_FMM)
-            val = 0.0;
-          for (auto& [f, val] : p->phinOnFace_FMM)
-            val = 1.0;
-          for (const auto& [f, i] : p->f2Index) {
+          for (auto& [f, d_] : p->dofs) { if (d_.index < 0) continue;
+            d_.phi_FMM = 0.0;
+          }
+          for (auto& [f, d_] : p->dofs) { if (d_.index < 0) continue;
+            d_.phin_FMM = 1.0;
+          }
+          for (const auto& [f, d_] : p->dofs) { if (d_.index < 0) continue; const auto i = d_.index;
             if (i >= 0 && i < static_cast<int>(cache_phi_val_D_by_index.size())) {
               cache_phi_val_D_by_index[i] = 0.0;
               cache_phin_val_D_by_index[i] = 1.0;
@@ -2836,11 +2846,13 @@ void updateGeometricProperties() {
           }
         }
         for (auto* l : midpoint_lines) {
-          for (auto& [f, val] : l->phiOnFace_FMM)
-            val = 0.0;
-          for (auto& [f, val] : l->phinOnFace_FMM)
-            val = 1.0;
-          for (const auto& [f, mi] : l->f2Index) {
+          for (auto& [f, d_] : l->dofs) { if (d_.index < 0) continue;
+            d_.phi_FMM = 0.0;
+          }
+          for (auto& [f, d_] : l->dofs) { if (d_.index < 0) continue;
+            d_.phin_FMM = 1.0;
+          }
+          for (const auto& [f, d_] : l->dofs) { if (d_.index < 0) continue; const auto mi = d_.index;
             if (mi >= 0 && mi < static_cast<int>(cache_phi_val_D_by_index.size())) {
               cache_phi_val_D_by_index[mi] = 0.0;
               cache_phin_val_D_by_index[mi] = 1.0;
@@ -2875,8 +2887,10 @@ void updateGeometricProperties() {
   // Restore midpoint per-face FMM maps after rigid-mode test
   if (use_true_quadratic_element && !saved_midpoint_phi_phin.empty()) {
     for (std::size_t k = 0; k < midpoint_lines.size(); ++k) {
-      midpoint_lines[k]->phiOnFace_FMM = saved_midpoint_phi_phin[k].first;
-      midpoint_lines[k]->phinOnFace_FMM = saved_midpoint_phi_phin[k].second;
+      for (const auto& [f, phi_phin] : saved_midpoint_phi_phin[k]) {
+        midpoint_lines[k]->dof(f).phi_FMM = phi_phin.first;
+        midpoint_lines[k]->dof(f).phin_FMM = phi_phin.second;
+      }
     }
   }
 
@@ -2884,7 +2898,7 @@ void updateGeometricProperties() {
   for (const auto& p : points) {
     double alpha_sum = 0.0;
     int alpha_count = 0;
-    for (const auto& [f, i] : p->f2Index) {
+    for (const auto& [f, d_] : p->dofs) { if (d_.index < 0) continue; const auto i = d_.index;
       (void)f;
       if (i >= 0 && i < static_cast<int>(diag_coeffs.size())) {
         alpha_sum += diag_coeffs[i];
@@ -2912,7 +2926,7 @@ void updateGeometricProperties() {
 
     std::vector<RowMeta> row_meta(total_unknowns);
     for (const auto& p : points) {
-      for (const auto& [f, row_idx] : p->f2Index) {
+      for (const auto& [f, d_] : p->dofs) { if (d_.index < 0) continue; const auto row_idx = d_.index;
         if (row_idx < 0 || row_idx >= total_unknowns)
           continue;
         auto& m = row_meta[row_idx];
@@ -2920,20 +2934,20 @@ void updateGeometricProperties() {
           continue;
         m.valid = true;
         m.is_midpoint = false;
-        m.is_neumann = isNeumannID_BEM(p, f);
+        m.is_neumann = isNeumannBieDofKey(p, f);
         m.is_corner = p->CORNER;
         m.X = p->Xtarget;
       }
     }
     if (use_true_quadratic_element) {
       for (auto* l : midpoint_lines) {
-        for (const auto& [f, row_idx] : l->f2Index) {
+        for (const auto& [f, d_] : l->dofs) { if (d_.index < 0) continue; const auto row_idx = d_.index;
           if (row_idx < 0 || row_idx >= total_unknowns)
             continue;
           auto& m = row_meta[row_idx];
           m.valid = true;
           m.is_midpoint = true;
-          m.is_neumann = isNeumannID_BEM(l, f);
+          m.is_neumann = isNeumannBieDofKey(l, f);
           m.is_corner = l->CORNER;
           m.X = l->Xtarget;
         }
@@ -3059,6 +3073,7 @@ void solveGMRES(TimeWatch& watch, double& time_setup, double& time_solve, const 
   TimeWatch watch_setup;
   TimeWatch log_stage_watch;
   auto log_stage = [&](const std::string& label) {
+    if (!bem_verbose()) return;
     std::cout << Magenta << "[BEM] " << Cyan << label << Green << " elapsed=" << log_stage_watch() << colorReset << std::endl;
   };
 
@@ -3076,12 +3091,30 @@ void solveGMRES(TimeWatch& watch, double& time_setup, double& time_solve, const 
   use_coordinate_scaling_ = true;
   obj->setGeometricProperties();
   coordinate_scale_factor_ = obj->computeCharacteristicLength();
+  // RAII guard: ensure removeScaling() is called even if an exception is thrown
+  struct ScalingGuard {
+    std::vector<Network*>& waters;
+    bool& use_scaling;
+    double& scale_factor;
+    bool active = false;
+    ScalingGuard(std::vector<Network*>& w, bool& us, double& sf) : waters(w), use_scaling(us), scale_factor(sf) {}
+    ~ScalingGuard() {
+      if (active) {
+        for (auto& net : waters)
+          net->removeScaling();
+        use_scaling = false;
+        scale_factor = 1.0;
+      }
+    }
+  } scaling_guard(this->WATERS, use_coordinate_scaling_, coordinate_scale_factor_);
+
   if (coordinate_scale_factor_ > 1e-10) {
     std::stringstream ss;
     ss << "Coordinate scaling enabled (L=" << coordinate_scale_factor_ << ")" << colorReset << std::endl;
     log_stage(ss.str());
     for (auto& net : this->WATERS)
       net->applyScaling(coordinate_scale_factor_);
+    scaling_guard.active = true;
   } else {
     std::stringstream ss;
     ss << "Coordinate scaling skipped (L too small: " << coordinate_scale_factor_ << ")" << colorReset << std::endl;
@@ -3205,7 +3238,12 @@ void solveGMRES(TimeWatch& watch, double& time_setup, double& time_solve, const 
     // Parallel DOF array creation (avoiding race on push_back)
     // First, compute offsets for each point
     std::vector<std::size_t> point_dof_counts(this->points.size());
-    _Pragma("omp parallel for") for (std::size_t i = 0; i < this->points.size(); ++i) { point_dof_counts[i] = this->points[i]->f2Index.size(); }
+    _Pragma("omp parallel for") for (std::size_t i = 0; i < this->points.size(); ++i) {
+      std::size_t cnt = 0;
+      for (const auto& [f_, d_] : this->points[i]->dofs)
+        if (d_.index >= 0) ++cnt;
+      point_dof_counts[i] = cnt;
+    }
 
     // Prefix sum to get offsets
     std::vector<std::size_t> point_offsets(this->points.size() + 1, 0);
@@ -3214,7 +3252,7 @@ void solveGMRES(TimeWatch& watch, double& time_setup, double& time_solve, const 
     }
     std::size_t total = point_offsets.back();
 
-    std::vector<dof_entry> dofs(total);
+    std::vector<dof_entry> dofs_arr(total);
 
     // Parallel: compute Morton codes and fill DOF array
     _Pragma("omp parallel for") for (std::size_t i = 0; i < this->points.size(); ++i) {
@@ -3226,13 +3264,12 @@ void solveGMRES(TimeWatch& watch, double& time_setup, double& time_solve, const 
       const std::uint64_t key = morton3(qx, qy, qz);
 
       std::size_t local_idx = point_offsets[i];
-      for (const auto& [f, old] : p->f2Index) {
-        (void)old;
-        dofs[local_idx++] = {key, p, f};
+      for (const auto& [f, d_] : p->dofs) { if (d_.index < 0) continue;
+        dofs_arr[local_idx++] = {key, p, f};
       }
     }
 
-    std::stable_sort(dofs.begin(), dofs.end(), [](const dof_entry& a, const dof_entry& b) {
+    std::stable_sort(dofs_arr.begin(), dofs_arr.end(), [](const dof_entry& a, const dof_entry& b) {
       if (a.key != b.key)
         return a.key < b.key;
       if (a.p != b.p)
@@ -3241,8 +3278,8 @@ void solveGMRES(TimeWatch& watch, double& time_setup, double& time_solve, const 
     });
 
     int new_idx = 0;
-    for (const auto& e : dofs) {
-      e.p->f2Index[e.f] = new_idx++;
+    for (const auto& e : dofs_arr) {
+      e.p->dof(e.f).index = new_idx; new_idx++;
     }
 
     // Also reindex midpoint DOFs (true quadratic) after vertex DOFs
@@ -3251,7 +3288,7 @@ void solveGMRES(TimeWatch& watch, double& time_setup, double& time_solve, const 
       std::unordered_set<networkLine*> unique_lines;
       for (auto* water : WATERS)
         for (auto* l : water->getBoundaryLines())
-          if (!l->f2Index.empty())
+          if (std::any_of(l->dofs.begin(), l->dofs.end(), [](const auto& kv) { return kv.second.index >= 0; }))
             unique_lines.emplace(l);
 
       if (!unique_lines.empty()) {
@@ -3290,11 +3327,13 @@ void solveGMRES(TimeWatch& watch, double& time_setup, double& time_solve, const 
           // Preserve the face→index mapping structure but assign new contiguous indices
           e.l->midpoint_index = new_idx; // backward compat: primary DOF index
           // Reindex: nullptr first (Dirichlet/primary DOF), then face-specific DOFs
-          if (e.l->f2Index.count(nullptr))
-            e.l->f2Index[nullptr] = new_idx++;
-          for (auto& [f, idx] : e.l->f2Index) {
-            if (f != nullptr)
-              idx = new_idx++;
+          if (e.l->findActiveBieDof(nullptr)) {
+            e.l->dof(nullptr).index = new_idx; new_idx++;
+          }
+          for (auto& [f, dd] : e.l->dofs) {
+            if (f != nullptr && dd.index >= 0) {
+              dd.index = new_idx; new_idx++;
+            }
           }
         }
       }
@@ -3373,13 +3412,12 @@ void solveGMRES(TimeWatch& watch, double& time_setup, double& time_solve, const 
     midpoint_lines.clear();
     for (auto* water : WATERS) {
       for (auto* l : water->getBoundaryLines()) {
-        if (l->f2Index.empty())
+        if (!std::any_of(l->dofs.begin(), l->dofs.end(), [](const auto& kv) { return kv.second.index >= 0; }))
           continue;
-        auto [pA, pB] = l->getPoints();
-        Tddd Xmid = l->X_mid;
-        if (!std::isfinite(Xmid[0]) || !std::isfinite(Xmid[1]) || !std::isfinite(Xmid[2]))
-          Xmid = 0.5 * (pA->Xtarget + pB->Xtarget);
-        l->Xtarget = Xmid;
+        if (!std::isfinite(l->X_mid[0]) || !std::isfinite(l->X_mid[1]) || !std::isfinite(l->X_mid[2])) {
+          auto [pA, pB] = l->getPoints();
+          l->setXSingle(0.5 * (pA->Xtarget + pB->Xtarget));
+        }
         midpoint_lines.push_back(l);
       }
     }
@@ -3434,11 +3472,13 @@ void solveGMRES(TimeWatch& watch, double& time_setup, double& time_solve, const 
   // Sequential sum (small overhead not worth parallelizing)
   total_unknowns = 0;
   for (const auto& p : points)
-    total_unknowns += p->f2Index.size();
+    for (const auto& [f_, d_] : p->dofs)
+      if (d_.index >= 0) ++total_unknowns;
   // Include midpoint DOFs for true quadratic elements (CORNER lines have 2 DOFs)
   if (use_true_quadratic_element)
     for (auto* l : midpoint_lines)
-      total_unknowns += static_cast<int>(l->f2Index.size());
+      for (const auto& [f_, d_] : l->dofs)
+        if (d_.index >= 0) ++total_unknowns;
 
   updateGeometricProperties();
   // restorePhiPhin();
@@ -3447,7 +3487,13 @@ void solveGMRES(TimeWatch& watch, double& time_setup, double& time_solve, const 
 
   // Note: Neumann BC scaling is now handled in copyToFMM()
 
-  std::vector<double> x0 = getVectorFromBoundary(WATERS, total_unknowns, [](const networkPoint* p, networkFace* f) { return p->phinOnFace.at(f); }, [](const networkPoint* p, networkFace* f) { return p->phiOnFace.at(f); });
+  std::vector<double> x0 = getVectorFromBoundary(
+      WATERS,
+      total_unknowns,
+      [](const networkPoint* p, networkFace* f) { auto* d = p->findActiveBieDof(f); return d ? d->phin : 0.; },
+      [](const networkPoint* p, networkFace* f) { auto* d = p->findActiveBieDof(f); return d ? d->phi : 0.; },
+      [](const networkLine* l, networkFace* f) { auto* d = l->findActiveBieDof(f); return d ? d->phin : 0.; },
+      [](const networkLine* l, networkFace* f) { auto* d = l->findActiveBieDof(f); return d ? d->phi : 0.; });
 
   time_setup = watch_setup()[0];
   TimeWatch watch_solver;
@@ -3462,8 +3508,8 @@ void solveGMRES(TimeWatch& watch, double& time_setup, double& time_solve, const 
   if (use_coordinate_scaling_ && coordinate_scale_factor_ > 1e-10) {
     std::cout << Magenta << "[BEM] " << Cyan << "Unscaling computed phin by L=" << coordinate_scale_factor_ << colorReset << std::endl;
     for (auto& p : this->points) {
-      for (auto& [f, i] : p->f2Index) {
-        if (isDirichletID_BEM(p, f)) {
+      for (auto& [f, d_] : p->dofs) { if (d_.index < 0) continue; const auto i = d_.index;
+        if (isDirichletBieDofKey(p, f)) {
           // For Dirichlet points, the solution ans[i] is ∂φ/∂n' (in scaled coords)
           // Since ∂φ/∂n' = L × ∂φ/∂n, we need ∂φ/∂n_original = ∂φ/∂n' / L
           ans[i] /= coordinate_scale_factor_;
@@ -3474,8 +3520,8 @@ void solveGMRES(TimeWatch& watch, double& time_setup, double& time_solve, const 
     if (use_true_quadratic_element) {
       for (auto* water : this->WATERS) {
         for (auto* l : water->getBoundaryLines()) {
-          for (const auto& [f, idx] : l->f2Index) {
-            if (idx >= 0 && idx < static_cast<int>(ans.size()) && isDirichletID_BEM(l, f))
+          for (const auto& [f, d_] : l->dofs) { if (d_.index < 0) continue; const auto idx = d_.index;
+            if (idx >= 0 && idx < static_cast<int>(ans.size()) && isDirichletBieDofKey(l, f))
               ans[idx] /= coordinate_scale_factor_;
           }
         }
@@ -3490,13 +3536,15 @@ void solveGMRES(TimeWatch& watch, double& time_setup, double& time_solve, const 
   log_stage("storePhiPhin");
 
   //@ -------------------------------------------------------------------------- */
-  //@   Remove coordinate scaling                                                 */
+  //@   Remove coordinate scaling (handled by RAII ScalingGuard)                  */
   //@ -------------------------------------------------------------------------- */
-  if (use_coordinate_scaling_) {
+  if (scaling_guard.active) {
     std::cout << Magenta << "[BEM] " << Cyan << "Removing coordinate scaling" << colorReset << std::endl;
+    // ScalingGuard destructor will call removeScaling() and reset flags.
+    // Deactivate here to do it explicitly for the log message.
     for (auto& net : this->WATERS)
       net->removeScaling();
-    // Reset scaling flags
+    scaling_guard.active = false;
     use_coordinate_scaling_ = false;
     coordinate_scale_factor_ = 1.0;
   }

@@ -10,9 +10,11 @@
 #include "tetgen.h"
 #endif
 #include "vtkWriter.hpp"
+#include <cstdlib>
 #include <cstdint>
 #include <concepts>
 #include <functional>
+#include <sstream>
 #include <typeinfo>
 #include <unordered_set>
 #include "integrationOfODE.hpp"
@@ -120,21 +122,101 @@ V_netLp extractLines(const std::vector<T*>& points) {
 };
 
 /* ------------------------------------------------------ */
+/*              NodeFaceState                                */
+/*  Per-(node, face) state: BIE values, contact, detach   */
+/* ------------------------------------------------------ */
+
+struct NodeFaceState {
+  // BIE values
+  double phi = 0., phin = 0.;
+  double phi_FMM = 0., phin_FMM = 0.;
+  double phi_t = 0., phin_t = 0.;
+
+  // BVP system
+  int index = -1;
+
+  // Pressure / detachment
+  double pressure = 0.;
+  int detach_negative_count = 0;
+  bool detached_by_pressure = false;
+
+  // Contact (face pointers only; geometry recomputed on use)
+  std::vector<networkFace*> contact_opponent_faces;
+
+  networkFace* nearestContactFace() const noexcept {
+    return contact_opponent_faces.empty() ? nullptr : contact_opponent_faces.front();
+  }
+  bool isNeumann() const noexcept {
+    return !detached_by_pressure && !contact_opponent_faces.empty();
+  }
+};
+
+/* ------------------------------------------------------ */
 /*                  ContactDetectable                     */
 /* ------------------------------------------------------ */
 
 struct ContactDetectable {
   double contact_range = 0.;
   Network* penetratedBody = nullptr;
-  std::unordered_map<networkFace*, std::tuple<networkFace*, Tddd, double>> f_nearestContactFaces;
-  std::vector<std::tuple<networkFace*, Tddd, double>> ContactFaces;
+
+  // --- per-(node, face) DOF (canonical storage) ---
+  std::unordered_map<networkFace*, NodeFaceState> dofs;
+
+  // Write accessor: creates entry if absent (use for assignment)
+  NodeFaceState& dof(networkFace* f) { return dofs[f]; }
+
+  // Contact/boundary state accessor: returns any DOF entry regardless of BIE index.
+  // Use for reading contact_opponent_faces, nearestContactFace(), isNeumann(), detached_by_pressure.
+  const NodeFaceState* findContactState(const networkFace* f) const noexcept {
+    auto it = dofs.find(const_cast<networkFace*>(f));
+    return (it != dofs.end()) ? &it->second : nullptr;
+  }
+
+  /* -------------------------------------------------------------------------
+     Layer 3: ActiveBieDof — 実際に index >= 0 の DOF が存在するかを確認する（「結果」）
+
+     境界条件判定の3層構造:
+
+       Layer 1: BoundaryState — 接触状態としてどうなっているか
+                                （BEM_node_face_state.hpp: isNeumannBoundaryState 等）
+       Layer 2: BieDofKey     — BIE unknown の代表キーとしてどの組を使うべきか
+                                （BEM_setBoundaryTypes.hpp: isNeumannBieDofKey 等）
+       Layer 3: ActiveBieDof  — 実際に index >= 0 の DOF が存在するか（ここ）
+
+     利用可能タイミング:
+       setNodeFaceIndices() 完了後（DOF index が割り当てられた後）。
+       それより前に呼ぶと、全ての DOF が index < 0 であるため常に nullptr を返す。
+
+     Layer 1, 2 は「すべきか」を問う。Layer 3 は「なっているか」を問う。
+  ------------------------------------------------------------------------- */
+
+  // index >= 0 の active な BIE DOF のみを返す。
+  // contact detection で作られた stale エントリ（index < 0）は除外される。
+  const NodeFaceState* findActiveBieDof(const networkFace* f) const noexcept {
+    auto it = dofs.find(const_cast<networkFace*>(f));
+    return (it != dofs.end() && it->second.index >= 0) ? &it->second : nullptr;
+  }
+
+  // face f の active DOF を試し、なければ nullptr（primary DOF）にフォールバック。
+  const NodeFaceState* findActiveBieDofOrDefault(const networkFace* f) const noexcept {
+    if (auto* d = findActiveBieDof(f))
+      return d;
+    return findActiveBieDof(nullptr);
+  }
 
   virtual ~ContactDetectable() = default;
 
   // --- pure virtual ---
   virtual const Tddd& getPosition() const = 0;
+  virtual void setXSingle(const Tddd&) = 0;
   virtual std::vector<networkFace*> getBoundaryFaces() const = 0;
   virtual Network* getNetwork() const = 0;
+
+  // Layer 3: entity が1つ以上の active BIE DOF を持つか。
+  // setNodeFaceIndices() 後に使用可能。
+  bool hasActiveBieDof() const noexcept {
+    return std::any_of(dofs.begin(), dofs.end(), [](const auto& kv) { return kv.second.index >= 0; });
+  }
 
   // Override to extend faces used for isFacing check (e.g., CORNER lines include endpoint vertex faces)
   virtual std::vector<networkFace*> getFacesForContactCheck() const { return getBoundaryFaces(); }
@@ -142,34 +224,25 @@ struct ContactDetectable {
   // Unified contact face detection for both networkPoint and networkLine
   void addContactFaces(const std::vector<Network*>&, bool);
 
-  // --- accessors ---
+  // --- accessors (derived from dofs) ---
   std::vector<networkFace*> getContactFaces() const noexcept {
     std::vector<networkFace*> ret;
-    ret.reserve(this->ContactFaces.size());
-    for (const auto& f : this->ContactFaces)
-      ret.emplace_back(std::get<0>(f));
+    for (const auto& [f, d] : this->dofs)
+      if (!d.contact_opponent_faces.empty())
+        for (auto* cf : d.contact_opponent_faces)
+          if (std::ranges::find(ret, cf) == ret.end())
+            ret.push_back(cf);
     return ret;
   };
-  const std::tuple<networkFace*, Tddd, double> getNearestContactFace() const noexcept {
-    if (this->ContactFaces.size() > 0)
-      return this->ContactFaces[0];
-    else
-      return {nullptr, Tddd{0., 0., 0.}, 0.};
-  };
-  const std::unordered_map<networkFace*, std::tuple<networkFace*, Tddd, double>>& getNearestContactFaces() const noexcept { return this->f_nearestContactFaces; };
 
-  const std::tuple<networkFace*, Tddd, double> getNearestContactFace_(const networkFace* const f) const noexcept {
-    auto it = this->f_nearestContactFaces.find(const_cast<networkFace*>(f));
-    if (it != this->f_nearestContactFaces.end())
-      return it->second;
-    else
-      return std::tuple<networkFace*, Tddd, double>{nullptr, {0., 0., 0.}, 0.};
+  networkFace* getNearestContactFace(const networkFace* const f) const noexcept {
+    const auto* d = findContactState(f);
+    return d ? d->nearestContactFace() : nullptr;
   };
-  networkFace* getNearestContactFace(const networkFace* const f) const noexcept { return std::get<0>(getNearestContactFace_(f)); };
 
   void clearContactFaces() {
-    this->f_nearestContactFaces.clear();
-    this->ContactFaces.clear();
+    for (auto& [f, d] : this->dofs)
+      d.contact_opponent_faces.clear();
   };
 };
 
@@ -182,20 +255,16 @@ struct ContactDetectable {
 struct BEM_DOF_Base : public ContactDetectable {
 #if defined(BEM)
   // --- BIE unknown / solution ---
-  Tdd phiphin = {0., 0.};      // {phi, phin}
-  Tdd phiphin_t = {0., 0.};    // {phi_t, phin_t} (time derivative)
-  double diag_coeff_BEM = 0.;   // diagonal coefficient (alpha)
+  Tdd phiphin = {0., 0.};        // {phi, phin}
+  Tdd phiphin_t = {0., 0.};      // {phi_t, phin_t} (time derivative)
+  Tdd phiphin_copy = {0., 0.};   // {phi, phin}
+  Tdd phiphin_t_copy = {0., 0.}; // {phi_t, phin_t} (time derivative)
+  double diag_coeff_BEM = 0.;    // diagonal coefficient (alpha)
   double phi_tmp = 0.;
-  double phi_Dirichlet = 0.;
 
-  // --- multi-node DOF indices ---
+  // --- boundary classification ---
   bool isMultipleNode = false;
-  std::unordered_map<networkFace*, int> f2Index;
-
-  // --- per-face phi/phin (BIE solver) ---
-  std::unordered_map<networkFace*, double> phiOnFace, phinOnFace;
-  std::unordered_map<networkFace*, double> phiOnFace_FMM, phinOnFace_FMM;
-  std::unordered_map<networkFace*, double> phitOnFace, phintOnFace;
+  bool CORNER = false;
 
   // --- velocity fields ---
   Tddd u_potential_BEM = {0., 0., 0.};
@@ -210,14 +279,26 @@ struct BEM_DOF_Base : public ContactDetectable {
   Tdd relocation_param = {0., 0.};
 
   // --- absorption ---
-  Tddd U_absorbed = {0., 0., 0.};
+  Tddd u_absorbed = {0., 0., 0.};
+  double phi_absorbed = 0.;
+  double absorb_gamma = 0.;
   Network* absorbedBy = nullptr;
+  double signed_distance = 0.;
+
+  // --- RK4 integrators (shared by vertex and midpoint DOFs) ---
+  RungeKutta<double> RK_phi;
+  RungeKutta<Tddd> RK_X;
 
   // --- debug counters ---
   int debug_direction_info_count = 0;
   int debug_contact_faces_count = 0;
   int debug_body_vertices_count = 0;
   int debug_isInContact_pass_count = 0;
+
+  void copy_phiphin() {
+    this->phiphin_copy = this->phiphin;
+    this->phiphin_t_copy = this->phiphin_t;
+  }
 
   // --- material derivative of phi ---
   // Uses virtual getPosition() (Line→X_mid, Point→X)
@@ -262,27 +343,23 @@ public:
 
   /* ------------------------------------------------ */
 public:
-  // bool temporary_bool = false;
 #ifdef DEM
 public:
   double tension;
 #endif
 
 public:
-  bool CORNER;
+  // CORNER is inherited from BEM_DOF_Base
   bool Dirichlet;
   bool Neumann;
   Tddd corner_midpoint_offset = {0., 0., 0.}; // quadratic correction from linear midpoint for CORNER edges
   bool isIntxn();
 #if defined(BEM)
   V_d interpoltedX;
-  int midpoint_index = -1; // DOF index for BIE system (-1 = not assigned)
+  int midpoint_index = -1;   // DOF index for BIE system (-1 = not assigned)
   Tddd X_mid = {0., 0., 0.}; // absolute midpoint position
-  double signed_distance = 0.; // signed distance for absorption zone
-  RungeKutta<double> RK_phi;   // RK4 integrator for phi at midpoint
-  RungeKutta<Tddd> RK_X;       // RK4 integrator for X_mid
 
-  void setXSingle(const Tddd& xyz_IN) {
+  void setXSingle(const Tddd& xyz_IN) override {
     this->X_mid = xyz_IN;
     this->Xtarget = xyz_IN;
   }
@@ -555,8 +632,6 @@ public:
   /* --------------------------------------------------------------------------
    */
 
-  bool temporary_bool = false;
-
 public:
   std::array<double, 3> X_last;
   netPp tmpPoint;
@@ -581,8 +656,7 @@ public:
 
 public:
   // 今のところBEMのためのもの
-  RungeKutta<double> RK_phi;
-  RungeKutta<Tddd> RK_X, RK_X_sub;
+  RungeKutta<Tddd> RK_X_sub;
   RungeKutta<T3Tddd> RK_defGrad;
   T3Tddd defGrad = {{{1., 0., 0.}, {0., 1., 0.}, {0., 0., 1.}}};
   T3Tddd RightCauchyGreen = {{{0., 0., 0.}, {0., 0., 0.}, {0., 0., 0.}}};
@@ -698,7 +772,6 @@ public:
   /* ------------------------------------------------------ */
 
   Tddd signed_distance_vector;
-  double signed_distance;
 
   //! SPH
   std::vector<networkPoint*> points_in_SML;
@@ -906,7 +979,7 @@ public:
   double b_diff_RHS_FMM = 0; //! FMMのため
   double b_RHS_Direct = 0;   //! FMMのため
   double b_RHS_FMM = 0;      //! FMMのため
-  bool CORNER = false;
+  // CORNER is inherited from BEM_DOF_Base
   bool Dirichlet = false;
   bool Neumann = false;
 
@@ -1047,7 +1120,7 @@ public:
   // void set(const V_d& xyz_IN){object3D::setBounds(xyz_IN);};
   void setX(const V_d& xyz_IN);
   void setX(const Tddd& xyz_IN);
-  void setXSingle(const Tddd& xyz_IN) {
+  void setXSingle(const Tddd& xyz_IN) override {
     // this->pre_X = this->X;
     this->CoordinateBounds::setBounds(xyz_IN);
     this->Xtarget = xyz_IN;
@@ -1214,6 +1287,55 @@ public:
   // double getSolidAngle(const V_netFp &faces);
   /*SolidAngle_detail_code*/
 };
+
+inline double localEdgeLength(const networkPoint* p) {
+  if (!p)
+    return 0.0;
+  double sum = 0.0;
+  std::size_t count = 0;
+  for (const auto* l : p->getLines()) {
+    if (!l)
+      continue;
+    const double len = l->length();
+    if (!(len > 0.0) || !std::isfinite(len))
+      continue;
+    sum += len;
+    ++count;
+  }
+  return (count > 0) ? (sum / static_cast<double>(count)) : 0.0;
+}
+
+inline double localEdgeLength(const networkLine* l) {
+  if (!l)
+    return 0.0;
+  const auto [p0, p1] = l->getPoints();
+  std::unordered_set<networkLine*> adjacent_lines;
+  if (p0)
+    for (const auto& L : p0->getBoundaryLines())
+      if (L != l)
+        adjacent_lines.insert(L);
+  if (p1)
+    for (const auto& L : p1->getBoundaryLines())
+      if (L != l)
+        adjacent_lines.insert(L);
+  if (!adjacent_lines.empty()) {
+    double sum = 0.0;
+    std::size_t count = 0;
+    for (const auto& L : adjacent_lines) {
+      const double len = L->length();
+      if (!(len > 0.0) || !std::isfinite(len))
+        continue;
+      sum += len;
+      ++count;
+    }
+    if (count > 0)
+      return sum / static_cast<double>(count);
+  }
+  const double len = l->length();
+  if (len > 0.0 && std::isfinite(len))
+    return len;
+  return std::max(localEdgeLength(p0), localEdgeLength(p1));
+}
 
 inline bool isEdge(const networkPoint* p) {
   return p->getLines().empty() || std::ranges::any_of(p->getLines(), [&](const auto& l) { return (!l || l->getFaces().size() <= 1); });
@@ -1429,10 +1551,11 @@ inline netL* link(netP* const p0, netP* const p1, Network* const net) {
       // << std::endl;
       return new networkLine(net, p0, p1);
     }
-  } catch (std::exception& e) {
-    std::cerr << e.what() << colorReset << std::endl;
-    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "");
-  };
+  } catch (const error_message&) {
+    throw;
+  } catch (const std::exception& e) {
+    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, e.what());
+  }
 };
 inline std::array<netL*, 3> link(netP* const p0, netP* const p1, netP* const p2, Network* const net) { return {link(p0, p1, net), link(p1, p2, net), link(p2, p0, net)}; };
 inline netL* link(netP* const p0, netP* const p1) { return link(p0, p1, p0->getNetwork()); };
@@ -1521,13 +1644,14 @@ public:
   // #                               BEM
   // # ==================================================================
 
-  bool Dirichlet;
-  bool Neumann;
   bool is_active_face = false;
-  bool isDirichlet() const noexcept { return this->Dirichlet; };
-  bool isNeumann() const noexcept { return this->Neumann; };
   int minDepthToCORNER;
   Network* penetratedBody = nullptr;
+
+  // Pressure-based detachment
+  double pressure_neumann = 0.;      // 面平均Neumann側圧力（前ステップ）
+  int detach_negative_count = 0;     // 負圧連続ステップ数
+  bool detached_by_pressure = false; // 圧力剥離されたフラグ
 
   // # ------------------------------------------------------------------
   // # BEMの積分を効率的に行うためにあらかじめ積分情報を作成しておく
@@ -1793,9 +1917,10 @@ public:
       const auto [p0, p1, p2] = this->Points = getPointsFromLines({l0, l1, l2});
       this->PLPLPL = {p0, l0, p1, l1, p2, l2};
       return this->Points;
-    } catch (std::exception& e) {
-      std::cerr << e.what() << colorReset << std::endl;
-      throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "");
+    } catch (const error_message&) {
+      throw;
+    } catch (const std::exception& e) {
+      throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, e.what());
     }
   };
 
@@ -1809,9 +1934,10 @@ public:
       const auto [p0, p1, p2] = this->Points = getPointsFromLines(this->Lines);
       this->PLPLPL = {p0, std::get<0>(this->Lines), p1, std::get<1>(this->Lines), p2, std::get<2>(this->Lines)};
       return this->Points;
-    } catch (std::exception& e) {
-      std::cerr << e.what() << colorReset << std::endl;
-      throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "");
+    } catch (const error_message&) {
+      throw;
+    } catch (const std::exception& e) {
+      throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, e.what());
     }
   };
 
@@ -1874,9 +2000,10 @@ public:
         throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, ss.str());
       } else
         return true;
-    } catch (std::exception& e) {
-      std::cerr << e.what() << colorReset << std::endl;
-      throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "");
+    } catch (const error_message&) {
+      throw;
+    } catch (const std::exception& e) {
+      throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, e.what());
     };
   };
 
@@ -1929,26 +2056,15 @@ public:
       else if ((p0 == std::get<2>(this->Points) /*back*/ && p1 == std::get<0>(this->Points) /*front*/) || (p1 == std::get<2>(this->Points) /*back*/ && p0 == std::get<0>(this->Points) /*front*/))
         return {2, 0, 1};
 
-      throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "");
-    } catch (std::exception& e) {
-      std::cerr << e.what() << colorReset << std::endl;
       std::stringstream ss;
-      ss << "このlineを基準としてインデックスをつくれない：この線はこの面のいっ"
-            "ぺんではない"
-         << std::endl;
-      ss << "setBoundsを忘れていませんか？ "
-            "面の線を変更した際などは，setBoundsを忘れないように"
-         << std::endl;
-      ss << "FaceのgetPoints()"
-            "は，lineから毎回間接的に取得することはやめて，setBoundsの際に保存"
-            "するように変更しました"
-         << std::endl;
-      ss << "input line l = " << l << std::endl;
-      // ss << "l->Points = " << l->getPoints() << std::endl;
-      // ss << "this face->Points = " << this->Points << std::endl;
-      // ss << "this face->Lines = " << this->Lines << std::endl;
+      ss << "このlineを基準としてインデックスをつくれない：この線はこの面のいっぺんではない"
+         << " setBoundsを忘れていませんか？ input line l = " << l;
       throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, ss.str());
-    };
+    } catch (const error_message&) {
+      throw;
+    } catch (const std::exception& e) {
+      throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, e.what());
+    }
   };
   // 与えられたpをindex[0]として，this->Pointsのインデックスを返す
   Tiii point_indicies(const networkPoint* const p) const {
@@ -1962,25 +2078,15 @@ public:
       // for (auto i = 0; i < 3; i++)
       // 	if (p == this->Points[i])
       // 		return {i, (i + 1) % 3, (i + 2) % 3};
-      throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "");
-    } catch (std::exception& e) {
-      std::cerr << e.what() << colorReset << std::endl;
       std::stringstream ss;
-      ss << "このpointを基準としてインデックスをつくれない：この線はこの面のい"
-            "っぺんではない"
-         << std::endl;
-      ss << "setBoundsを忘れていませんか？ "
-            "面の線を変更した際などは，setBoundsを忘れないように"
-         << std::endl;
-      ss << "FaceのgetPoints()"
-            "は，lineから毎回間接的に取得することはやめて，setBoundsの際に保存"
-            "するように変更しました"
-         << std::endl;
-      ss << "input point p = " << p << std::endl;
-      // ss << "this face->Points = " << this->Points << std::endl;
-      // ss << "this face->Lines = " << this->Lines << std::endl;
+      ss << "このpointを基準としてインデックスをつくれない：この線はこの面のいっぺんではない"
+         << " setBoundsを忘れていませんか？ input point p = " << p;
       throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, ss.str());
-    };
+    } catch (const error_message&) {
+      throw;
+    } catch (const std::exception& e) {
+      throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, e.what());
+    }
   };
 
   const Tddd& getAngles() const { return this->angles; };
@@ -1992,9 +2098,10 @@ public:
         return RotateLeft(this->angles, 1);
       else
         return RotateLeft(this->angles, 2);
-    } catch (std::exception& e) {
-      std::cerr << e.what() << colorReset << std::endl;
-      throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "");
+    } catch (const error_message&) {
+      throw;
+    } catch (const std::exception& e) {
+      throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, e.what());
     };
   };
   Tddd getAngles(const networkPoint* const p) const {
@@ -2009,9 +2116,10 @@ public:
         return {a2, a0, a1};
       // return {this->angles[i], /*ここにこの線lが位置する*/ this->angles[j],
       // this->angles[k]};
-    } catch (std::exception& e) {
-      std::cerr << e.what() << colorReset << std::endl;
-      throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "");
+    } catch (const error_message&) {
+      throw;
+    } catch (const std::exception& e) {
+      throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, e.what());
     };
   };
   double getAngle(const networkPoint* p) const {
@@ -2156,9 +2264,10 @@ public:
         return RotateLeft(this->Lines, 2);
       else
         throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "");
-    } catch (std::exception& e) {
-      std::cerr << e.what() << colorReset << std::endl;
-      throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "");
+    } catch (const error_message&) {
+      throw;
+    } catch (const std::exception& e) {
+      throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, e.what());
     };
   };
   //------------------------
@@ -2318,9 +2427,10 @@ public:
       auto [p0_f1, p1_f1, p2_f1] = (*l1)(this)->getPoints(l1); // f1
       auto [p0_f2, p1_f2, p2_f2] = (*l2)(this)->getPoints(l2); // f2
       return {p2_f0, p2_f1, p2_f2, p0_f0, p0_f1, p0_f2};
-    } catch (std::exception& e) {
-      std::cerr << e.what() << colorReset << std::endl;
-      throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "");
+    } catch (const error_message&) {
+      throw;
+    } catch (const std::exception& e) {
+      throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, e.what());
     };
   };
 
@@ -2338,9 +2448,10 @@ public:
        *  1    1/---4(p)---\2   2
        */
       return (*l1)(this)->get6PointsTuple(l1);
-    } catch (std::exception& e) {
-      std::cerr << e.what() << colorReset << std::endl;
-      throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "");
+    } catch (const error_message&) {
+      throw;
+    } catch (const std::exception& e) {
+      throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, e.what());
     };
   };
 
@@ -2971,7 +3082,7 @@ public:
     }
 
     _Pragma("omp parallel for") for (const auto& p : points)
-      p->addContactFaces(nets, false);
+        p->addContactFaces(nets, false);
     // Lines の接触判定（端点の contact_range 設定後に実行）
     auto lines = ToVector(this->getLines());
     for (const auto& l : lines) {
@@ -2980,7 +3091,7 @@ public:
     }
 
     _Pragma("omp parallel for") for (const auto& l : lines)
-      l->addContactFaces(nets, false);
+        l->addContactFaces(nets, false);
 
     std::vector<networkFace*> valid_faces;
     for (const auto& net : nets) {
@@ -2998,11 +3109,11 @@ public:
         faces.emplace_back(f);
     };
     for (const auto& p : points)
-      for (const auto& entry : p->ContactFaces)
-        append_unique_face(std::get<0>(entry));
+      for (auto* cf : p->getContactFaces())
+        append_unique_face(cf);
     for (const auto& l : lines)
-      for (const auto& entry : l->ContactFaces)
-        append_unique_face(std::get<0>(entry));
+      for (auto* cf : l->getContactFaces())
+        append_unique_face(cf);
     this->ContactFaces = std::move(faces);
   };
 
@@ -3220,6 +3331,32 @@ public:
     return std::sqrt(Lx * Lx + Ly * Ly + Lz * Lz);
   }
 
+  static bool scalingDebugEnabled() {
+    if (const char* env = std::getenv("BEM_SCALE_DEBUG"))
+      return std::string(env) != "0";
+    return false;
+  }
+
+  void debugPrintScalingState(const std::string& tag) const {
+    if (!scalingDebugEnabled())
+      return;
+    std::ostringstream oss;
+    oss << Magenta << "[scale] " << Cyan << tag << colorReset
+        << " net=" << (this->name.empty() ? "<unnamed>" : this->name)
+        << " is_scaled=" << is_scaled_
+        << " scale_factor=" << scale_factor_
+        << " charL=" << computeCharacteristicLength()
+        << " points=" << Points.size()
+        << " lines=" << Lines.size()
+        << " faces=" << Faces.size()
+        << " bounds=" << static_cast<const CoordinateBounds&>(*this);
+    if (!Points.empty()) {
+      const auto* p = *Points.begin();
+      oss << " sampleX=" << p->X;
+    }
+    std::cout << oss.str() << std::endl;
+  }
+
   // Apply coordinate scaling: store original coordinates in X_temporary, scale by 1/L
   void applyScaling(double L) {
     if (is_scaled_) {
@@ -3236,8 +3373,7 @@ public:
     }
     // Scale edge midpoint positions (true quadratic geometry)
     for (auto& l : this->Lines) {
-      l->X_mid /= L;
-      l->Xtarget = l->X_mid;
+      l->setXSingle(l->X_mid / L);
     }
     is_scaled_ = true;
     this->setGeometricPropertiesForce();
@@ -3254,8 +3390,7 @@ public:
     }
     // Restore edge midpoint positions
     for (auto& l : this->Lines) {
-      l->X_mid *= scale_factor_;
-      l->Xtarget = l->X_mid;
+      l->setXSingle(l->X_mid * scale_factor_);
     }
     scale_factor_ = 1.0;
     is_scaled_ = false;
@@ -3693,10 +3828,11 @@ inline void networkFace::Delete() {
     // 4. Networkからthisを削除する
     if (!this->network->erase(this))
       throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "is not a member of " + this->network->getName());
-  } catch (std::exception& e) {
-    std::cerr << e.what() << colorReset << std::endl;
-    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "");
-  };
+  } catch (const error_message&) {
+    throw;
+  } catch (const std::exception& e) {
+    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, e.what());
+  }
 };
 
 /* -------------------------------------------------------------------------- */
@@ -3729,10 +3865,11 @@ inline void networkPoint::Delete() {
         if (l)
           delete l;
     }
-  } catch (std::exception& e) {
-    std::cerr << e.what() << colorReset << std::endl;
-    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "");
-  };
+  } catch (const error_message&) {
+    throw;
+  } catch (const std::exception& e) {
+    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, e.what());
+  }
 };
 
 /* -------------------------------------------------------------------------- */

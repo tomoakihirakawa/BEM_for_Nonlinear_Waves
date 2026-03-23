@@ -129,7 +129,9 @@ void setIGIGn() {
 #pragma omp parallel for
     for (const auto &origin : surfacePoints) {
       //@ this loop is for the multiple nodes
-      for (const auto &[_, index] : origin->f2Index) {
+      for (const auto &[_f_key, _d_entry] : origin->dofs) {
+        int index = _d_entry.index;
+        if (index < 0) continue;
         double origin_ign_rigid_mode = 0.;
         auto &IGIGn_Row = IGIGn[index];
         double nr, ig, ign, ww_nr, tmp;
@@ -372,7 +374,9 @@ void setIGIGn() {
       auto midpoint_lines = water->getBoundaryLines();
 #pragma omp parallel for
       for (const auto &origin_line : midpoint_lines) {
-        for (const auto &[_, index] : origin_line->f2Index) {
+        for (const auto &[_f_key, _d_entry] : origin_line->dofs) {
+          int index = _d_entry.index;
+          if (index < 0) continue;
           double origin_ign_rigid_mode = 0.;
           auto &IGIGn_Row = IGIGn[index];
           Tddd R;
@@ -528,7 +532,6 @@ void setIGIGn() {
       }
     }
   }
-  // std::cout << Green << "離散化にかかった時間" << timer() << colorReset << std::endl;
 };
 
 void generateBIEMatrix() {
@@ -573,10 +576,12 @@ void generateBIEMatrix() {
     auto &IGIGn_i = IGIGn[i];
     // Vertex DOF columns
     for (const auto &x : surfacePoints)
-      for (const auto &[x_face, j] : x->f2Index) {
+      for (const auto &[x_face, x_d] : x->dofs) {
+        int j = x_d.index;
+        if (j < 0) continue;
         mat_ukn[i][j] = IGIGn_i[j][0];
         mat_kn[i][j] = IGIGn_i[j][1];
-        if (isNeumannID_BEM(x, x_face)) {
+        if (isNeumannBieDofKey(x, x_face)) {
           std::swap(mat_ukn[i][j], mat_kn[i][j]);
           mat_ukn[i][j] *= -1;
           mat_kn[i][j] *= -1;
@@ -585,10 +590,12 @@ void generateBIEMatrix() {
     // Midpoint DOF columns (true quadratic only)
     if (use_true_quadratic_element)
       for (auto *x_line : water->getBoundaryLines())
-        for (const auto &[x_face, j] : x_line->f2Index) {
+        for (const auto &[x_face, x_d] : x_line->dofs) {
+          int j = x_d.index;
+          if (j < 0) continue;
           mat_ukn[i][j] = IGIGn_i[j][0];
           mat_kn[i][j] = IGIGn_i[j][1];
-          if (isNeumannID_BEM(x_line, x_face)) {
+          if (isNeumannBieDofKey(x_line, x_face)) {
             std::swap(mat_ukn[i][j], mat_kn[i][j]);
             mat_ukn[i][j] *= -1;
             mat_kn[i][j] *= -1;
@@ -601,11 +608,13 @@ void generateBIEMatrix() {
     // Vertex DOF rows
 #pragma omp parallel for
     for (const auto &a : surfacePoints)
-      for (const auto &[a_face, i] : a->f2Index) {
+      for (const auto &[a_face, _d_a] : a->dofs) {
+        int i = _d_a.index;
+        if (i < 0) continue;
         fill_columns(i, surfacePoints, water);
 
         //^ 多重節点の場合，Neumann面上のphiの値は，同じ場所のDirichlet面のphiと一致する
-        if (a->CORNER && isNeumannID_BEM(a, a_face) /*行の変更*/) {
+        if (a->CORNER && isNeumannBieDofKey(a, a_face) /*行の変更*/) {
           std::ranges::fill(mat_ukn[i], 0.);
           std::ranges::fill(mat_kn[i], 0.);
           mat_ukn[i][i] = max_value;
@@ -617,11 +626,13 @@ void generateBIEMatrix() {
     if (use_true_quadratic_element) {
 #pragma omp parallel for
       for (auto *a_line : water->getBoundaryLines())
-        for (const auto &[a_face, i] : a_line->f2Index) {
+        for (const auto &[a_face, _d_l] : a_line->dofs) {
+          int i = _d_l.index;
+          if (i < 0) continue;
           fill_columns(i, surfacePoints, water);
 
           // CORNER midpoint: Neumann face phi = Dirichlet face phi
-          if (a_line->CORNER && isNeumannID_BEM(a_line, a_face)) {
+          if (a_line->CORNER && isNeumannBieDofKey(a_line, a_face)) {
             std::ranges::fill(mat_ukn[i], 0.);
             std::ranges::fill(mat_kn[i], 0.);
             mat_ukn[i][i] = max_value;
@@ -630,7 +641,13 @@ void generateBIEMatrix() {
         }
     }
   }
-  knowns = getVectorFromBoundary(WATERS, this->matrix_size, [](const networkPoint *p, networkFace *f) { return p->phiOnFace.at(f); }, [](const networkPoint *p, networkFace *f) { return p->phinOnFace.at(f); });
+  knowns = getVectorFromBoundary(
+      WATERS,
+      this->matrix_size,
+      [](const networkPoint *p, networkFace *f) { return p->findActiveBieDof(f)->phi; },
+      [](const networkPoint *p, networkFace *f) { return p->findActiveBieDof(f)->phin; },
+      [](const networkLine *l, networkFace *f) { return l->findActiveBieDof(f)->phi; },
+      [](const networkLine *l, networkFace *f) { return l->findActiveBieDof(f)->phin; });
   b_RHS = Dot(mat_kn, knowns);
 };
 
@@ -639,7 +656,6 @@ void solveLU(TimeWatch &watch, double &time_setup, double &time_solve) {
   resetLastGmresDiagnosticsForDirectSolve();
   watch();
   setIGIGn();
-  // std::cout << "2つの係数行列の情報を持つ　P_P_IGIGn　を境界条件に応じて入れ替える（移項）:" << std::endl;
   generateBIEMatrix();
   std::cout << "BIE setup (dense matrix build) time: " << Green << (time_setup = watch()[0]) << colorReset << std::endl;
   ans.resize(knowns.size(), 0.);

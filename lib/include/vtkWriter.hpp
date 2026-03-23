@@ -262,6 +262,35 @@ template <typename T> struct vtkUnstructuredGridWriter : XMLElement {
     };
   };
 
+  /* -------------------------------- addWithPosition -------------------------- */
+  void addWithPosition(const T &v, const Tddd &position, int idx = 0) {
+    std::get<1>(this->vertices[{v, idx}]) = position;
+  }
+
+  /* --------------------------------- addCellData --------------------------- */
+  std::unordered_map<std::string, std::vector<double>> celldata_double;
+
+  void addCellData(const std::string &name, const std::vector<double> &V) {
+    celldata_double[name] = V;
+    std::shared_ptr<XMLElement> DA = nullptr;
+    for (const auto &elem : this->CellData->elements_shared)
+      if (elem->attributes["Name"] == name)
+        DA = elem;
+    if (!DA) {
+      DA = std::make_shared<XMLElement>("DataArray", std::map<std::string, std::string>{{"type", "Float32"}, {"Name", name}, {"format", "ascii"}});
+      this->CellData->add(DA);
+    }
+    auto &data = celldata_double[name];
+    DA->writer = [&](std::stringstream &ss) {
+      for (const auto &val : data) {
+        if (isFinite(val))
+          ss << std::setprecision(6) << (Between(val, {-1E-14, 1E-14}) ? 0 : (float)val) << " ";
+        else
+          ss << "NaN ";
+      }
+    };
+  }
+
   /* ---------------------------------- write --------------------------------- */
 
   template <typename V> V &write(V &ofs) const {

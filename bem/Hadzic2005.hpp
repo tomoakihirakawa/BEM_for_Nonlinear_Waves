@@ -36,7 +36,6 @@ struct Hadzic2005 {
       for (auto j = i - N - shift; j <= i + N - shift; ++j) {
          time.push_back(Hadzic2005_time_angle[j][0]);
          value.push_back(Hadzic2005_time_angle[j][1]);
-         // std::cout << Hadzic2005_time_angle[j][0] << ", " << Hadzic2005_time_angle[j][1] << std::endl;
       }
       const auto intp = InterpolationBspline(3, time, value);
       return -intp(t - start) / 180. * 2 * M_PI;
@@ -57,20 +56,10 @@ struct Hadzic2005 {
       for (auto j = i - N - shift; j <= i + N - shift; ++j) {
          time.push_back(Hadzic2005_time_angle[j][0]);
          value.push_back(Hadzic2005_time_angle[j][1]);
-         // std::cout << Hadzic2005_time_angle[j][0] << ", " << Hadzic2005_time_angle[j][1] << std::endl;
       }
       const auto intp = InterpolationBspline(3, time, value);
 
-      // std::cout << "shift " << shift << std::endl;
-      // std::cout << "begin " << i - 2 - shift << std::endl;
-      // std::cout << "end " << i + 2 - shift << std::endl;
-      // std::cout << "Hadzic2005_time_angle.size() " << Hadzic2005_time_angle.size() << std::endl;
-      // std::cout << "t - start " << t - start << std::endl;
-      // std::cout << "intp(t - start) / 180. * 2 * M_PI " << intp(t - start) / 180. * 2 * M_PI << std::endl;
-      // std::cout << "intp.D(t - start) / 180. * 2 * M_PI " << intp.D(t - start) / 180. * 2 * M_PI << std::endl;
-
       return {0, 0., 0., 0., -intp.D(t - start) / 180. * 2 * M_PI /*rad*/, 0.};
-      // return {0, 0., 0., 0., 0., 0.};
    };
 
    std::array<double, 6> getAccel(const double t) {

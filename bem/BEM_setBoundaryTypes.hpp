@@ -1,10 +1,132 @@
 #pragma once
 
-#include "Network.hpp"
-#include <algorithm>
+#include "BEM_midpoint_debug.hpp"
+#include "BEM_node_face_state.hpp"
+#include "BEM_pressure_detachment.hpp"
+#include <cassert>
 #include <unordered_set>
 
-//! 境界条件と関連が深いのでここで定義しておく
+extern int time_step;
+extern bool enable_pressure_detachment;
+extern int detachment_consecutive_steps;
+
+enum class LineBoundaryType : std::uint8_t {
+  Undefined = 0,
+  Dirichlet = 1,
+  Neumann = 2,
+  Corner = 3,
+};
+
+inline LineBoundaryType getEdgeNodeBoundaryTypeFromFaceStates(const networkLine* l) {
+  if (!l)
+    return LineBoundaryType::Undefined;
+
+  const auto bfs = l->getBoundaryFaces();
+  if (bfs.empty())
+    return LineBoundaryType::Undefined;
+
+  const bool all_neumann = std::ranges::all_of(bfs, [&](const auto& f) {
+    return isNeumannBoundaryState(l, f);
+  });
+  if (all_neumann)
+    return LineBoundaryType::Neumann;
+
+  const bool all_dirichlet = std::ranges::all_of(bfs, [&](const auto& f) {
+    return isDirichletBoundaryState(l, f);
+  });
+  if (all_dirichlet)
+    return LineBoundaryType::Dirichlet;
+
+  return LineBoundaryType::Corner;
+}
+
+inline NodeFaceBoundaryType getVertexNodeBoundaryTypeFromFaceStates(const networkPoint* p) {
+  if (!p)
+    return NodeFaceBoundaryType::Undefined;
+
+  const auto bfs = p->getBoundaryFaces();
+  if (bfs.empty())
+    return NodeFaceBoundaryType::Undefined;
+
+  const bool all_neumann = std::ranges::all_of(bfs, [&](const auto& f) {
+    return isNeumannBoundaryState(p, f);
+  });
+  if (all_neumann)
+    return NodeFaceBoundaryType::Neumann;
+
+  const bool all_dirichlet = std::ranges::all_of(bfs, [&](const auto& f) {
+    return isDirichletBoundaryState(p, f);
+  });
+  if (all_dirichlet)
+    return NodeFaceBoundaryType::Dirichlet;
+
+  return NodeFaceBoundaryType::Undefined;
+}
+
+inline bool hasAnyNeumannBoundaryState(const auto* entity) {
+  const auto bfs = entity->getBoundaryFaces();
+  return std::ranges::any_of(bfs, [&](const auto* f) {
+    return getNodeFaceBoundaryType(entity, f) == NodeFaceBoundaryType::Neumann;
+  });
+}
+
+inline bool hasAnyDirichletBoundaryState(const auto* entity) {
+  const auto bfs = entity->getBoundaryFaces();
+  return std::ranges::any_of(bfs, [&](const auto* f) {
+    return getNodeFaceBoundaryType(entity, f) == NodeFaceBoundaryType::Dirichlet;
+  });
+}
+
+template <class Entity>
+inline void prunePressureDetachedFaceStates(Entity* entity, const std::unordered_set<networkFace*>& alive_faces) {
+  if (!entity)
+    return;
+  // Prune detached_by_pressure in dofs for faces that are dead or lost contact
+  for (auto it = entity->dofs.begin(); it != entity->dofs.end();) {
+    auto* f = it->first;
+    auto& d = it->second;
+    if (!d.detached_by_pressure) {
+      ++it;
+      continue;
+    }
+    const bool face_alive = (f != nullptr) && alive_faces.count(f);
+    const bool still_geometrically_in_contact = face_alive && d.nearestContactFace() != nullptr;
+    if (!face_alive || !still_geometrically_in_contact)
+      d.detached_by_pressure = false;
+    ++it;
+  }
+}
+
+// Pressure-detach flag is persistent while geometric contact remains.
+// Here we only prune stale node-face states whose boundary face disappeared
+// or whose geometric contact has already been lost.
+inline void prunePressureDetachedTraceStates(Network* water) {
+  const auto faces = water->getBoundaryFaces();
+  const std::unordered_set<networkFace*> alive_faces(faces.begin(), faces.end());
+  for (auto* p : water->getBoundaryPoints())
+    prunePressureDetachedFaceStates(p, alive_faces);
+  if (use_true_quadratic_element) {
+    for (auto* l : water->getBoundaryLines())
+      prunePressureDetachedFaceStates(l, alive_faces);
+  }
+}
+
+// face D/N is no longer stored as primary state. The only face-level quantity
+// updated here is penetratedBody, which is still used as a geometric summary.
+inline void updateFacePenetratedBodiesFromTraceStates(Network* water, const std::vector<Network*>& objects) {
+  const auto faces = water->getBoundaryFaces();
+  for (const auto& f : faces) {
+    f->penetratedBody = nullptr;
+    const bool all_point_faces_neumann = std::ranges::all_of(f->getPoints(), [&f](const auto& p) { return isNeumannBoundaryState(p, f); });
+    if (!all_point_faces_neumann) {
+      for (const auto& net : objects)
+        if (net->InsideQ(f->centroid)) {
+          f->penetratedBody = net;
+          break;
+        }
+    }
+  }
+}
 
 /*DOC_EXTRACT 0_1_1_2_BOUNDARY_CONDITIONS
 
@@ -20,24 +142,56 @@ NOTE: $\bf n$が不連続に変化する節点まわりの要素は，自分の�
 
 ### 境界値問題の未知変数ID 多重節点との区別
 
-* `isNeumannID_BEM`と`isDirichletID_BEM`は，節点と面の組みが，境界値問題の未知変数かどうかを判定する．
+* `isNeumannBieDofKey`と`isDirichletBieDofKey`は，節点と面の組みが，境界値問題の未知変数かどうかを判定する．
 
 * `pf2ID`は，節点と面の組みを未知変数IDに変換する．多重節点でない場合は，`{p,nullptr}`が変数のキーとなり，多重節点の場合は，与えられた`{p,f}`が変数のidとなる．
 
 */
 
-inline bool isNeumannID_BEM(const auto p, const netF* f) {
-  if (p->Neumann || p->CORNER) {
-    if (p->isMultipleNode)
-      return (f != nullptr) && f->Neumann;
-    else
-      return (f == nullptr);
-  } else
+/* ---------------------------------------------------------------------------
+   Layer 2: BieDofKey — BIE unknown の代表キーとしてどの (entity, face) 組を
+                        使うべきかを判定する（「規約」）
+
+   境界条件判定の3層構造:
+
+     Layer 1: BoundaryState   — 接触状態としてどうなっているか
+                                （BEM_node_face_state.hpp: isNeumannBoundaryState 等）
+     Layer 2: BieDofKey       — BIE unknown の代表キーとしてどの組を使うべきか（ここ）
+     Layer 3: ActiveBieDof    — 実際に index >= 0 の DOF が存在するか
+                                （Network.hpp: findActiveBieDof 等）
+
+   利用可能タイミング:
+     setContactFaces() 完了後。Layer 1 と同じ情報源を使うが、
+     isMultipleNode と nullptr 規約を加味して DOF 割り当てルールを返す。
+     dof.index は参照しない。「割り当てるべきか」であり「割り当てられているか」ではない。
+
+   DOF 割り当て規約:
+     - Dirichlet DOF は常に (entity, nullptr) に1つだけ割り当てられる。
+       → isDirichletBieDofKey(entity, nullptr) == true
+     - Neumann DOF は isMultipleNode の場合のみ per-face (entity, f) に割り当てられる。
+       → isNeumannBieDofKey(entity, f) == true  (f != nullptr, isMultipleNode)
+     - 非 isMultipleNode の Neumann は (entity, nullptr) に割り当てられる。
+       → isNeumannBieDofKey(entity, nullptr) == true
+
+   旧名: isNeumannID_BEM / isDirichletID_BEM
+--------------------------------------------------------------------------- */
+inline bool isNeumannBieDofKey(const auto p, const netF* f) {
+  if (!p)
     return false;
+  if (p->isMultipleNode)
+    return (f != nullptr) && isNeumannBoundaryState(p, f);
+  return (f == nullptr) && hasAnyNeumannBoundaryState(p);
 };
-inline bool isNeumannID_BEM(const std::tuple<netP*, netF*>& PF) { return isNeumannID_BEM(std::get<0>(PF), std::get<1>(PF)); };
-inline bool isDirichletID_BEM(const auto p, const auto f) { return (p->Dirichlet || p->CORNER) && (f == nullptr); };
-inline bool isDirichletID_BEM(const std::tuple<netP*, netF*>& PF) { return isDirichletID_BEM(std::get<0>(PF), std::get<1>(PF)); };
+inline bool isNeumannBieDofKey(const std::tuple<netP*, netF*>& PF) { return isNeumannBieDofKey(std::get<0>(PF), std::get<1>(PF)); };
+// Dirichlet DOF は常に (entity, nullptr) に割り当てられる（per-face にならない）。
+// そのため isNeumannBieDofKey のように特定 face の BoundaryState を問うのではなく、
+// いずれかの face が Dirichlet かどうか（hasAnyDirichletBoundaryState）で判定する。
+inline bool isDirichletBieDofKey(const auto p, const auto f) {
+  if (!p)
+    return false;
+  return (f == nullptr) && hasAnyDirichletBoundaryState(p);
+};
+inline bool isDirichletBieDofKey(const std::tuple<netP*, netF*>& PF) { return isDirichletBieDofKey(std::get<0>(PF), std::get<1>(PF)); };
 
 /*DOC_EXTRACT 0_3_BEM_utilities
 
@@ -47,7 +201,7 @@ inline bool isDirichletID_BEM(const std::tuple<netP*, netF*>& PF) { return isDir
 
 //@ pf2IDは，setNodeFaceIndicesを実行せずとも使える．pf2Indexは，setNodeFaceIndicesを実行してから使う．
 inline std::tuple<networkPoint*, networkFace*> pf2ID(const networkPoint* p, const networkFace* f) {
-  if (isNeumannID_BEM(p, f) || isDirichletID_BEM(p, f))
+  if (isNeumannBieDofKey(p, f) || isDirichletBieDofKey(p, f))
     return {const_cast<networkPoint*>(p), const_cast<networkFace*>(f)};
   else
     return {const_cast<networkPoint*>(p), nullptr};
@@ -84,16 +238,16 @@ inline std::vector<std::tuple<networkPoint*, networkFace*>> p2AllIDs(const netwo
 */
 
 inline int pf2Index(const networkPoint* p, networkFace* f) {
-  try {
-    if (f == nullptr || !p->isMultipleNode || f->Dirichlet)
-      return p->f2Index.at(nullptr);
-    else
-      return p->f2Index.at(f);
-  } catch (const std::out_of_range& e) {
-    for (const auto& [f, i] : p->f2Index)
-      std::cout << f << " " << i << std::endl;
-    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "error");
-  }
+  auto lookup = [&](networkFace* key) -> int {
+    const auto* d = p->findActiveBieDof(key);
+    if (d)
+      return d->index;
+    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "pf2Index: dof not found");
+  };
+  if (f == nullptr || !p->isMultipleNode || getVertexNodeFaceBoundaryType(p, f) == NodeFaceBoundaryType::Dirichlet)
+    return lookup(nullptr);
+  else
+    return lookup(f);
 };
 
 /*
@@ -103,18 +257,24 @@ inline int pf2Index(const networkPoint* p, networkFace* f) {
 */
 
 // --- 辺中点の多重節点ID/Index関数（頂点の pf2ID / pf2Index に対応） ---
-// isNeumannID_BEM / isDirichletID_BEM は auto 化済みのため networkLine にも使用可能
+// isNeumannBieDofKey / isDirichletBieDofKey は auto 化済みのため networkLine にも使用可能
 
 inline std::tuple<networkLine*, networkFace*> lf2ID(const networkLine* l, const networkFace* f) {
-  if (isNeumannID_BEM(l, f) || isDirichletID_BEM(l, f))
+  if (isNeumannBieDofKey(l, f) || isDirichletBieDofKey(l, f))
     return {const_cast<networkLine*>(l), const_cast<networkFace*>(f)};
   return {const_cast<networkLine*>(l), nullptr};
 }
 
 inline int lf2Index(const networkLine* l, networkFace* f) {
-  if (f == nullptr || !l->isMultipleNode || (f && f->Dirichlet))
-    return l->f2Index.at(nullptr);
-  return l->f2Index.at(f);
+  auto lookup = [&](networkFace* key) -> int {
+    const auto* d = l->findActiveBieDof(key);
+    if (d)
+      return d->index;
+    return -1; // 非活性中点（hybrid境界辺など）
+  };
+  if (f == nullptr || !l->isMultipleNode || getEdgeNodeFaceBoundaryType(l, f) == NodeFaceBoundaryType::Dirichlet)
+    return lookup(nullptr);
+  return lookup(f);
 }
 
 // Returns 6 DOF indices for a true quadratic face: [p0, p1, p2, l0_mid, l1_mid, l2_mid]
@@ -131,129 +291,164 @@ inline std::array<int, 6> getQuadDOFIndices(const networkFace* f) {
           lf2Index(l2, const_cast<networkFace*>(f))};
 }
 
+/* -------------------------------------------------------------------------- */
+
 inline std::size_t setNodeFaceIndices(const std::vector<Network*>& objects) {
   // Indexing policy:
-  // - Assign indices in a spatially coherent order.
-  // - Use z-descending so free-surface (high z) IDs get earlier indices.
-  // - This improves locality for sparse/ILU preconditioners and makes ordering deterministic.
+  // - Assign indices in a spatially coherent order (wave-front from top corner).
+  // - Improves locality for sparse/ILU preconditioners.
 
+  // ---- helpers ----
+
+  // Reference point: (min_x, min_y, max_z) — top-left-front corner
+  double min_x = 1e30, min_y = 1e30, max_z = -1e30;
+  for (const auto* water : objects)
+    for (const auto* p : water->getBoundaryPoints()) {
+      min_x = std::min(min_x, std::get<0>(p->X));
+      min_y = std::min(min_y, std::get<1>(p->X));
+      max_z = std::max(max_z, std::get<2>(p->X));
+    }
+  const Tddd ref_p = {min_x, min_y, max_z};
+
+  auto dist_sq = [&](const Tddd& X) {
+    double dx = std::get<0>(X) - ref_p[0], dy = std::get<1>(X) - ref_p[1], dz = std::get<2>(X) - ref_p[2];
+    return dx * dx + dy * dy + dz * dz;
+  };
+
+  auto sort_faces = [&](auto faces) {
+    std::stable_sort(faces.begin(), faces.end(), [&](const networkFace* a, const networkFace* b) { return dist_sq(a->centroid) < dist_sq(b->centroid); });
+    return faces;
+  };
+
+  // isMultipleNode: CORNER or non-planar normals (> 20°)
+  auto detectMultipleNode = [](auto* entity) {
+    if (entity->CORNER) {
+      entity->isMultipleNode = true;
+      return;
+    }
+    Tddd n = {0., 0., 0.};
+    auto faces = entity->getBoundaryFaces();
+    for (auto* f : faces)
+      n += f->area * f->normal;
+    n = Normalize(n);
+    entity->isMultipleNode = std::ranges::any_of(faces, [&](const auto* f) { return !isFlat(n, f->normal, 20 * M_PI / 180.); });
+  };
+
+  // Prune stale dof entries (faces deleted by remesh)
+  auto pruneStaleDofs = [](auto* entity, const auto& alive) {
+    for (auto it = entity->dofs.begin(); it != entity->dofs.end();)
+      (it->first && !alive.count(it->first)) ? it = entity->dofs.erase(it) : ++it;
+  };
+
+  // ---- alive faces set ----
+  std::unordered_set<networkFace*> alive_faces;
+  for (const auto* water : objects)
+    for (auto* f : water->getBoundaryFaces())
+      alive_faces.emplace(f);
+
+  // ---- collect points ----
   std::unordered_set<networkPoint*> unique_points;
   for (const auto* water : objects)
     for (auto* p : water->getBoundaryPoints())
       unique_points.emplace(p);
-
   std::vector<networkPoint*> points(unique_points.begin(), unique_points.end());
+  std::stable_sort(points.begin(), points.end(), [&](const auto* a, const auto* b) { return dist_sq(a->X) < dist_sq(b->X); });
 
-  // Compute bounding box to determine the reference point (Top corner)
-  // We use (min_x, min_y, max_z) as the reference point to start indexing from the "top-left-front".
-  double min_x = 1e30, min_y = 1e30, max_z = -1e30;
-  for (const auto* p : points) {
-    min_x = std::min(min_x, std::get<0>(p->X));
-    min_y = std::min(min_y, std::get<1>(p->X));
-    max_z = std::max(max_z, std::get<2>(p->X));
-  }
-  const std::array<double, 3> ref_p = {min_x, min_y, max_z};
+  for (auto* p : points)
+    pruneStaleDofs(p, alive_faces);
+  for (auto* p : points)
+    detectMultipleNode(p);
 
-  // Sort by distance from the reference point.
-  // This creates a "wave-front" ordering starting from the top corner,
-  // which generally improves locality compared to pure coordinate slicing.
-  auto dist_sq_from_ref = [&](const std::array<double, 3>& X) {
-    double dx = std::get<0>(X) - ref_p[0];
-    double dy = std::get<1>(X) - ref_p[1];
-    double dz = std::get<2>(X) - ref_p[2]; // dz is negative or zero, but squared
-    // Weight Z direction more to prioritize depth layering (optional, currently equal weights)
-    return dx * dx + dy * dy + dz * dz;
+  // ---- assign DOF indices (common for point and line) ----
+  auto assignDofIndices = [&](auto* entity, std::size_t& idx) {
+    for (auto& [ff, dd] : entity->dofs)
+      dd.index = -1;
+
+    if (isNeumannBieDofKey(entity, nullptr) || isDirichletBieDofKey(entity, nullptr))
+      entity->dof(nullptr).index = idx++;
+
+    if (entity->isMultipleNode)
+      for (auto* f : sort_faces(entity->getBoundaryFaces()))
+        if (f && isNeumannBieDofKey(entity, f))
+          entity->dof(f).index = idx++;
   };
 
-  auto cmp_point = [&](const networkPoint* a, const networkPoint* b) { return dist_sq_from_ref(a->X) < dist_sq_from_ref(b->X); };
-
-  std::stable_sort(points.begin(), points.end(), cmp_point);
-
   std::size_t i = 0;
-  for (auto* q : points) {
-    q->f2Index.clear();
+  for (auto* p : points)
+    assignDofIndices(p, i);
 
-    if (isNeumannID_BEM(q, nullptr) || isDirichletID_BEM(q, nullptr))
-      q->f2Index[nullptr] = i++;
-
-    auto faces = q->getBoundaryFaces();
-    // Sort faces of the same node based on their centroid distance from ref point as well
-    // to maintain consistency with node ordering.
-    auto cmp_face = [&](const networkFace* a, const networkFace* b) { return dist_sq_from_ref(a->centroid) < dist_sq_from_ref(b->centroid); };
-    std::stable_sort(faces.begin(), faces.end(), cmp_face);
-
-    for (auto* f : faces)
-      if (isNeumannID_BEM(q, f) || isDirichletID_BEM(q, f))
-        q->f2Index[f] = i++;
-  }
-
-  // For true quadratic elements, assign DOF indices to edge midpoints
+  // ---- line midpoints (true quadratic only) ----
   if (use_true_quadratic_element) {
     std::unordered_set<networkLine*> unique_lines;
     for (const auto* water : objects)
       for (auto* l : water->getBoundaryLines())
         unique_lines.emplace(l);
-
     std::vector<networkLine*> lines(unique_lines.begin(), unique_lines.end());
-
-    // Sort lines by midpoint distance from reference point for spatial coherence
-    auto midpoint_dist_sq = [&](const networkLine* l) {
-      auto [pA, pB] = l->getPoints();
-      double mx = 0.5 * (std::get<0>(pA->X) + std::get<0>(pB->X));
-      double my = 0.5 * (std::get<1>(pA->X) + std::get<1>(pB->X));
-      double mz = 0.5 * (std::get<2>(pA->X) + std::get<2>(pB->X));
-      double dx = mx - ref_p[0], dy = my - ref_p[1], dz = mz - ref_p[2];
-      return dx * dx + dy * dy + dz * dz;
-    };
-    std::stable_sort(lines.begin(), lines.end(), [&](const networkLine* a, const networkLine* b) {
-      return midpoint_dist_sq(a) < midpoint_dist_sq(b);
+    auto midpoint_pos = [](const networkLine* l) { auto [pA, pB] = l->getPoints(); return 0.5 * (pA->X + pB->X); };
+    std::stable_sort(lines.begin(), lines.end(), [&](const auto* a, const auto* b) {
+      return dist_sq(midpoint_pos(a)) < dist_sq(midpoint_pos(b));
     });
 
+    for (auto* l : lines)
+      pruneStaleDofs(l, alive_faces);
+    for (auto* l : lines)
+      detectMultipleNode(l);
+
     for (auto* l : lines) {
-      l->f2Index.clear();
-      l->isMultipleNode = l->CORNER;
-
-      // Primary DOF (Dirichlet side for CORNER, sole DOF for non-CORNER)
-      if (isDirichletID_BEM(l, nullptr) || isNeumannID_BEM(l, nullptr)) {
-        l->f2Index[nullptr] = i;
-        l->midpoint_index = i; // backward compat
-        i++;
-      }
-
-      // CORNER: additional Neumann face DOF
-      if (l->CORNER) {
-        auto faces = l->getBoundaryFaces();
-        std::stable_sort(faces.begin(), faces.end(), [&](const networkFace* a, const networkFace* b) {
-          return dist_sq_from_ref(a->centroid) < dist_sq_from_ref(b->centroid);
-        });
-        for (auto* f : faces) {
-          if (f && f->Neumann && isNeumannID_BEM(l, f)) {
-            l->f2Index[f] = i++;
-            break; // CORNER edge has exactly 1 Neumann face
-          }
+      // hybrid: skip lines not touching any quadratic face
+      if (use_quadratic_linear_hybrid) {
+        auto bf = l->getBoundaryFaces();
+        if (!std::ranges::any_of(bf, [](const auto* f) { return f && f->isTrueQuadraticElement; }))
+          continue;
+        if (!std::ranges::all_of(bf, [](const auto* f) { return f && f->isTrueQuadraticElement; })) {
+          for (auto& [ff, dd] : l->dofs) dd.index = -1;
+          l->midpoint_index = -1;
+          continue;
         }
       }
+
+      assignDofIndices(l, i);
+      l->midpoint_index = (l->dof(nullptr).index >= 0) ? l->dof(nullptr).index : -1;
     }
   }
+
+  // ---- verify consistency ----
+  auto checkConsistency = [](const auto* entity, const char* msg) {
+    bool has_multiple = std::ranges::count_if(entity->dofs, [](const auto& kv) { return kv.second.index >= 0; }) > 1;
+    assert(entity->isMultipleNode == has_multiple && msg);
+  };
+  for (auto* p : points)
+    checkConsistency(p, "isMultipleNode inconsistent for point");
+  if (use_true_quadratic_element)
+    for (const auto* water : objects)
+      for (auto* l : water->getBoundaryLines())
+        checkConsistency(l, "isMultipleNode inconsistent for line");
 
   return i;
 };
 
-// inline std::size_t setNodeFaceIndices(const std::vector<Network *> &objects) {
-//   std::size_t i = 0;
-//   for (const auto water : objects)
-//     for (const auto &q : water->getBoundaryPoints()) {
-//       q->f2Index.clear();
-//       if (isNeumannID_BEM(q, nullptr) || isDirichletID_BEM(q, nullptr))
-//         q->f2Index[nullptr] = i++;
-//       for (const auto &f : q->getBoundaryFaces())
-//         if (isNeumannID_BEM(q, f) || isDirichletID_BEM(q, f))
-//           q->f2Index[f] = i++;
-//     }
-//   return i;
-// };
-
 inline std::size_t setNodeFaceIndices(const Network* objects) { return setNodeFaceIndices(std::vector<Network*>{const_cast<Network*>(objects)}); };
+
+/* -------------------------------------------------------------------------- */
+/*  initializeNodeFaceStates                                                  */
+/*  全 DOF carrier の boundary (node, face) に NodeFaceState エントリを保証。  */
+/*  try_emplace: 既存エントリ（detach state 等）は上書きしない。               */
+/* -------------------------------------------------------------------------- */
+
+inline void initializeNodeFaceStates(Network* water) {
+  for (auto* p : water->getBoundaryPoints()) {
+    p->dofs.try_emplace(nullptr);
+    for (auto* f : p->getBoundaryFaces())
+      p->dofs.try_emplace(f);
+  }
+  if (use_true_quadratic_element) {
+    for (auto* l : water->getBoundaryLines()) {
+      l->dofs.try_emplace(nullptr);
+      for (auto* f : l->getBoundaryFaces())
+        l->dofs.try_emplace(f);
+    }
+  }
+}
 
 /* -------------------------------------------------------------------------- */
 
@@ -329,7 +524,7 @@ inline void setRigidBodyVelocityAndAccel(Network* net, const double& RK_time) {
   T6d default_acceleration = {0., 0., 0., 0., 0., 0.};
 
   if (net->inputJSON.find("velocity")) {
-    move_name_velocity = net->inputJSON["velocity"][0];
+    move_name_velocity = normalizeVelocityName(net->inputJSON["velocity"][0]);
     std::cout << "move_name_velocity = " << move_name_velocity << std::endl;
     if (move_name_velocity == "update")
       std::cout << " velocity is already updated using acceleration" << std::endl;
@@ -340,6 +535,12 @@ inline void setRigidBodyVelocityAndAccel(Network* net, const double& RK_time) {
       net->velocity = net->RK_Velocity.getX();
     } else {
       std::cout << "(RigidBodyObject) velocity is explicityly given as " << move_name_velocity << std::endl;
+      if (!isSupportedRigidBodyVelocityName(move_name_velocity))
+        throw error_message(__FILE__,
+                            __PRETTY_FUNCTION__,
+                            __LINE__,
+                            "unknown rigid-body velocity profile '" + move_name_velocity +
+                                "'. Supported names: " + supportedRigidBodyVelocityNames());
       double delta_t = 1E-5;
       if (move_name_velocity == "file") {
         double start_time = 0.;
@@ -431,23 +632,13 @@ inline void setBodyVelocity(const std::vector<Network*>& objects) {
 
 // b# ------------------------------------------------------ */
 
-inline void setIsMultipleNode(const auto& p) {
-  if (p->CORNER)
-    p->isMultipleNode = true;
-  else {
-    auto n = p->getNormal_BEM();
-    p->isMultipleNode = std::ranges::any_of(p->getBoundaryFaces(), [&](const auto& f) { return !isFlat(n, f->normal, 20 * M_PI / 180.); });
-  }
-};
-
 /* -------------------------------------------------------------------------- */
 /*                             f,l,pの境界条件を決定                             */
 /* -------------------------------------------------------------------------- */
 
 inline void setBoundaryTypes(Network* water, const std::vector<Network*>& objects) {
   std::cout << water->getName() << "の境界条件を決定 setBoundaryTypes" << std::endl;
-
-  water->setContactFaces(objects);
+  // 前提: initializeNodeFaceStates() + setContactFaces() 済み（refreshBoundaryStatesAndTypes 経由）
 
   for (const auto& f : water->getBoundaryFaces())
     f->penetratedBody = nullptr;
@@ -459,18 +650,46 @@ inline void setBoundaryTypes(Network* water, const std::vector<Network*>& object
         p->penetratedBody = net;
   }
 
-  std::cout << "step2 面の境界条件を判定" << std::endl;
+  std::cout << "step2 節点-面状態と面の貫入情報を更新" << std::endl;
   const auto faces = water->getBoundaryFaces();
-  for (const auto& f : faces) {
-    f->Neumann = std::ranges::all_of(f->getPoints(), [&f](const auto& p) { return (p->getNearestContactFace(f) != nullptr); });
-    if (!f->Neumann) {
-      for (const auto& net : objects)
-        if (net->InsideQ(f->centroid)) {
-          f->Neumann = true;
-          f->penetratedBody = net;
+  prunePressureDetachedTraceStates(water);
+  updateFacePenetratedBodiesFromTraceStates(water, objects);
+
+  // Pressure-based detachment is applied per node-face state, i.e. (p,f) and
+  // (l,f), not per face. Once detached, the node-face state stays Dirichlet
+  // until geometric contact is lost and the stale detach flag gets pruned above.
+  if (enable_pressure_detachment && time_step > 0) {
+    int detached_count = 0;
+    for (auto* p : water->getBoundaryPoints()) {
+      for (auto* f : p->getBoundaryFaces()) {
+        if (isNeumannBoundaryState(p, f) &&
+            !p->penetratedBody &&
+            pressureDetachmentEligible(p, f) &&
+            p->dof(f).detach_negative_count >= detachment_consecutive_steps) {
+          p->dof(f).detached_by_pressure = true;
+          p->dof(f).detach_negative_count = 0;
+          ++detached_count;
         }
+      }
     }
-    f->Dirichlet = !f->Neumann;
+    if (use_true_quadratic_element) {
+      for (auto* l : water->getBoundaryLines()) {
+        for (auto* f : l->getBoundaryFaces()) {
+          if (isNeumannBoundaryState(l, f) &&
+              !l->penetratedBody &&
+              pressureDetachmentEligible(l, f) &&
+              l->dof(f).detach_negative_count >= detachment_consecutive_steps) {
+            l->dof(f).detached_by_pressure = true;
+            l->dof(f).detach_negative_count = 0;
+            ++detached_count;
+          }
+        }
+      }
+    }
+    updateFacePenetratedBodiesFromTraceStates(water, objects);
+    if (detached_count > 0)
+      std::cout << Magenta << "[pressure_detach] " << detached_count
+                << " node-face states detached" << colorReset << std::endl;
   }
 
   std::cout << "step3 線の境界条件を決定" << std::endl;
@@ -480,18 +699,16 @@ inline void setBoundaryTypes(Network* water, const std::vector<Network*>& object
     l->Dirichlet = false;
     l->CORNER = false;
 
-    l->Neumann = std::ranges::all_of(l->getBoundaryFaces(), [](const auto& f) { return f->Neumann; });
+    const auto line_bc = getEdgeNodeBoundaryTypeFromFaceStates(l);
+    l->Neumann = (line_bc == LineBoundaryType::Neumann);
     if (l->Neumann)
       continue;
 
-    bool has_dirichlet = std::ranges::any_of(l->getBoundaryFaces(), [](const auto& f) { return f->Dirichlet; });
-    bool has_neumann = std::ranges::any_of(l->getBoundaryFaces(), [](const auto& f) { return f->Neumann; });
-    l->CORNER = (has_dirichlet && has_neumann);
+    l->CORNER = (line_bc == LineBoundaryType::Corner);
     if (l->CORNER)
       continue;
 
-    bool all_dirichlet = std::ranges::all_of(l->getBoundaryFaces(), [](const auto& f) { return f->Dirichlet; });
-    l->Dirichlet = all_dirichlet;
+    l->Dirichlet = (line_bc == LineBoundaryType::Dirichlet);
     if (l->Dirichlet)
       continue;
 
@@ -524,8 +741,9 @@ inline void setBoundaryTypes(Network* water, const std::vector<Network*>& object
               << colorReset << std::endl;
   }
 
-  // CORNER lines need contact faces from endpoint vertices to detect perpendicular body surfaces.
-  // Re-run addContactFaces for CORNER lines now that CORNER flag is set.
+  // CORNER line classification is now known, so re-build line-side contact
+  // candidates using endpoint-derived check faces. This is used to detect
+  // perpendicular supporting body surfaces around the waterline.
   {
     std::vector<networkLine*> corner_lines;
     for (auto* l : water->getBoundaryLines())
@@ -537,7 +755,7 @@ inline void setBoundaryTypes(Network* water, const std::vector<Network*>& object
     for (const auto& l : corner_lines)
       l->addContactFaces(objects, false);
 
-    // Debug: check CORNER line contact faces
+    // Debug: check CORNER-line contact candidates after the re-run.
     int total_corner = corner_lines.size();
     int with_contacts = 0;
     for (const auto& l : corner_lines) {
@@ -556,25 +774,44 @@ inline void setBoundaryTypes(Network* water, const std::vector<Network*>& object
     std::cout << std::endl;
   }
 
-  std::cout << "step4 点の境界条件を決定" << std::endl;
+  std::cout << "step4 点の境界条件を集約" << std::endl;
   for (const auto& p : water->getPoints()) {
-    p->Neumann = std::ranges::all_of(p->getBoundaryFaces(), [](const auto& f) { return f->Neumann; });
-    p->Dirichlet = std::ranges::all_of(p->getBoundaryFaces(), [](const auto& f) { return f->Dirichlet; });
+    const auto point_bc = getVertexNodeBoundaryTypeFromFaceStates(p);
+    p->Neumann = (point_bc == NodeFaceBoundaryType::Neumann);
+    p->Dirichlet = (point_bc == NodeFaceBoundaryType::Dirichlet);
     p->CORNER = (!p->Neumann && !p->Dirichlet);
-    // step5 多重節点の判定
-    setIsMultipleNode(p);
+    // isMultipleNode は setNodeFaceIndices 内で設定される
   }
 
   //@ ------------------------------------------ */
 
   for (const auto& f : faces) {
-    if (use_true_quadratic_element) {
+    if (use_quadratic_linear_hybrid) {
+      // hybridモード: Dirichlet面とCORNER隣接Neumann面のみ2次
+      bool is_dirichlet_face = std::ranges::all_of(f->getPoints(), [f](const auto* p) {
+        return isDirichletBoundaryState(p, f);
+      });
+      const auto& [l0, l1, l2] = f->Lines;
+      bool has_corner_edge = l0->CORNER || l1->CORNER || l2->CORNER;
+      if (is_dirichlet_face || has_corner_edge) {
+        f->isTrueQuadraticElement = true;
+        f->isPseudoQuadraticElement = false;
+        f->isLinearElement = false;
+      } else {
+        f->isTrueQuadraticElement = false;
+        f->isPseudoQuadraticElement = false;
+        f->isLinearElement = true;
+      }
+    } else if (use_true_quadratic_element) {
       f->isTrueQuadraticElement = true;
       f->isPseudoQuadraticElement = false;
       f->isLinearElement = false;
     } else {
       f->isTrueQuadraticElement = false;
-      f->isPseudoQuadraticElement = use_pseudo_quadratic_element && f->Dirichlet;
+      f->isPseudoQuadraticElement = use_pseudo_quadratic_element &&
+                                    std::ranges::all_of(f->getPoints(), [f](const auto* p) {
+                                      return isDirichletBoundaryState(p, f);
+                                    });
       f->isLinearElement = !f->isPseudoQuadraticElement;
     }
   }
@@ -585,18 +822,39 @@ inline void setBoundaryTypes(Network* water, const std::vector<Network*>& object
 };
 
 /* -------------------------------------------------------------------------- */
+/*  refreshBoundaryStatesAndTypes                                             */
+/*  initializeNodeFaceStates → setContactFaces → setBoundaryTypes を一括実行  */
+/* -------------------------------------------------------------------------- */
+
+inline void refreshBoundaryStatesAndTypes(Network* water, const std::vector<Network*>& objects) {
+  initializeNodeFaceStates(water);
+  water->setContactFaces(objects);
+  setBoundaryTypes(water, objects);
+}
+
+inline void refreshBoundaryStatesAndTypes(std::vector<Network*>& fluid_objects, const std::vector<Network*>& contact_objects) {
+  for (auto& water : fluid_objects) {
+    initializeNodeFaceStates(water);
+    water->setContactFaces(contact_objects);
+    setBoundaryTypes(water, contact_objects);
+  }
+}
+
+/* -------------------------------------------------------------------------- */
 /* CORNER edge quadratic interpolation along waterline                        */
 /* -------------------------------------------------------------------------- */
 
-// Get the Neumann face adjacent to a CORNER line
+// Return one Neumann-side face adjacent to a CORNER line.
+// The line itself is classified from node-face states; this helper only picks a
+// representative face on the Neumann side for geometric interpolation.
 inline networkFace* getNeumannFaceOfCornerLine(const networkLine* l) {
   for (auto* f : l->getBoundaryFaces())
-    if (f->Neumann)
+    if (isNeumannBoundaryState(l, f))
       return f;
   return nullptr;
 }
 
-// Find the adjacent CORNER point of p along the waterline, excluding the given line
+// Find the neighboring CORNER point along the waterline, excluding one line.
 inline networkPoint* getAdjacentCornerPoint(const networkPoint* p, const networkLine* exclude_line) {
   for (auto* l : p->getLines()) {
     if (l->CORNER && l != exclude_line) {
@@ -607,7 +865,7 @@ inline networkPoint* getAdjacentCornerPoint(const networkPoint* p, const network
   return nullptr; // waterline endpoint
 }
 
-// Find the CORNER line connecting p to its adjacent CORNER point (excluding exclude_line)
+// Find the neighboring CORNER line along the waterline, excluding one line.
 inline networkLine* getAdjacentCornerLine(const networkPoint* p, const networkLine* exclude_line) {
   for (auto* l : p->getLines()) {
     if (l->CORNER && l != exclude_line)
@@ -616,8 +874,8 @@ inline networkLine* getAdjacentCornerLine(const networkPoint* p, const networkLi
   return nullptr;
 }
 
-// Check if Neumann surface is smooth at a CORNER point between two CORNER lines
-// Returns true if the dihedral angle is close to 180 degrees (normals nearly parallel)
+// Check whether the Neumann-side surface is smooth across two CORNER lines.
+// Returns true when the representative Neumann-face normals are nearly parallel.
 inline bool isNeumannSurfaceSmooth(const networkLine* l1, const networkLine* l2) {
   auto* nf1 = getNeumannFaceOfCornerLine(l1);
   auto* nf2 = getNeumannFaceOfCornerLine(l2);
@@ -765,56 +1023,83 @@ inline void setPhiPhinOnFace_run(Node* node,
                                  const std::unordered_map<networkFace*, double>& old_phin_on_face = {}) {
   if (f && !alive_faces.count(f))
     return;
-  if (isNeumannID_BEM(node, f)) {
+  auto& d = node->dof(f);
+  if (isNeumannBieDofKey(node, f)) {
     if (node->absorbedBy != nullptr) {
       Tddd vel = node->absorbedBy->absorb_velocity(getNodeX(node), getNodeTime(node));
       if (f == nullptr)
-        node->phinOnFace[f] = phin_ref(node) = Dot(vel, getNormalNeumann(node));
+        d.phin = phin_ref(node) = Dot(vel, getNormalNeumann(node));
       else
-        node->phinOnFace[f] = Dot(vel, f->normal);
+        d.phin = Dot(vel, f->normal);
     } else {
       if (f == nullptr)
-        node->phinOnFace[f] = phin_ref(node) = Dot(contactNormalVelocity(node), getNormalNeumann(node));
+        d.phin = phin_ref(node) = Dot(contactNormalVelocity(node), getNormalNeumann(node));
       else
-        node->phinOnFace[f] = Dot(contactNormalVelocity(node, f), f->normal);
+        d.phin = Dot(contactNormalVelocity(node, f), f->normal);
     }
     if (node->isMultipleNode) {
       auto it = old_phi_on_face.find(f);
-      node->phiOnFace[f] = (it != old_phi_on_face.end()) ? it->second : phi_ref(node);
+      d.phi = (it != old_phi_on_face.end()) ? it->second : phi_ref(node);
     } else
-      node->phiOnFace[f] = phi_ref(node);
-    node->phitOnFace[f] = 1E+30;
-    node->phintOnFace[f] = 1E+30;
+      d.phi = phi_ref(node);
+    d.phi_t = 1E+30;
+    d.phin_t = 1E+30;
   }
-  if (isDirichletID_BEM(node, f)) {
-    node->phiOnFace[f] = phi_ref(node);
+  if (isDirichletBieDofKey(node, f)) {
+    d.phi = phi_ref(node);
     if (node->isMultipleNode) {
       auto it = old_phin_on_face.find(f);
-      node->phinOnFace[f] = (it != old_phin_on_face.end()) ? it->second : phin_ref(node);
+      d.phin = (it != old_phin_on_face.end()) ? it->second : phin_ref(node);
     } else
-      node->phinOnFace[f] = phin_ref(node);
-    node->phitOnFace[f] = 1E+30;
-    node->phintOnFace[f] = 1E+30;
+      d.phin = phin_ref(node);
+    d.phi_t = 1E+30;
+    d.phin_t = 1E+30;
   }
 }
 
 inline void setPhiPhinOnFace(Network* water) {
+  // この関数は，現在の節点/辺中点の「境界種別」の結果に従って，
+  // BIE に渡す各 DOF の phi / phin を毎 RK step ごとに組み直す。
+  //
+  // 重要なのは，
+  // 1. まず前 step の dof 値を退避する
+  // 2. dof を一度クリアする
+  // 3. Dirichlet なら phi，Neumann なら phin を再設定する
+  // という順序で処理している点。
+  //
+  // 多重節点では「節点そのものの代表値(nullptr 側)」と
+  // 「各隣接面ごとの値(face 側)」の両方を持ちうるため，
+  // setPhiPhinOnFace_run(..., nullptr, ...) と
+  // setPhiPhinOnFace_run(..., face, ...) の両方を呼ぶ。
   const auto surface_vec = water->getBoundaryFaces();
+  // リメッシュ等で既に消えた面の DOF を誤って再利用しないため，
+  // 現在生存している境界面集合を先に作る。
   const std::unordered_set<networkFace*> alive_faces(surface_vec.begin(), surface_vec.end());
 
   // b! 点
   std::cout << Green << "RKのtime step毎に，Dirichlet点にはΦを与える．Neumann点にはΦnを与える" << colorReset << std::endl;
 
-#pragma omp parallel for
-  for (const auto& p : ToVector(water->getPoints())) {
-    auto old_phi_on_face = std::move(p->phiOnFace);
-    auto old_phin_on_face = std::move(p->phinOnFace);
-    p->phiOnFace.clear();
-    p->phinOnFace.clear();
-    p->phitOnFace.clear();
-    p->phintOnFace.clear();
+  _Pragma("omp parallel for") for (const auto& p : ToVector(water->getPoints())) {
+    std::unordered_map<networkFace*, double> old_phi_on_face;
+    std::unordered_map<networkFace*, double> old_phin_on_face;
+    // 多重節点では face ごとに別の値を持つので，更新前の dof 値を face 単位で保存する。
+    // Dirichlet/Neumann の種別が切り替わっても，必要なら旧値を初期値として引き継げる。
+    for (const auto& [f, d] : p->dofs) {
+      old_phi_on_face[f] = d.phi;
+      old_phin_on_face[f] = d.phin;
+    }
+    // この step の境界条件を一から作り直すため，BIE 用 dof 値を一旦ゼロクリアする。
+    for (auto& [f, d] : p->dofs) {
+      d.phi = 0.;
+      d.phin = 0.;
+      d.phi_t = 0.;
+      d.phin_t = 0.;
+    }
 
+    // nullptr 側は「節点代表値」の更新。
+    // 非多重節点ではこちらが実体で，多重節点でも Dirichlet 側の共通参照元になる。
     setPhiPhinOnFace_run(p, (networkFace*)nullptr, alive_faces, old_phi_on_face, old_phin_on_face);
+    // face 側は，多重節点で必要になる「面ごとの dof」を更新する。
     for (auto* face : p->getBoundaryFaces())
       setPhiPhinOnFace_run(p, face, alive_faces, old_phi_on_face, old_phin_on_face);
   }
@@ -823,35 +1108,59 @@ inline void setPhiPhinOnFace(Network* water) {
   std::cout << Green << "RKのtime step毎に，Dirichlet面にはΦを与える．Neumann面にはΦnを与える．" << colorReset << std::endl;
   for (const auto& f : water->getBoundaryFaces()) {
     auto [p0, p1, p2] = f->getPoints();
+    // 面自体の phi は，その面を構成する3頂点の phi の平均を代表値として使う。
+    // ここでは面上の phin を直接持たせるのではなく，主に可視化や後段参照用の値を更新している。
     std::get<0>(f->phiphin) = (std::get<0>(p0->phiphin) + std::get<0>(p1->phiphin) + std::get<0>(p2->phiphin)) / 3.;
   }
 
   // b! 辺中点（真2次要素の場合）
   if (use_true_quadratic_element) {
     for (auto* l : water->getBoundaryLines()) {
-      auto old_phi_on_face = std::move(l->phiOnFace);
-      auto old_phin_on_face = std::move(l->phinOnFace);
-      l->phiOnFace.clear();
-      l->phinOnFace.clear();
-      l->phitOnFace.clear();
-      l->phintOnFace.clear();
+      std::unordered_map<networkFace*, double> old_phi_on_face;
+      std::unordered_map<networkFace*, double> old_phin_on_face;
+      // 真2次要素の辺中点も，多重節点と同様に face ごとの dof を持ちうる。
+      for (const auto& [f, d] : l->dofs) {
+        old_phi_on_face[f] = d.phi;
+        old_phin_on_face[f] = d.phin;
+      }
+      // 毎 step 再構築するので，一旦クリアする。
+      for (auto& [f, d] : l->dofs) {
+        d.phi = 0.;
+        d.phin = 0.;
+        d.phi_t = 0.;
+        d.phin_t = 0.;
+      }
 
-      if (l->f2Index.empty()) {
-        l->phiOnFace[nullptr] = l->phiphin[0];
-        l->phinOnFace[nullptr] = l->phiphin[1];
+      // この辺中点が BIE の未知数として実際に使われるかを確認する。
+      // index < 0 しか無ければ，この line 用の独立 DOF は存在しない。
+      bool has_dof_index = false;
+      for (const auto& [f, d] : l->dofs)
+        if (d.index >= 0) {
+          has_dof_index = true;
+          break;
+        }
+
+      if (!has_dof_index) {
+        // 独立 DOF を持たない場合は，辺中点自身の代表値をそのまま残して終了する。
+        auto& d0 = l->dof(nullptr);
+        d0.phi = l->phiphin[0];
+        d0.phin = l->phiphin[1];
         continue;
       }
 
-      // Bootstrap: 最初のRKステップ前は端点平均を使う
-      if (l->RK_phi.steps == 0) {
-        auto [pA, pB] = l->getPoints();
-        phi_ref(l) = 0.5 * (std::get<0>(pA->phiphin) + std::get<0>(pB->phiphin));
-      }
+      // RK_phi/RK_X は main_time_domain.cpp 側で setPhiPhinOnFace() より先に
+      // 現在の代表値から初期化される。ここで辺中点の phi を端点平均で
+      // 上書きすると，初期条件や直前 step で保持していた true_quadratic の
+      // midpoint 値を壊してしまうため，bootstrap 上書きは行わない。
 
-      for (const auto& [f, idx] : l->f2Index)
-        setPhiPhinOnFace_run(l, f, alive_faces, old_phi_on_face, old_phin_on_face);
+      // 真2次要素の辺中点は，独立 DOF を持つ face に対してのみ更新する。
+      for (const auto& [f, d] : l->dofs)
+        if (d.index >= 0)
+          setPhiPhinOnFace_run(l, f, alive_faces, old_phi_on_face, old_phin_on_face);
     }
   }
+
+  dumpDebugMidpointLineState(water, "post-setPhiPhinOnFace", time_step, -1);
 };
 
 inline void setPhiPhinOnFace(const std::vector<Network*>& objects) {
@@ -865,64 +1174,47 @@ inline void setPhiPhinOnFace(const std::vector<Network*>& objects) {
 
 // \label{BEM:setPhiPhin_t}
 inline void setPhiPhin_t(std::vector<Network*> WATERS) {
-  //    for (const auto water : WATERS)
-  // #pragma omp parallel
-  //       for (const auto &p : water->getPoints())
-  // #pragma omp single nowait
-  //          for (const auto &[F, i] : p->f2Index) {
-  //             // auto [p, F] = PBF;
-  //             //!!ノイマンの場合はこれでDphiDtは計算できませんよ
-  //             if (isDirichletID_BEM(p, F))
-  //                p->phitOnFace.at(F) = std::get<0>(p->phiphin_t) = p->aphiat(0.);
-  //             else if (isNeumannID_BEM(p, F)) {
-  //                for (auto &[f, phin_t] : p->phintOnFace) {
-  //                   // phin_t = std::get<1>(p->phiphin_t) = (f != nullptr) ? phint_Neumann(f) : phint_Neumann(p);
-  //                   phin_t = (f != nullptr) ? phint_Neumann(p, f) : phint_Neumann(p);  // \label{BEM:setphint}
-  //                }
-  //                std::get<1>(p->phiphin_t) = phint_Neumann(p);
-  //             }
-  //          }
-
   /* -------------------------------------------------------------------------- */
   // --- 統一テンプレート: setPhiPhin_t の per-face 処理 ---
   auto setPhiPhin_t_run = [](auto* node,
                              networkFace* const f,
                              const std::unordered_map<networkFace*, double>& old_phit_on_face = {},
                              const std::unordered_map<networkFace*, double>& old_phint_on_face = {}) {
-    if (isNeumannID_BEM(node, f)) {
+    auto& d = node->dof(f);
+    if (isNeumannBieDofKey(node, f)) {
       if (node->absorbedBy != nullptr) {
         Tddd gradPhi_t = node->absorbedBy->absorb_gradPhi_t(getNodeX(node), getNodeTime(node));
         if (f == nullptr)
-          node->phintOnFace[f] = phint_ref(node) = Dot(gradPhi_t, getNormalNeumann(node));
+          d.phin_t = phint_ref(node) = Dot(gradPhi_t, getNormalNeumann(node));
         else
-          node->phintOnFace[f] = Dot(gradPhi_t, f->normal);
+          d.phin_t = Dot(gradPhi_t, f->normal);
       } else {
         if (f == nullptr)
-          node->phintOnFace[f] = phint_ref(node) = phint_Neumann(node);
+          d.phin_t = phint_ref(node) = phint_Neumann(node);
         else
-          node->phintOnFace[f] = phint_Neumann(node, f);
+          d.phin_t = phint_Neumann(node, f);
       }
       const double fallback_phit = sanitizePhiTInitialGuess(phit_ref(node), 0.);
       if (node->isMultipleNode) {
         auto it = old_phit_on_face.find(f);
-        node->phitOnFace[f] = (it != old_phit_on_face.end())
-                                  ? sanitizePhiTInitialGuess(it->second, fallback_phit)
-                                  : fallback_phit;
+        d.phi_t = (it != old_phit_on_face.end())
+                      ? sanitizePhiTInitialGuess(it->second, fallback_phit)
+                      : fallback_phit;
       } else
-        node->phitOnFace[f] = fallback_phit;
+        d.phi_t = fallback_phit;
     }
-    if (isDirichletID_BEM(node, f)) {
-      node->phitOnFace[f] = getDirichletPhit(node);
+    if (isDirichletBieDofKey(node, f)) {
+      d.phi_t = getDirichletPhit(node);
       if (f == nullptr)
-        phit_ref(node) = node->phitOnFace[f];
+        phit_ref(node) = d.phi_t;
       const double fallback_phint = sanitizePhiTInitialGuess(phint_ref(node), 0.);
       if (node->isMultipleNode) {
         auto it = old_phint_on_face.find(f);
-        node->phintOnFace[f] = (it != old_phint_on_face.end())
-                                   ? sanitizePhiTInitialGuess(it->second, fallback_phint)
-                                   : fallback_phint;
+        d.phin_t = (it != old_phint_on_face.end())
+                       ? sanitizePhiTInitialGuess(it->second, fallback_phint)
+                       : fallback_phint;
       } else
-        node->phintOnFace[f] = fallback_phint;
+        d.phin_t = fallback_phint;
     }
   };
 
@@ -932,10 +1224,12 @@ inline void setPhiPhin_t(std::vector<Network*> WATERS) {
   for (const auto water : WATERS)
 #pragma omp parallel for
     for (const auto& p : ToVector(water->getPoints())) {
-      auto old_phit_on_face = std::move(p->phitOnFace);
-      auto old_phint_on_face = std::move(p->phintOnFace);
-      p->phitOnFace.clear();
-      p->phintOnFace.clear();
+      std::unordered_map<networkFace*, double> old_phit_on_face;
+      std::unordered_map<networkFace*, double> old_phint_on_face;
+      for (const auto& [f, d] : p->dofs) {
+        old_phit_on_face[f] = d.phi_t;
+        old_phint_on_face[f] = d.phin_t;
+      }
 
       setPhiPhin_t_run(p, (networkFace*)nullptr, old_phit_on_face, old_phint_on_face);
       for (const auto& f : p->getBoundaryFaces())
@@ -946,13 +1240,16 @@ inline void setPhiPhin_t(std::vector<Network*> WATERS) {
   if (use_true_quadratic_element) {
     for (const auto water : WATERS) {
       for (auto* l : water->getBoundaryLines()) {
-        auto old_phit_on_face = std::move(l->phitOnFace);
-        auto old_phint_on_face = std::move(l->phintOnFace);
-        l->phitOnFace.clear();
-        l->phintOnFace.clear();
+        std::unordered_map<networkFace*, double> old_phit_on_face;
+        std::unordered_map<networkFace*, double> old_phint_on_face;
+        for (const auto& [f, d] : l->dofs) {
+          old_phit_on_face[f] = d.phi_t;
+          old_phint_on_face[f] = d.phin_t;
+        }
 
-        for (const auto& [f, idx] : l->f2Index)
-          setPhiPhin_t_run(l, f, old_phit_on_face, old_phint_on_face);
+        for (const auto& [f, d] : l->dofs)
+          if (d.index >= 0)
+            setPhiPhin_t_run(l, const_cast<networkFace*>(f), old_phit_on_face, old_phint_on_face);
       }
     }
   }
@@ -964,87 +1261,106 @@ inline void setPhiPhin_t(std::vector<Network*> WATERS) {
 /* -------------------------------------------------------------------------- */
 /* -------------------------------------------------------------------------- */
 
-template <typename T1, typename T2, typename T3>
-void storePhiPhinCommon(const std::vector<Network*>& WATERS, const V_d& ans, T1 phiphinProperty, T2 phiOnFaceProperty, T3 phinOnFaceProperty) {
+// mode: false = phi/phin, true = phi_t/phin_t
+void storePhiPhinCommon(const std::vector<Network*>& WATERS, const V_d& ans, bool time_derivative_mode) {
+
+  // Accessors to select phi/phin vs phi_t/phin_t in dofs and phiphin
+  auto get_phi_from_dof = [&](const NodeFaceState& d) -> double { return time_derivative_mode ? d.phi_t : d.phi; };
+  auto get_phin_from_dof = [&](const NodeFaceState& d) -> double { return time_derivative_mode ? d.phin_t : d.phin; };
+  auto set_phi_in_dof = [&](NodeFaceState& d, double v) { if (time_derivative_mode) d.phi_t = v; else d.phi = v; };
+  auto set_phin_in_dof = [&](NodeFaceState& d, double v) { if (time_derivative_mode) d.phin_t = v; else d.phin = v; };
+  auto get_phiphin_0 = [&](const BEM_DOF_Base* p) -> double { return time_derivative_mode ? std::get<0>(p->phiphin_t) : std::get<0>(p->phiphin); };
+  auto set_phiphin_0 = [&](BEM_DOF_Base* p, double v) { if (time_derivative_mode) std::get<0>(p->phiphin_t) = v; else std::get<0>(p->phiphin) = v; };
+  auto set_phiphin_1 = [&](BEM_DOF_Base* p, double v) { if (time_derivative_mode) std::get<1>(p->phiphin_t) = v; else std::get<1>(p->phiphin) = v; };
 
   for (const auto water : WATERS) {
-#pragma omp parallel for
-    for (const auto& p : ToVector(water->getPoints()))
-      for (const auto& [f, i] : p->f2Index) {
-        if (isDirichletID_BEM(p, f)) {
-          (p->*phinOnFaceProperty).at(f) = std::get<1>(p->*phiphinProperty) = ans[i];
-          (p->*phiOnFaceProperty).at(f) = std::get<0>(p->*phiphinProperty);
+    _Pragma("omp parallel for") for (const auto& p : ToVector(water->getPoints())) {
+      for (auto& [f, d] : p->dofs) {
+        if (d.index < 0 || d.index >= static_cast<int>(ans.size()))
+          continue;
+        if (isDirichletBieDofKey(p, f)) {
+          set_phin_in_dof(d, ans[d.index]);
+          set_phiphin_1(p, ans[d.index]);
+          set_phi_in_dof(d, get_phiphin_0(p));
         }
-        if (isNeumannID_BEM(p, f)) {
-          (p->*phiOnFaceProperty).at(f) = std::get<0>(p->*phiphinProperty) = ans[i];
+        if (isNeumannBieDofKey(p, f)) {
+          set_phi_in_dof(d, ans[d.index]);
+          // CORNER / mixed node では phiphin[0] は Dirichlet 側の phi を保持すべき。
+          // Neumann 側の BVP 解で上書きすると absorber の効果が失われる。
+          if (!hasAnyDirichletBoundaryState(p))
+            set_phiphin_0(p, ans[d.index]);
         }
       }
+    }
   }
 
-  //^ 隣接フェイスの面積で重み付けした phi 値の寄与を計算し，結果を phiphinProperty に格納
-  for (const auto water : WATERS) {
-#pragma omp parallel for
+  //^ 隣接フェイスの面積で重み付けした phi 値の寄与を計算し，結果を phiphin に格納
+  _Pragma("omp parallel for") for (const auto water : WATERS) {
     for (const auto& p : ToVector(water->getPoints()))
       if (p->Neumann) {
+        //! 隣接面に Dirichlet 条件がない点は，phiがBIEによって初めて与えられるので，その値を周囲の面積で重み付け平均して代表値とする
+        //! 反対に，それ以外の点の修正は行ってはいけない
         double total = 0;
-        std::get<0>(p->*phiphinProperty) = 0;
+        set_phiphin_0(p, 0.);
         for (const auto& f : p->getBoundaryFaces()) {
           total += f->area;
-          if ((p->*phiOnFaceProperty).count(f))
-            std::get<0>(p->*phiphinProperty) += (p->*phiOnFaceProperty).at(f) * f->area;
-          else
-            std::get<0>(p->*phiphinProperty) += (p->*phiOnFaceProperty).at(nullptr) * f->area;
+          const auto* d = p->findActiveBieDofOrDefault(f);
+          double phi_val = d ? get_phi_from_dof(*d) : 0.;
+          set_phiphin_0(p, get_phiphin_0(p) + phi_val * f->area);
         }
-        std::get<0>(p->*phiphinProperty) /= total;
+        if (total > 0.)
+          set_phiphin_0(p, get_phiphin_0(p) / total);
       }
   }
 
   // True quadratic: write back solved midpoint values to per-face maps
-  // Note: For phi_t solve, phi_mid/phin_mid are temporarily swapped with phi_t_mid/phin_t_mid,
-  // so writing to phiOnFace/phinOnFace here correctly updates the phi_t values
-  // (because the swap also covers the per-face maps — see BEM_solveBVP.hpp).
   if (use_true_quadratic_element) {
     for (const auto water : WATERS)
       for (auto* l : water->getBoundaryLines())
-        for (const auto& [f, idx] : l->f2Index) {
-          if (idx < 0 || idx >= static_cast<int>(ans.size()))
+        for (auto& [f, d] : l->dofs) {
+          if (d.index < 0 || d.index >= static_cast<int>(ans.size()))
             continue;
-          if (isDirichletID_BEM(l, f))
-            l->phinOnFace[f] = ans[idx]; // Dirichlet DOF: phin is unknown
-          if (isNeumannID_BEM(l, f))
-            l->phiOnFace[f] = ans[idx]; // Neumann DOF: phi is unknown
+          if (isDirichletBieDofKey(l, f))
+            set_phin_in_dof(d, ans[d.index]); // Dirichlet DOF: phin is unknown
+          if (isNeumannBieDofKey(l, f))
+            set_phi_in_dof(d, ans[d.index]); // Neumann DOF: phi is unknown
         }
-    // Update representative scalars — area-weighted average of per-face values,
-    // analogous to the vertex treatment above (L982-996).
-    // Without this, CORNER midpoints would keep a stale nullptr-key value
-    // that diverges from the BIE-solved face-specific values.
+    // Update representative scalars — area-weighted average of per-face values
     for (const auto water : WATERS)
       for (auto* l : water->getBoundaryLines()) {
         // phi representative: area-weighted average over boundary faces
-        {
+        if (l->Neumann) {
+          //! 隣接面に Dirichlet 条件がない点は，phiがBIEによって初めて与えられるので，その値を周囲の面積で重み付け平均して代表値とする
+          //! 反対に，それ以外の点の修正は行ってはいけない
           double total_area = 0., weighted_phi = 0.;
           for (auto* f : l->getBoundaryFaces()) {
             if (f == nullptr)
               continue;
-            double phi_f = (l->phiOnFace.count(f))         ? l->phiOnFace.at(f)
-                           : (l->phiOnFace.count(nullptr)) ? l->phiOnFace.at(nullptr)
-                                                           : l->phiphin[0];
+            double phi_f;
+            if (auto* df = l->findActiveBieDofOrDefault(f))
+              phi_f = get_phi_from_dof(*df);
+            else
+              phi_f = time_derivative_mode ? std::get<0>(l->phiphin_t) : l->phiphin[0];
             weighted_phi += phi_f * f->area;
             total_area += f->area;
           }
           if (total_area > 0.)
-            l->phiphin[0] = weighted_phi / total_area;
-          else if (l->phiOnFace.count(nullptr))
-            l->phiphin[0] = l->phiOnFace.at(nullptr);
+            set_phiphin_0(l, weighted_phi / total_area);
+          else if (auto* d0 = l->findActiveBieDof(nullptr))
+            set_phiphin_0(l, get_phi_from_dof(*d0));
         }
         // phin representative: keep from nullptr key only.
-        // At CORNER edges, phin is naturally different on each face (different normals).
-        // phiphin[1] feeds back into the next RK step as Neumann BC source (line 817),
-        // so area-weighted averaging would corrupt the boundary condition.
-        if (l->phinOnFace.count(nullptr))
-          l->phiphin[1] = l->phinOnFace.at(nullptr);
+        if (auto* d0 = l->findActiveBieDof(nullptr)) {
+          if (time_derivative_mode)
+            std::get<1>(l->phiphin_t) = d0->phin_t;
+          else
+            l->phiphin[1] = d0->phin;
+        }
       }
   }
+
+  for (const auto water : WATERS)
+    dumpDebugMidpointLineState(water, time_derivative_mode ? "post-storePhiPhin_t" : "post-storePhiPhin", time_step, -1);
 
   if (const char* env = std::getenv("BEM_STORE_DEBUG"); env && std::string(env) != "0") {
     double max_abs_err_point = 0.0;
@@ -1056,16 +1372,17 @@ void storePhiPhinCommon(const std::vector<Network*>& WATERS, const V_d& ans, T1 
 
     for (const auto water : WATERS) {
       for (const auto& p : ToVector(water->getPoints())) {
-        for (const auto& [f, i] : p->f2Index) {
+        for (const auto& [f, d] : p->dofs) {
+          int i = d.index;
           if (i < 0 || i >= static_cast<int>(ans.size()))
             continue;
           double stored = 0.0;
           bool has_row = false;
-          if (isDirichletID_BEM(p, f)) {
-            stored = (p->*phinOnFaceProperty).at(f);
+          if (isDirichletBieDofKey(p, f)) {
+            stored = get_phin_from_dof(d);
             has_row = true;
-          } else if (isNeumannID_BEM(p, f)) {
-            stored = (p->*phiOnFaceProperty).at(f);
+          } else if (isNeumannBieDofKey(p, f)) {
+            stored = get_phi_from_dof(d);
             has_row = true;
           }
           if (!has_row)
@@ -1083,15 +1400,16 @@ void storePhiPhinCommon(const std::vector<Network*>& WATERS, const V_d& ans, T1 
     if (use_true_quadratic_element) {
       for (const auto water : WATERS) {
         for (const auto* l : water->getBoundaryLines()) {
-          for (const auto& [f, idx] : l->f2Index) {
+          for (const auto& [f, d] : l->dofs) {
+            int idx = d.index;
             if (idx < 0 || idx >= static_cast<int>(ans.size()))
               continue;
             ++mid_checked;
             double stored = 0.0;
-            if (isDirichletID_BEM(l, f))
-              stored = l->phinOnFace.at(f);
-            else if (isNeumannID_BEM(l, f))
-              stored = l->phiOnFace.at(f);
+            if (isDirichletBieDofKey(l, f))
+              stored = get_phin_from_dof(d);
+            else if (isNeumannBieDofKey(l, f))
+              stored = get_phi_from_dof(d);
             else
               continue;
             const double err = std::abs(stored - ans[idx]);
@@ -1115,6 +1433,6 @@ void storePhiPhinCommon(const std::vector<Network*>& WATERS, const V_d& ans, T1 
   }
 }
 
-inline void storePhiPhin(const std::vector<Network*>& WATERS, const V_d& ans) { storePhiPhinCommon(WATERS, ans, &networkPoint::phiphin, &networkPoint::phiOnFace, &networkPoint::phinOnFace); }
+inline void storePhiPhin(const std::vector<Network*>& WATERS, const V_d& ans) { storePhiPhinCommon(WATERS, ans, false); }
 
-inline void storePhiPhin_t(const std::vector<Network*>& WATERS, const V_d& ans) { storePhiPhinCommon(WATERS, ans, &networkPoint::phiphin_t, &networkPoint::phitOnFace, &networkPoint::phintOnFace); }
+inline void storePhiPhin_t(const std::vector<Network*>& WATERS, const V_d& ans) { storePhiPhinCommon(WATERS, ans, true); }

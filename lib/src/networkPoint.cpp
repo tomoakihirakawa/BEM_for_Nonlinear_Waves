@@ -1,6 +1,32 @@
 // #pragma once
 #include "Network.hpp"
 #include "pch.hpp"
+
+namespace {
+
+inline bool isPointFaceDetachedByPressureLocal(const networkPoint* p, const networkFace* f) {
+  if (!p || !f)
+    return false;
+  const auto* d = p->findContactState(f);
+  return d && d->detached_by_pressure;
+}
+
+inline bool isPointFaceNeumannLocal(const networkPoint* p, const networkFace* f) {
+  if (!p || !f || !f->BoundaryQ())
+    return false;
+  if (isPointFaceDetachedByPressureLocal(p, f))
+    return false;
+  const auto* d = p->findContactState(f);
+  return d && d->nearestContactFace() != nullptr;
+}
+
+inline bool isPointFaceDirichletLocal(const networkPoint* p, const networkFace* f) {
+  if (!p || !f || !f->BoundaryQ())
+    return false;
+  return !isPointFaceNeumannLocal(p, f);
+}
+
+} // namespace
 /* --------------------------------- SUFACE --------------------------------- */
 
 std::vector<networkFace*> networkPoint::getBoundaryFaces() const {
@@ -62,14 +88,14 @@ std::unordered_set<networkLine*> networkPoint::getLinesOppsoite() const { return
 V_netFp networkPoint::getFacesNeumann() const {
   std::unordered_set<networkFace*> tmp;
   for (const auto& f : this->Faces)
-    if (f->Neumann)
+    if (isPointFaceNeumannLocal(this, f))
       tmp.emplace(f);
   return V_netFp(tmp.begin(), tmp.end());
 };
 V_netFp networkPoint::getFacesDirichlet() const {
   std::unordered_set<networkFace*> tmp;
   for (const auto& f : this->Faces)
-    if (f->Dirichlet)
+    if (isPointFaceDirichletLocal(this, f))
       tmp.emplace(f);
   return V_netFp(tmp.begin(), tmp.end());
 };
@@ -243,22 +269,7 @@ bool isInContact(const networkPoint* p, const networkFace* f_normal, const std::
 };
 
 void networkPoint::setContactRange(const std::vector<Network*>& objects) {
-
-  double radius2 = 0, count = 0;
-  std::unordered_set<networkFace*> processedFaces;
-  for (const auto& p : this->getNeighbors()) {
-    for (const auto& face : p->getFaces()) {
-      if (processedFaces.insert(face).second) {
-        // radius2 += face->area / M_PI;
-        auto [p1, p2, p3] = face->getPoints();
-        radius2 += Inradius(p1->X, p2->X, p3->X);
-        count++;
-      }
-    }
-  }
-
-  //   this->contact_range = std::sqrt(radius2 / count);
-  this->contact_range = radius2 / count;
+  this->contact_range = 0.4 * localEdgeLength(this);
 };
 
 // \label{addContactFaces}
@@ -388,9 +399,10 @@ V_netFp networkPoint::getFacesSort(networkLine* const line) const {
       throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "");
 
     return ret;
-  } catch (std::exception& e) {
-    std::cerr << e.what() << colorReset << std::endl;
-    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "");
+  } catch (const error_message&) {
+    throw;
+  } catch (const std::exception& e) {
+    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, e.what());
   };
 };
 /* ------------------------------------------------------ */
@@ -457,9 +469,10 @@ void networkPoint::setX(const Tddd& xyz_IN) {
       // std::cout << f->Lines << std::endl;
       f->setGeometricProperties(ToX(f->getPoints()));
     }
-  } catch (std::exception& e) {
-    std::cerr << e.what() << colorReset << std::endl;
-    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "");
+  } catch (const error_message&) {
+    throw;
+  } catch (const std::exception& e) {
+    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, e.what());
   };
 };
 // setXは，接続するlineやfaceのsetBoundsを行う．
@@ -495,7 +508,7 @@ Tddd networkPoint::getNormalDirichletAreaAveraged() const {
   // 角度の重みを掛けた法線ベクトルを足し合わせる
   Tddd normal = {0., 0., 0.};
   for (const auto& f : this->Faces)
-    if (f->Dirichlet)
+    if (isPointFaceDirichletLocal(this, f))
       normal += f->area * f->normal;
   return Normalize(normal);
 };
@@ -503,7 +516,7 @@ Tddd networkPoint::getNormalNeumannAreaAveraged() const {
   // 角度の重みを掛けた法線ベクトルを足し合わせる
   Tddd normal = {0., 0., 0.};
   for (const auto& f : this->Faces)
-    if (f->Neumann)
+    if (isPointFaceNeumannLocal(this, f))
       normal += f->area * f->normal;
   return Normalize(normal);
 };
@@ -539,9 +552,10 @@ V_netPp networkPoint::getNeighborsSort() const {
       //  throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "not chain !");
     }
     return ret;
-  } catch (std::exception& e) {
-    std::cerr << e.what() << colorReset << std::endl;
-    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "");
+  } catch (const error_message&) {
+    throw;
+  } catch (const std::exception& e) {
+    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, e.what());
   };
 };
 

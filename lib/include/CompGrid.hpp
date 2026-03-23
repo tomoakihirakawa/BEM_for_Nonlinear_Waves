@@ -295,9 +295,8 @@ public:
       } while (c <= 5 /*最低回数*/ || (found && c < 50));
       std::cout << "mergecount = " << mergecount << std::endl;
     } catch (const error_message &e) {
-      e.print();
-      throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "");
-    };
+      throw;
+    }
   };
   ////////////////////////////////////////////////
   std::map<Network *, V_netFp> takePossibleXFaces(const V_Netp &base_net, const VV_d &cardinals) {
@@ -317,7 +316,7 @@ public:
           }
       return ret;
     } catch (const error_message &e) {
-      throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "wrong cardinal ?");
+      throw;
     }
   };
   //------------------------------------------------------
@@ -349,8 +348,7 @@ public:
               throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "polygon size is < 3");
           }
     } catch (const error_message &e) {
-      e.print();
-      throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "wrong cardinal ?");
+      throw;
     }
     Print("makeFaces done");
   };

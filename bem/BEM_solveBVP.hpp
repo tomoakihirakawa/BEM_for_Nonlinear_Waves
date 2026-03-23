@@ -42,9 +42,14 @@ extern bool metal_m2l_sort_terms;  // Sort terms for improved memory locality
 extern std::vector<double> coupling_params;
 extern bool use_pseudo_quadratic_element;
 extern bool use_true_quadratic_element;
+extern bool use_quadratic_linear_hybrid;
 extern std::string nearfield_mode;  // "scalar" (default), "simd", "metal"
 extern int g_p2m_quadrature_points; // P2M Dunavant quadrature points (1, 3, 6, 7)
 extern double g_mac_theta;          // MAC criterion parameter (0.25 default)
+extern bool enable_pressure_detachment;
+extern double detachment_pressure_threshold;
+extern int detachment_consecutive_steps;
+#include "BEM_pressure_detachment.hpp"
 #include "BEM_BoundaryValues.hpp"
 #include "Network.hpp"
 #include "dunavant_rules.hpp"
@@ -112,34 +117,72 @@ struct calculateFluidInteraction {
   std::unordered_set<networkFace*> actingFaces;
   Tddd simplified_drag, simplified_drag_torque;
   double area;
+
+  template <class Entity>
+  bool actsOnBody(const Entity* entity, const networkFace* local_face) const {
+    if (!entity)
+      return false;
+    auto* contact_face = entity->getNearestContactFace(local_face);
+    if (contact_face != nullptr)
+      return contact_face->getNetwork() == PasObj;
+    return entity->penetratedBody == PasObj;
+  }
+
+  double pressureAtActivePoint(const networkPoint* p, const networkFace* local_face) const {
+    return actsOnBody(p, local_face) ? p->pressure : 0.0;
+  }
+
+  double pressureAtActiveMidpoint(const networkLine* l, const networkFace* local_face) const {
+    if (!actsOnBody(l, local_face))
+      return 0.0;
+    return -_WATER_DENSITY_ * (std::get<0>(l->phiphin_t) + 0.5 * Dot(l->u_total, l->u_total) + _GRAVITY_ * l->X_mid[2]);
+  }
+
+  bool faceActsOnBody(const networkFace* f) const {
+    if (!f)
+      return false;
+    auto [p0, p1, p2] = f->getPoints();
+    if (actsOnBody(p0, f) || actsOnBody(p1, f) || actsOnBody(p2, f))
+      return true;
+    if (use_true_quadratic_element && f->isTrueQuadraticElement) {
+      const auto& [l0, l1, l2] = f->Lines;
+      return actsOnBody(l0, f) || actsOnBody(l1, f) || actsOnBody(l2, f);
+    }
+    return false;
+  }
+
   calculateFluidInteraction(const auto& faces /*waterfaces*/, const Network* PasObjIN) : PasObj(PasObjIN) {
-    // PasObjと接したfaceの頂点にpressureが設定されている前提
+    // Pressure is integrated only on node-face pairs that actually act on PasObj.
     int count = 0;
     for (const auto& f : faces)
-      if (f->Neumann) {
-        // A face is acting on the body if all its points are either in contact with the body or have penetrated it.
-        if (std::ranges::all_of(f->getPoints(), [&](const auto& p) {
-              auto effectiveFaces = getEffectiveContactFaces(p);
-              return std::ranges::any_of(effectiveFaces, [&](const auto& F) { return F->getNetwork() == PasObj; });
-            })) {
-          auto [p0, p1, p2] = f->getPoints();
-          auto result = this->actingFaces.emplace(f);
-          if (result.second)
-            count++;
-        }
+      if (faceActsOnBody(f)) {
+        auto result = this->actingFaces.emplace(f);
+        if (result.second)
+          count++;
       }
 
     // calculate area
-    std::array<double, 3> P012;
-    std::array<std::array<double, 3>, 3> X012;
     area = 0.;
     for (const auto& f : this->actingFaces) {
-      auto [p0, p1, p2] = f->getPoints();
-      P012 = {p0->pressure, p1->pressure, p2->pressure};
-      X012 = {p0->X, p1->X, p2->X};
-      auto intpX = interpolationTriangleLinear0101(X012);
-      for (const auto& [x0, x1, w0w1] : __GWGW10__Tuple)
-        area += intpX.J(x0, x1) * w0w1;
+      if (use_true_quadratic_element && f->isTrueQuadraticElement) {
+        auto [p0, p1, p2] = f->getPoints();
+        const auto& [l0, l1, l2] = f->Lines;
+        const T6Tddd X6 = {p0->X, p1->X, p2->X, l0->X_mid, l1->X_mid, l2->X_mid};
+        constexpr std::array<bool, 3> all_true{true, true, true};
+        for (const auto& [x0, x1, w0w1] : __GWGW10__Tuple) {
+          auto bary = ModTriShape<3>(x0, x1);
+          auto dN_dt0 = D_TriShape<6, 1, 0>(bary[0], bary[1], all_true);
+          auto dN_dt1 = D_TriShape<6, 0, 1>(bary[0], bary[1], all_true);
+          area += Norm(Cross(Dot(dN_dt0, X6), Dot(dN_dt1, X6))) * w0w1 * (1. - x0);
+        }
+      } else {
+        std::array<std::array<double, 3>, 3> X012;
+        auto [p0, p1, p2] = f->getPoints();
+        X012 = {p0->X, p1->X, p2->X};
+        auto intpX = interpolationTriangleLinear0101(X012);
+        for (const auto& [x0, x1, w0w1] : __GWGW10__Tuple)
+          area += intpX.J(x0, x1) * w0w1;
+      }
     }
     std::cout << "接触している面の数:" << count << " 表面積:" << area << std::endl;
   };
@@ -147,22 +190,46 @@ struct calculateFluidInteraction {
   // \label{BEM:surfaceIntegralOfPressure}
   std::array<Tddd, 2> surfaceIntegralOfPressure() {
     Tddd force = {0., 0., 0.}, torque = {0., 0., 0.};
-    std::array<double, 3> P012;
-    std::array<std::array<double, 3>, 3> X012;
     for (const auto& f : this->actingFaces) {
-      auto [p0, p1, p2] = f->getPoints();
-      P012 = {p0->pressure, p1->pressure, p2->pressure};
-      X012 = {p0->X, p1->X, p2->X}; // auto [pre0, pre1, pre2] = P012;
-      // auto [X0, X1, X2] = X012;
-      // this->force += (p0 + p1 + p2) / 3. * Cross(X1 - X0, X2 - X0) / 2.;
-      auto intpP = interpolationTriangleLinear0101(P012);
-      auto intpX = interpolationTriangleLinear0101(X012);
-      auto n = TriangleNormal(X012);
       Tddd F_tmp = {0., 0., 0.}, T_tmp = {0., 0., 0.};
-      for (const auto& [x0, x1, w0w1] : __GWGW10__Tuple) {
-        auto f = intpP(x0, x1) * intpX.J(x0, x1) * w0w1 * n;
-        F_tmp += f;
-        T_tmp += Cross(intpX(x0, x1) - this->PasObj->COM, f);
+      auto [p0, p1, p2] = f->getPoints();
+      if (use_true_quadratic_element && f->isTrueQuadraticElement) {
+        const auto& [l0, l1, l2] = f->Lines;
+        const std::array<double, 6> P6 = {
+            pressureAtActivePoint(p0, f),
+            pressureAtActivePoint(p1, f),
+            pressureAtActivePoint(p2, f),
+            pressureAtActiveMidpoint(l0, f),
+            pressureAtActiveMidpoint(l1, f),
+            pressureAtActiveMidpoint(l2, f)};
+        const T6Tddd X6 = {p0->X, p1->X, p2->X, l0->X_mid, l1->X_mid, l2->X_mid};
+        constexpr std::array<bool, 3> all_true{true, true, true};
+        for (const auto& [x0, x1, w0w1] : __GWGW10__Tuple) {
+          auto bary = ModTriShape<3>(x0, x1);
+          auto N6 = f->trueQuadN6(bary[0], bary[1]);
+          auto dN_dt0 = D_TriShape<6, 1, 0>(bary[0], bary[1], all_true);
+          auto dN_dt1 = D_TriShape<6, 0, 1>(bary[0], bary[1], all_true);
+          auto X_q = Dot(TriShape<6>(bary[0], bary[1], all_true), X6);
+          auto cross_q = Cross(Dot(dN_dt0, X6), Dot(dN_dt1, X6));
+          auto pressure_q = Dot(N6, P6);
+          auto df = pressure_q * w0w1 * (1. - x0) * cross_q;
+          F_tmp += df;
+          T_tmp += Cross(X_q - this->PasObj->COM, df);
+        }
+      } else {
+        std::array<double, 3> P012 = {
+            pressureAtActivePoint(p0, f),
+            pressureAtActivePoint(p1, f),
+            pressureAtActivePoint(p2, f)};
+        std::array<std::array<double, 3>, 3> X012 = {p0->X, p1->X, p2->X};
+        auto intpP = interpolationTriangleLinear0101(P012);
+        auto intpX = interpolationTriangleLinear0101(X012);
+        auto n = TriangleNormal(X012);
+        for (const auto& [x0, x1, w0w1] : __GWGW10__Tuple) {
+          auto df = intpP(x0, x1) * intpX.J(x0, x1) * w0w1 * n;
+          F_tmp += df;
+          T_tmp += Cross(intpX(x0, x1) - this->PasObj->COM, df);
+        }
       }
       force += F_tmp;
       torque += T_tmp;
@@ -176,7 +243,10 @@ struct calculateFluidInteraction {
     std::array<std::array<double, 3>, 3> X012;
     for (const auto& f : this->actingFaces) {
       auto [p0, p1, p2] = f->getPoints();
-      std::array<double, 3> P012 = {p0->pressure, p1->pressure, p2->pressure};
+      std::array<double, 3> P012 = {
+          pressureAtActivePoint(p0, f),
+          pressureAtActivePoint(p1, f),
+          pressureAtActivePoint(p2, f)};
       auto X0 = p0->X;
       auto X1 = p1->X;
       auto X2 = p2->X;
@@ -184,7 +254,6 @@ struct calculateFluidInteraction {
       const Tddd relative_U0 = p0->u_potential_BEM - PasObj->velocityRigidBody(X0);
       const Tddd relative_U1 = p1->u_potential_BEM - PasObj->velocityRigidBody(X1);
       const Tddd relative_U2 = p2->u_potential_BEM - PasObj->velocityRigidBody(X2);
-      // this->force += (p0 + p1 + p2) / 3. * Cross(X1 - X0, X2 - X0) / 2.;
       auto intpRelativeVelocity = interpolationTriangleLinear0101(T3Tddd{relative_U0, relative_U1, relative_U2});
       auto intpX = interpolationTriangleLinear0101(X012);
       const double nu = _WATER_NU_10deg_; // m2 /s
@@ -533,18 +602,18 @@ struct BEM_BVP {
         ss << p->phiphin;
         throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, ss.str());
       }
-      for (const auto& [f, phi] : p->phiOnFace)
-        if (!isFinite(phi)) {
+      for (const auto& [f, d] : p->dofs)
+        if (!isFinite(d.phi)) {
           std::stringstream ss;
-          for (const auto& [f, phi] : p->phiOnFace)
-            ss << phi << ", ";
+          for (const auto& [f2, d2] : p->dofs)
+            ss << d2.phi << ", ";
           throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, ss.str());
         }
-      for (const auto& [f, phin] : p->phinOnFace)
-        if (!isFinite(phin)) {
+      for (const auto& [f, d] : p->dofs)
+        if (!isFinite(d.phin)) {
           std::stringstream ss;
-          for (const auto& [f, phin] : p->phiOnFace)
-            ss << phin << ", ";
+          for (const auto& [f2, d2] : p->dofs)
+            ss << d2.phin << ", ";
           throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, ss.str());
         }
     }
@@ -560,7 +629,7 @@ struct BEM_BVP {
   int matrix_size = 0;
 
   /*展開次数*/
-  Buckets<std::shared_ptr<source4FMM<target4FMM>>, 10 /*展開項数*/> B_poles;
+  Buckets<std::shared_ptr<source4FMM<target4FMM>>, 6 /*展開項数*/> B_poles;
 
   std::array<double, 3> solve() {
     TimeWatch watch, watch_from_start;
@@ -570,14 +639,8 @@ struct BEM_BVP {
     last_A_sparse_nnz = 0.0;
     last_A_sparse_avg_nnz = 0.0;
 
-    double time_setPhiPhinOnFace = watch()[0];
-
-    this->matrix_size = setNodeFaceIndices(WATERS);
-    // Re-populate midpoint per-face maps now that f2Index is (re-)populated.
-    // On first call, setPhiPhinOnFace was called before setNodeFaceIndices, so f2Index was
-    // empty and only bootstrap values ({nullptr → phi_mid/phin_mid}) were stored.
-    // This call ensures per-face maps match the current f2Index (including CORNER 2-DOF keys).
-    setPhiPhinOnFace(WATERS);
+    // setNodeFaceIndices() is called once at RK_step==1 (in main_time_domain.cpp),
+    // so matrix_size is already set before solve() is called.
     std::cout << Red << "   unknown size : " << this->matrix_size << colorReset << std::endl;
 
     {
@@ -924,16 +987,27 @@ struct BEM_BVP {
     auto ACCELS = ACCELS_IN;
 
     //@ -------------------------------------------------------------------------- */
-    //@   Coordinate Scaling for phi_t (same as phi solve)                          */
+    //@   Coordinate Scaling for phi_t (GMRES only)                                */
     //@ -------------------------------------------------------------------------- */
-    use_coordinate_scaling_ = true;
-    auto obj = WATERS[0];
-    obj->setGeometricPropertiesForce();
-    coordinate_scale_factor_ = obj->computeCharacteristicLength();
-    if (coordinate_scale_factor_ > 1e-10) {
-      std::cout << Magenta << "[BEM:phi_t] " << Cyan << "Coordinate scaling enabled" << Green << " L=" << coordinate_scale_factor_ << colorReset << std::endl;
-      for (auto& net : WATERS)
-        net->applyScaling(coordinate_scale_factor_);
+    // LU matrices (mat_kn, mat_ukn) were built without coordinate scaling in solveLU(),
+    // so applying scaling here would create a mismatch between the matrix and boundary values.
+    // GMRES rebuilds the FMM tree each time, so scaling is safe and beneficial.
+    if (solver_type == "GMRES") {
+      use_coordinate_scaling_ = true;
+      auto obj = WATERS[0];
+      obj->setGeometricPropertiesForce();
+      coordinate_scale_factor_ = obj->computeCharacteristicLength();
+      if (coordinate_scale_factor_ > 1e-10) {
+        std::cout << Magenta << "[BEM:phi_t] " << Cyan << "Coordinate scaling enabled" << Green << " L=" << coordinate_scale_factor_ << colorReset << std::endl;
+        for (auto& net : WATERS) {
+          net->debugPrintScalingState("BEM/phi_t before applyScaling");
+          net->applyScaling(coordinate_scale_factor_);
+          net->debugPrintScalingState("BEM/phi_t after applyScaling");
+        }
+      } else {
+        use_coordinate_scaling_ = false;
+        coordinate_scale_factor_ = 1.0;
+      }
     } else {
       use_coordinate_scaling_ = false;
       coordinate_scale_factor_ = 1.0;
@@ -945,33 +1019,26 @@ struct BEM_BVP {
     //* --------------------------------------------------- */
     setPhiPhin_t(WATERS);
 
-    // True quadratic: swap phi_mid/phin_mid with phi_t_mid/phin_t_mid
-    // so that the solver transparently reads/writes phi_t values via phi_mid/phin_mid.
-    if (use_true_quadratic_element) {
-      for (auto* water : WATERS) {
-        for (auto* l : water->getBoundaryLines()) {
-          std::swap(l->phiphin[0], l->phiphin_t[0]);
-          std::swap(l->phiphin[1], l->phiphin_t[1]);
-          std::swap(l->phiOnFace, l->phitOnFace);
-          std::swap(l->phinOnFace, l->phintOnFace);
-        }
-      }
-    }
-
-    knowns = getVectorFromBoundary(WATERS, this->matrix_size, [](const networkPoint* p, networkFace* f) { return p->phitOnFace.at(f); }, [](const networkPoint* p, networkFace* f) { return p->phintOnFace.at(f); });
+    knowns = getVectorFromBoundary(
+        WATERS,
+        this->matrix_size,
+        [](const networkPoint* p, networkFace* f) { return p->findActiveBieDof(f)->phi_t; },
+        [](const networkPoint* p, networkFace* f) { return p->findActiveBieDof(f)->phin_t; },
+        [](const networkLine* l, networkFace* f) { return l->findActiveBieDof(f)->phi_t; },
+        [](const networkLine* l, networkFace* f) { return l->findActiveBieDof(f)->phin_t; });
     ans.resize(knowns.size(), 0);
 
     // Scale Neumann BC (phint) by L for coordinate scaling: ∂φ_t/∂n' = L × ∂φ_t/∂n
+    // This only applies to GMRES (LU has use_coordinate_scaling_=false).
     if (use_coordinate_scaling_ && coordinate_scale_factor_ > 1e-10) {
       for (auto& p : this->points) {
-        for (auto& [f, i] : p->f2Index) {
-          if (isNeumannID_BEM(p, f)) {
-            knowns[i] *= coordinate_scale_factor_;
+        for (auto& [f, d] : p->dofs) {
+          if (d.index >= 0 && isNeumannBieDofKey(p, f)) {
+            knowns[d.index] *= coordinate_scale_factor_;
           }
         }
       }
-      // Midpoint Neumann BC scaling is handled by copyToFMM() inside solveSystemGMRES.
-      // No pre-scaling of phinOnFace needed here.
+      // Midpoint Neumann BC scaling for GMRES is handled by copyToFMM().
     }
 
     if (solver_type == "LU") {
@@ -995,68 +1062,59 @@ struct BEM_BVP {
       std::cout << "  solver=" << Yellow << "GMRES" << colorReset << std::endl;
       std::cout << "Solving for phi_t using GMRES..." << std::flush;
       //   前回の答えを初期値に使う
-      std::vector<double> x0 = getVectorFromBoundary(WATERS, knowns.size(), [](const networkPoint* p, networkFace* f) { return p->phintOnFace.at(f); }, [](const networkPoint* p, networkFace* f) { return p->phitOnFace.at(f); });
+      std::vector<double> x0 = getVectorFromBoundary(
+          WATERS,
+          knowns.size(),
+          [](const networkPoint* p, networkFace* f) { return p->findActiveBieDof(f)->phin_t; },
+          [](const networkPoint* p, networkFace* f) { return p->findActiveBieDof(f)->phi_t; },
+          [](const networkLine* l, networkFace* f) { return l->findActiveBieDof(f)->phin_t; },
+          [](const networkLine* l, networkFace* f) { return l->findActiveBieDof(f)->phi_t; });
       ans = solveSystemGMRES(true, x0);
     }
 
-    // std::cout << "solved" << Blue << "\nElapsed time: " << Red << watch() << colorReset << " s\n";
-
     //@ -------------------------------------------------------------------------- */
-    //@   Unscale computed ∂φ_t/∂n for coordinate scaling                           */
+    //@   Unscale computed ∂φ_t/∂n for coordinate scaling (GMRES only)              */
     //@ -------------------------------------------------------------------------- */
-    // The computed ∂φ_t/∂n' (in scaled coords) needs to be DIVIDED by L
+    // The computed ∂φ_t/∂n' (in scaled coords) needs to be DIVIDED by L.
+    // LU has use_coordinate_scaling_=false, so this block is skipped.
     if (use_coordinate_scaling_ && coordinate_scale_factor_ > 1e-10) {
       std::cout << Magenta << "[BEM:phi_t] " << Cyan << "Unscaling computed phint by L=" << coordinate_scale_factor_ << colorReset << std::endl;
       for (auto& p : this->points) {
-        for (auto& [f, i] : p->f2Index) {
-          if (isDirichletID_BEM(p, f)) {
-            ans[i] /= coordinate_scale_factor_;
+        for (auto& [f, d] : p->dofs) {
+          if (d.index >= 0 && isDirichletBieDofKey(p, f)) {
+            ans[d.index] /= coordinate_scale_factor_;
           }
         }
       }
-      // Also unscale midpoint Dirichlet unknowns (phin_t is the unknown for Dirichlet DOFs)
       if (use_true_quadratic_element) {
         for (auto* water : WATERS) {
           for (auto* l : water->getBoundaryLines()) {
-            for (const auto& [f, idx] : l->f2Index) {
-              if (idx >= 0 && idx < static_cast<int>(ans.size()) && isDirichletID_BEM(l, f))
-                ans[idx] /= coordinate_scale_factor_;
+            for (const auto& [f, d] : l->dofs) {
+              if (d.index >= 0 && d.index < static_cast<int>(ans.size()) && isDirichletBieDofKey(l, f))
+                ans[d.index] /= coordinate_scale_factor_;
             }
           }
         }
       }
-      // Midpoint Neumann phin_t unscaling not needed — phinOnFace was never pre-scaled
-      // (scaling is handled only in copyToFMM on the FMM copy).
     }
 
+    // phi_t solve should write back directly into phi_t/phin_t for both points
+    // and true-quadratic midpoint dofs.
     storePhiPhin_t(WATERS, ans);
 
-    // True quadratic: swap back phi_mid/phin_mid to restore phi values.
-    // After storePhiPhin_t, the per-face maps contain solved phi_t values.
-    // After swap-back, phitOnFace/phintOnFace will have the solved phi_t values,
-    // and phiOnFace/phinOnFace will be restored to original phi values.
-    if (use_true_quadratic_element) {
-      for (auto* water : WATERS) {
-        for (auto* l : water->getBoundaryLines()) {
-          std::swap(l->phiphin[0], l->phiphin_t[0]);
-          std::swap(l->phiphin[1], l->phiphin_t[1]);
-          std::swap(l->phiOnFace, l->phitOnFace);
-          std::swap(l->phinOnFace, l->phintOnFace);
-        }
-      }
-    }
-
+    // Refresh FMM-side copies from the canonical phi_t/phin_t storage.
     copyToFMM(true);
-
-    // std::cout << Green << "storePhiPhin_t" << Blue << "\nElapsed time: " << Red << watch() << colorReset << " s\n";
 
     //@ -------------------------------------------------------------------------- */
     //@   Remove coordinate scaling before pressure calculation                     */
     //@ -------------------------------------------------------------------------- */
     if (use_coordinate_scaling_) {
       std::cout << Magenta << "[BEM:phi_t] " << Cyan << "Removing coordinate scaling" << colorReset << std::endl;
-      for (auto& net : WATERS)
+      for (auto& net : WATERS) {
+        net->debugPrintScalingState("BEM/phi_t before removeScaling");
         net->removeScaling();
+        net->debugPrintScalingState("BEM/phi_t after removeScaling");
+      }
       use_coordinate_scaling_ = false;
       coordinate_scale_factor_ = 1.0;
     }
@@ -1067,14 +1125,98 @@ struct BEM_BVP {
 
     for (const auto water : WATERS)
       for (const auto& p : water->getBoundaryPoints())
-        for (const auto& [f, i] : p->f2Index) {
-          if (isDirichletID_BEM(p, f))
+        for (const auto& [f, d] : p->dofs) {
+          if (d.index < 0)
+            continue;
+          if (isDirichletBieDofKey(p, f))
             p->pressure = p->pressure_BEM = 0;
           else
             p->pressure = p->pressure_BEM = -_WATER_DENSITY_ * (std::get<0>(p->phiphin_t) + 0.5 * Dot(p->u_total, p->u_total) + _GRAVITY_ * p->height());
         }
 
-    // std::cout << Green << "pressure" << Blue << "\nElapsed time: " << Red << watch() << colorReset << " s\n";
+    //* --------------------------------------------------- */
+    //*   面レベルNeumann圧力の計算（圧力剥離判定用）         */
+    //* --------------------------------------------------- */
+    if (enable_pressure_detachment) {
+      auto pressureOnEntityFace = [](const auto* node, networkFace* f) {
+        double phi_t_val = std::get<0>(node->phiphin_t);
+        if (node->isMultipleNode) {
+          if (auto* d = node->findActiveBieDof(f))
+            phi_t_val = d->phi_t;
+        }
+        return -_WATER_DENSITY_ * (phi_t_val + 0.5 * Dot(node->u_total, node->u_total) + _GRAVITY_ * node->getPosition()[2]);
+      };
+
+      for (const auto water : WATERS) {
+        for (auto* p : water->getBoundaryPoints()) {
+          for (auto* f : p->getBoundaryFaces()) {
+            auto& d = p->dof(f);
+            if (getNodeFaceBoundaryType(p, f) != NodeFaceBoundaryType::Neumann) {
+              d.pressure = 0.;
+              d.detach_negative_count = 0;
+              continue;
+            }
+            d.pressure = pressureOnEntityFace(p, f);
+            if (pressureDetachmentEligible(p, f) && d.pressure < detachment_pressure_threshold) {
+              d.detach_negative_count++;
+            } else {
+              d.detach_negative_count = 0;
+            }
+          }
+        }
+
+        if (use_true_quadratic_element) {
+          for (auto* l : water->getBoundaryLines()) {
+            for (auto* f : l->getBoundaryFaces()) {
+              auto& d = l->dof(f);
+              if (getNodeFaceBoundaryType(l, f) != NodeFaceBoundaryType::Neumann) {
+                d.pressure = 0.;
+                d.detach_negative_count = 0;
+                continue;
+              }
+              d.pressure = pressureOnEntityFace(l, f);
+              if (pressureDetachmentEligible(l, f) && d.pressure < detachment_pressure_threshold) {
+                d.detach_negative_count++;
+              } else {
+                d.detach_negative_count = 0;
+              }
+            }
+          }
+        }
+
+        for (const auto& f : water->getBoundaryFaces()) {
+          double psum = 0.;
+          int active_count = 0;
+          int max_streak = 0;
+          bool detached_any = false;
+          for (auto* p : f->getPoints()) {
+            if (const auto* d = p->findActiveBieDof(f)) {
+              psum += d->pressure;
+              ++active_count;
+              max_streak = std::max(max_streak, d->detach_negative_count);
+              if (d->detached_by_pressure)
+                detached_any = true;
+            }
+          }
+          if (use_true_quadratic_element) {
+            for (auto* l : f->getLines()) {
+              if (const auto* d = l->findActiveBieDof(f)) {
+                psum += d->pressure;
+                ++active_count;
+                max_streak = std::max(max_streak, d->detach_negative_count);
+                if (d->detached_by_pressure)
+                  detached_any = true;
+              }
+            }
+          }
+          f->pressure_neumann = (active_count > 0) ? (psum / active_count) : 0.;
+          f->detach_negative_count = max_streak;
+          f->detached_by_pressure = detached_any;
+        }
+      }
+    }
+
+    // dofs is now the canonical storage; no sync needed
 
     //* --------------------------------------------------- */
     //*              圧力 ---> 力 --> 加速度                  */
@@ -1250,7 +1392,6 @@ struct BEM_BVP {
         ACCELS[i + 5] = std::abs(Iz) < threshold ? a5 : 0;
       } else
         i += 6;
-    // std::cout << Green << "other" << Blue << "\nElapsed time: " << Red << watch() << colorReset << " s\n";
     ACCELS_OUT = ACCELS;
     std::cout << "acceleration: " << ACCELS_OUT << std::endl;
     return ACCELS - ACCELS_IN;
@@ -1258,30 +1399,37 @@ struct BEM_BVP {
 
   /* -------------------------------------------------------------------------- */
 
-  V_d getVectorFromBoundary(const std::vector<Network*>& waters, int size, std::function<double(const networkPoint*, networkFace*)> getDirichletVal, std::function<double(const networkPoint*, networkFace*)> getNeumannVal) {
+  V_d getVectorFromBoundary(const std::vector<Network*>& waters,
+                            int size,
+                            std::function<double(const networkPoint*, networkFace*)> getDirichletVal,
+                            std::function<double(const networkPoint*, networkFace*)> getNeumannVal,
+                            std::function<double(const networkLine*, networkFace*)> getDirichletValLine,
+                            std::function<double(const networkLine*, networkFace*)> getNeumannValLine) {
     V_d vec(size);
     for (const auto water : waters) {
       const auto& pts = water->getBoundaryPoints();
 #pragma omp parallel for
       for (size_t k = 0; k < pts.size(); ++k) {
         const auto& p = pts[k];
-        for (const auto& [f, i] : p->f2Index) {
-          if (isDirichletID_BEM(p, f))
-            vec[i] = getDirichletVal(p, f);
-          else if (isNeumannID_BEM(p, f))
-            vec[i] = getNeumannVal(p, f);
+        for (const auto& [f, d] : p->dofs) {
+          if (d.index < 0 || d.index >= size)
+            continue;
+          if (isDirichletBieDofKey(p, f))
+            vec[d.index] = getDirichletVal(p, f);
+          else if (isNeumannBieDofKey(p, f))
+            vec[d.index] = getNeumannVal(p, f);
         }
       }
-      // Include midpoint DOFs for true quadratic elements (per-face maps)
+      // Include midpoint DOFs for true quadratic elements
       if (use_true_quadratic_element) {
         for (auto* l : water->getBoundaryLines()) {
-          for (const auto& [f, idx] : l->f2Index) {
-            if (idx >= 0 && idx < size) {
-              if (isDirichletID_BEM(l, f))
-                vec[idx] = l->phinOnFace.at(f);
-              else if (isNeumannID_BEM(l, f))
-                vec[idx] = l->phiOnFace.at(f);
-            }
+          for (const auto& [f, d] : l->dofs) {
+            if (d.index < 0 || d.index >= size)
+              continue;
+            if (isDirichletBieDofKey(l, f))
+              vec[d.index] = getDirichletValLine(l, f);
+            else if (isNeumannBieDofKey(l, f))
+              vec[d.index] = getNeumannValLine(l, f);
           }
         }
       }

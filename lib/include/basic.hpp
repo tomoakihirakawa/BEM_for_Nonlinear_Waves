@@ -3354,8 +3354,7 @@ public:
         }
       }
     } catch (const error_message &e) {
-      e.print();
-      throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "");
+      throw;
     }
   };
   //! ------------------------------------------------------ */

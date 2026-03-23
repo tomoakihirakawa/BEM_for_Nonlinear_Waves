@@ -539,8 +539,8 @@ public:
         ret.emplace_back(w);
       }
       return Transpose(ret); // 各点
-    } catch (error_message &e) {
-      throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "");
+    } catch (const error_message &e) {
+      throw;
     }
   };
   VV_d weight(const VV_d &P, const VV_d &V_vOFx, const VV_d &P_for_Derivative, const VV_d &V_derivative_OFx, const VV_d &normals /*{{n0,n1,n2},{m0,m1,m2},{a0,a1,a2},..}*/) {
@@ -587,8 +587,8 @@ public:
         ret.emplace_back(w);
       }
       return Transpose(ret); // 各点
-    } catch (error_message &e) {
-      throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "");
+    } catch (const error_message &e) {
+      throw;
     }
   };
 
@@ -1054,8 +1054,8 @@ public:
       V_d w(s + k);
       lu.solve(Join(V_vOFx, V_derivative_OFx), w);
       return w;
-    } catch (error_message &e) {
-      throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "");
+    } catch (const error_message &e) {
+      throw;
     }
   };
 };
@@ -1166,9 +1166,10 @@ template <typename T, typename U> struct InterpolationRBF_Common {
         }
         M[i] = row;
       }
-    } catch (std::exception &e) {
-      std::cerr << e.what() << colorReset << std::endl;
-      throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "");
+    } catch (const error_message&) {
+      throw;
+    } catch (const std::exception& e) {
+      throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, e.what());
     };
   };
   ;

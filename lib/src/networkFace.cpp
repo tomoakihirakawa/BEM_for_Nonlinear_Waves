@@ -2,6 +2,28 @@
 #include "Network.hpp"
 #include "pch.hpp"
 
+namespace {
+
+bool isPointFaceNeumannLocal(const networkPoint* p, const networkFace* f) {
+  if (!p || !f)
+    return false;
+  const auto* d = p->findContactState(f);
+  if (d && d->detached_by_pressure)
+    return false;
+  return d && d->nearestContactFace() != nullptr;
+}
+
+bool isFaceNeumannFromPointFaceStatesLocal(const networkFace* f) {
+  if (!f)
+    return false;
+  const auto pts = f->getPoints();
+  return std::ranges::all_of(pts, [&](const auto* p) {
+    return isPointFaceNeumannLocal(p, f);
+  });
+}
+
+} // namespace
+
 void networkFace::setDodecaPoints() {
   try {
     // setIntegrationInfo用に統一した条件（useOppositeFace）を使用
@@ -102,9 +124,10 @@ networkFace::networkFace(Network *network_IN, networkPoint *p0, networkLine *l0,
     p0->add(this);
     p1->add(this);
     p2->add(this);
-  } catch (std::exception &e) {
-    std::cerr << e.what() << colorReset << std::endl;
-    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "");
+  } catch (const error_message&) {
+    throw;
+  } catch (const std::exception& e) {
+    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, e.what());
   };
 };
 
@@ -122,16 +145,16 @@ networkFace::networkFace(Network *network_IN, networkPoint *p0, networkPoint *p1
     p0->add(this);
     p1->add(this);
     p2->add(this);
-  } catch (std::exception &e) {
-    std::cerr << e.what() << colorReset << std::endl;
-    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "");
+  } catch (const error_message&) {
+    throw;
+  } catch (const std::exception& e) {
+    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, e.what());
   };
 };
 // コンストラクタ
 networkFace::networkFace(const netFp f) : Triangle(extractXtuple(f)), network(f->network), Lines(f->Lines), Points(f->Points), PLPLPL(f->PLPLPL) {
   this->network->add(this);
-  this->Dirichlet = f->Dirichlet;
-  this->Neumann = f->Neumann;
+  this->penetratedBody = f->penetratedBody;
   this->normal = f->normal;
   this->angles = f->angles;
   this->area = f->area;

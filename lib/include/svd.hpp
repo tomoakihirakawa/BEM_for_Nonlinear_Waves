@@ -68,8 +68,10 @@ struct SVD {
          decompose();
          reorder();
          tsh = 0.5 * std::sqrt(m + n + 1.) * w[0] * eps;
-      } catch (std::exception &e) {
-         throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "");
+      } catch (const error_message&) {
+         throw;
+      } catch (const std::exception& e) {
+         throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, e.what());
       }
    }
 
@@ -405,8 +407,10 @@ void SVD::decompose() {
             w[k] = x;
          }
       }
-   } catch (std::exception &e) {
-      throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "");
+   } catch (const error_message&) {
+      throw;
+   } catch (const std::exception& e) {
+      throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, e.what());
    }
 }
 

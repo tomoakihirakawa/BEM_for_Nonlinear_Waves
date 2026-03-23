@@ -1,5 +1,6 @@
 #pragma once
 
+#include "BEM_node_face_state.hpp"
 #include "Network.hpp"          // Networkクラスの定義(Node, Face等)が必要
 #include "basic.hpp"            // Tddd, Norm, Cross, Dot などの基本的な関数定義を想定
 #include "integrationOfODE.hpp" // RungeKutta
@@ -78,6 +79,68 @@ private:
   double pse_correction_max_dimless_coeff = 1e3;    // safety clamp for ill-conditioned neighborhoods
   std::vector<VortexParticle> particles;
   std::function<std::array<double, 3>(const std::array<double, 3> &)> potentialField;
+
+  // --- BEM coupling state (managed by configure()) ---
+  bool enabled_ = false;
+  std::size_t wall_min_absorb_receivers_ = 1;
+  double wall_min_absorb_total_weight_ = 1e-5;
+  double sigma_factor_ = 1.0;
+
+  // --- Geometry helpers (moved from main_time_domain.cpp lambdas) ---
+
+  // Robust containment test for closed surfaces (handles globally inverted meshes).
+  static bool insideClosedSurface(const Network *net, const Tddd &X) {
+    if (!net)
+      return false;
+    if (!net->CoordinateBounds::InsideQ(X))
+      return false;
+    return std::abs(net->windingNumber(X)) >= 0.5;
+  }
+
+  // Push a particle out of a rigid body by projecting to the nearest face and offsetting.
+  void pushOutOfBody(const Network *rb, VortexParticle &p, double delta) const {
+    if (!rb)
+      return;
+    auto [f, nearest_pos] = rb->Nearest(p.x);
+    if (!f)
+      return;
+    Tddd n = f->normal;
+    const double nn = Norm(n);
+    if (!(nn > 0.0))
+      return;
+    n = n / nn;
+
+    const double d = Dot(p.x - nearest_pos, n);
+    const Tddd x_plane = p.x - d * n;
+
+    Tddd x_try = x_plane + delta * n;
+    if (insideClosedSurface(rb, x_try))
+      x_try = x_plane - delta * n;
+
+    if (insideClosedSurface(rb, x_try)) {
+      double dd = delta;
+      for (int k = 0; k < 4 && insideClosedSurface(rb, x_try); ++k) {
+        dd *= 2.0;
+        x_try = x_plane + dd * n;
+        if (insideClosedSurface(rb, x_try))
+          x_try = x_plane - dd * n;
+      }
+    }
+
+    p.x = x_try;
+  }
+
+  // Push all particles out of all rigid bodies.
+  void pushParticlesOutOfBodies(const std::vector<Network *> &rigidBodies) {
+    processParticles([&](VortexParticle &p) {
+      for (const auto &rb : rigidBodies) {
+        if (!insideClosedSurface(rb, p.x))
+          continue;
+        const double delta_val = std::max(0.3 * p.sigma, 1e-12);
+        pushOutOfBody(rb, p, delta_val);
+      }
+    });
+  }
 
   template <std::size_t N> static bool solveLinearSystemGaussian(std::array<std::array<double, N>, N> A, std::array<double, N> b, std::array<double, N> &x) {
     double max_abs = 0.0;
@@ -282,11 +345,11 @@ private:
       sigma_factor = 1.5;
 
     for (const auto &face : boundaryNet->getBoundaryFaces()) {
-      if (!face->Neumann)
+      auto [p0, p1, p2] = face->getPoints();
+      if (!(isNeumannBoundaryState(p0, face) && isNeumannBoundaryState(p1, face) && isNeumannBoundaryState(p2, face)))
         continue;
 
       ++stats.faces_total;
-      auto [p0, p1, p2] = face->getPoints();
       const double area = face->area;
       if (!(area > area_eps))
         continue;
@@ -296,7 +359,8 @@ private:
         auto findBody = [&](networkPoint *p) -> Network * {
           if (p->penetratedBody)
             return p->penetratedBody;
-          auto cf = p->getNearestContactFace(face);
+          const auto* d = p->findContactState(face);
+          auto* cf = d ? d->nearestContactFace() : nullptr;
           return cf ? cf->getNetwork() : nullptr;
         };
         contactBody = findBody(p0);
@@ -866,5 +930,175 @@ public:
       p.x = p.RK_x.getX();
       p.alpha = p.RK_alpha.getX();
     }
+  }
+
+  // =========================================================================
+  // BEM coupling high-level interface
+  // When enabled_==false, all methods below are no-ops (or minimal).
+  // =========================================================================
+
+  bool isEnabled() const { return enabled_; }
+
+  // Configure VPM from simulation settings. Replaces the string-matching
+  // initialization block that was previously in main_time_domain.cpp.
+  void configure(bool enabled,
+                 const std::string &stretching_scheme_str,
+                 const std::string &PSE_correction_str,
+                 std::size_t wall_min_absorb_receivers = 1,
+                 double wall_min_absorb_total_weight = 1e-5,
+                 double sigma_factor = 1.0) {
+    enabled_ = enabled;
+    wall_min_absorb_receivers_ = wall_min_absorb_receivers;
+    wall_min_absorb_total_weight_ = wall_min_absorb_total_weight;
+    sigma_factor_ = sigma_factor;
+
+    // Stretching scheme
+    auto lower = [](std::string s) {
+      for (auto &c : s)
+        c = std::tolower(static_cast<unsigned char>(c));
+      return s;
+    };
+    const std::string ss = lower(stretching_scheme_str);
+    if (ss == "transpose")
+      setStretchingScheme(StretchingScheme::Transpose);
+    else if (ss == "standard")
+      setStretchingScheme(StretchingScheme::Standard);
+    else
+      throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "Unknown VPM_stretching_scheme: " + stretching_scheme_str);
+
+    // PSE correction mode
+    const std::string ps = lower(PSE_correction_str);
+    if (ps == "none" || ps == "0")
+      setPSECorrectionMode(PSECorrectionMode::None);
+    else if (ps == "grad" || ps == "gradient" || ps == "1")
+      setPSECorrectionMode(PSECorrectionMode::Gradient);
+    else if (ps == "curvature" || ps == "laplacian" || ps == "2")
+      setPSECorrectionMode(PSECorrectionMode::Curvature);
+    else
+      throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "Unknown VPM_PSE_correction: " + PSE_correction_str);
+  }
+
+  // Apply VPM time-step constraint to dt. No-op if disabled.
+  void constrainDt(double &dt) const {
+    if (!enabled_)
+      return;
+    const auto vpm_dt = suggestTimeStep(dt);
+    if (vpm_dt.dt < dt) {
+      Print("[dt] limited by VPM:", "dt=", vpm_dt.dt, "dt_strain=", vpm_dt.dt_strain,
+            "dt_diffusion=", vpm_dt.dt_diffusion, "dt_move=", vpm_dt.dt_move,
+            "max_strain_rate=", vpm_dt.max_strain_rate, "max_u=", vpm_dt.max_u,
+            "min_sigma=", vpm_dt.min_sigma, "particles=", vpm_dt.particle_count);
+    }
+    dt = std::min(dt, vpm_dt.dt);
+  }
+
+  // Strang splitting: diffusion half-step + push particles out of rigid bodies.
+  void applyStrangDiffusionHalf(double dt, const std::vector<Network *> &rigidBodies) {
+    if (!enabled_)
+      return;
+    applyDiffusionEuler(0.5 * dt);
+    pushParticlesOutOfBodies(rigidBodies);
+  }
+
+  // Initialize RK stages for all particles. No-op if disabled.
+  void initializeRKIfEnabled(double dt, double t0, int RK_order) {
+    if (!enabled_)
+      return;
+    initializeRK(dt, t0, RK_order);
+  }
+
+  // Zero u_omega_VPM on all BEM nodes (always), then compute vortex velocity
+  // and subtract from Neumann BC (only when enabled).
+  void subtractFromNeumannBC(const std::vector<Network *> &FluidObject) {
+    // Always zero u_omega_VPM — set_u_total() reads it unconditionally.
+    for (auto *water : FluidObject) {
+      for (const auto &p : water->getPoints())
+        p->u_omega_VPM.fill(0.0);
+      for (auto *l : water->getBoundaryLines())
+        l->u_omega_VPM.fill(0.0);
+    }
+
+    if (!enabled_)
+      return;
+
+    for (auto *water : FluidObject) {
+      _Pragma("omp parallel for") for (auto p : ToVector(water->getPoints())) {
+        p->u_omega_VPM = computeVelocity(p->X);
+        if (!p->Neumann)
+          continue;
+        for (auto &[face, dd] : p->dofs) {
+          if (face)
+            dd.phin -= Dot(p->u_omega_VPM, face->normal);
+          else
+            dd.phin -= Dot(p->u_omega_VPM, p->getNormalNeumann_BEM());
+        }
+        if (auto *d0 = p->findActiveBieDof(nullptr))
+          std::get<1>(p->phiphin) = d0->phin;
+      }
+      auto boundary_lines = water->getBoundaryLines();
+      _Pragma("omp parallel for") for (size_t il = 0; il < boundary_lines.size(); ++il) {
+        auto *l = boundary_lines[il];
+        bool has_true_quad = std::ranges::any_of(l->getBoundaryFaces(), [](const auto *f) { return f->isTrueQuadraticElement; });
+        if (has_true_quad)
+          l->u_omega_VPM = computeVelocity(l->X_mid);
+        if (!l->Neumann)
+          continue;
+        for (auto &[face, dd] : l->dofs) {
+          if (face)
+            dd.phin -= Dot(l->u_omega_VPM, face->normal);
+          else
+            dd.phin -= Dot(l->u_omega_VPM, l->getNormal());
+        }
+        if (auto *d0 = l->findActiveBieDof(nullptr))
+          std::get<1>(l->phiphin) = d0->phin;
+      }
+    }
+  }
+
+  // RK inner-loop: set BEM velocity callback, compute advection+stretching,
+  // push RK, and push particles out of rigid bodies.
+  void advectAndStretchRK(const std::vector<Network *> &rigidBodies,
+                          std::function<std::array<double, 3>(const std::array<double, 3> &)> bemVelocityCallback) {
+    if (!enabled_)
+      return;
+    set_u_potential_BEM(std::move(bemVelocityCallback));
+    calcVelocityAndStretching();
+    pushRK();
+    pushParticlesOutOfBodies(rigidBodies);
+  }
+
+  // Post-RK step: wall vorticity shedding, diffusion half-step,
+  // push-out, and remove out-of-domain particles.
+  // Contract: caller must call setBodyVelocity() before this method.
+  void postRKStep(double dt,
+                  const std::vector<Network *> &FluidObject,
+                  const std::vector<Network *> &rigidBodies) {
+    if (!enabled_)
+      return;
+
+    // (1) Shedding / absorption at the wall
+    for (auto *water : FluidObject)
+      injectWallVorticityFluxPSE(water, dt, wall_min_absorb_receivers_,
+                                 wall_min_absorb_total_weight_, sigma_factor_, true);
+
+    // (2) Diffusion half-step (completing the Strang splitting)
+    applyDiffusionEuler(0.5 * dt);
+
+    // (3) Push particles out of rigid bodies
+    pushParticlesOutOfBodies(rigidBodies);
+
+    // (4) Remove particles outside fluid domain or inside rigid bodies
+    removeParticles([&](const VortexParticle &p) {
+      for (const auto &rb : rigidBodies)
+        if (insideClosedSurface(rb, p.x))
+          return true;
+      bool inside_any_water = false;
+      for (const auto &water : FluidObject)
+        if (insideClosedSurface(water, p.x)) {
+          inside_any_water = true;
+          break;
+        }
+      return !inside_any_water;
+    });
   }
 };

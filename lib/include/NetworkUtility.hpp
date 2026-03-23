@@ -3,6 +3,35 @@
 
 #include "Network.hpp"
 
+namespace network_utility_detail {
+
+inline bool isLineFaceDetachedByPressureLocal(const networkLine* l, const networkFace* f) {
+  if (!l || !f)
+    return false;
+  const auto* d = l->findContactState(f);
+  return d && d->detached_by_pressure;
+}
+
+inline bool isLineFaceNeumannLocal(const networkLine* l, const networkFace* f) {
+  if (!l || !f || !f->BoundaryQ())
+    return false;
+  if (isLineFaceDetachedByPressureLocal(l, f))
+    return false;
+  const auto* d = l->findContactState(f);
+  return d && d->nearestContactFace() != nullptr;
+}
+
+inline bool lineIsDirichletLocal(const networkLine* l) {
+  if (!l)
+    return false;
+  const auto bfs = l->getBoundaryFaces();
+  if (bfs.empty())
+    return false;
+  return std::ranges::all_of(bfs, [&](const auto* f) { return !isLineFaceNeumannLocal(l, f); });
+}
+
+}  // namespace network_utility_detail
+
 /* -------------------------------------------------------------------------- */
 
 inline void writeVertices(std::ofstream &ofs, std::map<networkPoint *, int> &P_i, const auto &points) {
@@ -676,7 +705,7 @@ inline void flipIf(networkPoint *p, const Tdd &limit_Dirichlet, const Tdd &limit
       auto [p0, p1] = l->getPoints();
       if (!l->CORNER) {
         if (force) {
-          if (l->Dirichlet) {
+          if (network_utility_detail::lineIsDirichletLocal(l)) {
             isfound = l->flipIfTopologicallyBetter(target_of_max_normal_diffD, acceptable_normal_change_by_flipD, s_mean == 0 ? 5 : s_mean);
             if (isfound)
               count++;
@@ -686,7 +715,7 @@ inline void flipIf(networkPoint *p, const Tdd &limit_Dirichlet, const Tdd &limit
               count++;
           }
         } else {
-          if (l->Dirichlet) {
+          if (network_utility_detail::lineIsDirichletLocal(l)) {
             //! 最小の変の数を３としている．もしこれを増やすと，柔軟に対応でいなくなる．特に角．
             isfound = l->flipIfBetter(target_of_max_normal_diffD, acceptable_normal_change_by_flipD, 5);
             if (isfound)
@@ -702,9 +731,10 @@ inline void flipIf(networkPoint *p, const Tdd &limit_Dirichlet, const Tdd &limit
     for (auto &f : p->getFaces())
       f->setGeometricProperties();
 
-  } catch (std::exception &e) {
-    std::cerr << e.what() << colorReset << std::endl;
-    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "");
+  } catch (const error_message&) {
+    throw;
+  } catch (const std::exception& e) {
+    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, e.what());
   };
 };
 
@@ -726,7 +756,7 @@ inline void flipIf(Network &water, const Tdd &limit_Dirichlet, const Tdd &limit_
       auto [p0, p1] = l->getPoints();
       if (!l->CORNER) {
         if (force && (iteration == 0 || count < iteration)) {
-          if (l->Dirichlet) {
+          if (network_utility_detail::lineIsDirichletLocal(l)) {
             isfound = l->flipIfTopologicallyBetter(target_of_max_normal_diffD, acceptable_normal_change_by_flipD);
             if (isfound)
               count++;
@@ -736,7 +766,7 @@ inline void flipIf(Network &water, const Tdd &limit_Dirichlet, const Tdd &limit_
               count++;
           }
         } else {
-          if (l->Dirichlet) {
+          if (network_utility_detail::lineIsDirichletLocal(l)) {
             //! 最小の変の数を３としている．もしこれを増やすと，柔軟に対応でいなくなる．特に角．
             isfound = l->flipIfBetter(target_of_max_normal_diffD, acceptable_normal_change_by_flipD, 5);
             if (isfound)
@@ -754,9 +784,10 @@ inline void flipIf(Network &water, const Tdd &limit_Dirichlet, const Tdd &limit_
       water.setGeometricPropertiesForce();
     } else
       std::cout << Green << "  No edges flipped." << colorReset << std::endl;
-  } catch (std::exception &e) {
-    std::cerr << e.what() << colorReset << std::endl;
-    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "");
+  } catch (const error_message&) {
+    throw;
+  } catch (const std::exception& e) {
+    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, e.what());
   };
 };
 
@@ -914,9 +945,10 @@ inline void LaplacianSmoothingIfOnStraightLine(V_netPp ps) {
         if (isStraight)
           p->setX(ToVector(ToX(p0) + ToX(p1)) / 2.);
       }
-  } catch (std::exception &e) {
-    std::cerr << e.what() << colorReset << std::endl;
-    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "");
+  } catch (const error_message&) {
+    throw;
+  } catch (const std::exception& e) {
+    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, e.what());
   };
 };
 

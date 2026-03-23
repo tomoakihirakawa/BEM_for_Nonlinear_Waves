@@ -7,38 +7,53 @@
 #include <set>
 
 #include "BEM.hpp"
+#include "BEM_pressure_detachment.hpp"
 #include "OutputCommon.hpp"
 #include "vtkWriter.hpp"
 #include "VPM.hpp"
 
+extern bool enable_pressure_detachment;
+extern double detachment_pressure_threshold;
+extern int detachment_consecutive_steps;
+
 namespace OutputParaView {
 
-// Element-type-aware VTU output: linear faces → VTK_TRIANGLE (type 5),
-// pseudo-quadratic/true-quadratic faces → VTK_QUADRATIC_TRIANGLE (type 22, 6 nodes).
+// VTU output layers:
+// - `vtkUnstructuredGridWriter`: generic low-level XML writer for typed cells/lines.
+// - `mk_vtu` in my_vtk.hpp: legacy convenience overloads for simple/debug output.
+// - `mk_vtu_quadratic`: canonical BEM surface writer. This is the entry point callers should use.
+//
+// BEM surface VTU export using vtkUnstructuredGridWriter<BEM_DOF_Base*>.
+// Handles linear, pseudo-quadratic, and true-quadratic elements.
+
+inline Tddd ToX(const BEM_DOF_Base* d) { return d->getPosition(); }
+
 inline void mk_vtu_quadratic(const std::string &filename, const V_netFp &Faces, const VV_VarForOutput &VV_name_comp_mapPVd = {}) {
   try {
-#if defined(debug_mk_vtu)
-    std::cout << Magenta << filename << colorReset;
-    std::cout << "  Faces.size() : " << std::to_string(Faces.size()) << colorReset << " ";
-#endif
-    struct PointEntry {
-      Tddd position;
-      networkPoint *ptr;      // non-null for vertex nodes
-      networkPoint *mid_pA;   // midpoint endpoint A
-      networkPoint *mid_pB;   // midpoint endpoint B
-      networkLine *mid_line;  // midpoint edge
+    // --- Build node list and connectivity (same topology as mk_vtu_quadratic) ---
+    struct NodeEntry {
+      BEM_DOF_Base *node;        // networkPoint* or networkLine*
+      Tddd position;             // explicit position (pseudo-quad midpoints differ from X_mid)
+      networkPoint *ptr;         // non-null for vertex nodes
+      networkPoint *mid_pA;      // midpoint endpoint A
+      networkPoint *mid_pB;      // midpoint endpoint B
+      networkLine *mid_line;     // midpoint edge
       bool is_true_quad_mid;
     };
+    struct SubCell {
+      int i0, i1, i2;
+      networkFace *parent;
+    };
 
-    std::vector<PointEntry> all_points;
-    std::vector<int> cell_sizes;
-    std::vector<uint8_t> cell_types;
+    std::vector<NodeEntry> all_nodes;
+    std::vector<SubCell> all_cells;
 
     for (const auto &f : Faces) {
       auto [p0, p1, p2] = f->getPoints();
-      all_points.push_back({p0->getXtuple(), p0, nullptr, nullptr, nullptr, false});
-      all_points.push_back({p1->getXtuple(), p1, nullptr, nullptr, nullptr, false});
-      all_points.push_back({p2->getXtuple(), p2, nullptr, nullptr, nullptr, false});
+      const int base = (int)all_nodes.size();
+      all_nodes.push_back({p0, p0->getPosition(), p0, nullptr, nullptr, nullptr, false});
+      all_nodes.push_back({p1, p1->getPosition(), p1, nullptr, nullptr, nullptr, false});
+      all_nodes.push_back({p2, p2->getPosition(), p2, nullptr, nullptr, nullptr, false});
 
       if (f->isPseudoQuadraticElement || f->isTrueQuadraticElement) {
         auto [p0_, l0, p1_, l1, p2_, l2] = f->PLPLPL;
@@ -49,177 +64,107 @@ inline void mk_vtu_quadratic(const std::string &filename, const V_netFp &Faces, 
           mid1 = l1->X_mid;
           mid2 = l2->X_mid;
         } else {
-          // Pseudo-quadratic: use DodecaPoints
-          // dodecaPoints[0] origin=p0: p0 at (1,0), p1 at (0,1), p2 at (0,0)
           if (f->dodecaPoints[0]) {
             auto &dp = f->dodecaPoints[0];
-            mid0 = dp->X(0.5, 0.5) + dp->corner_offset(0.5, 0.5); // l0(p0-p1)
-            mid1 = dp->X(0.0, 0.5) + dp->corner_offset(0.0, 0.5); // l1(p1-p2)
-            mid2 = dp->X(0.5, 0.0) + dp->corner_offset(0.5, 0.0); // l2(p2-p0)
+            mid0 = dp->X(0.5, 0.5) + dp->corner_offset(0.5, 0.5);
+            mid1 = dp->X(0.0, 0.5) + dp->corner_offset(0.0, 0.5);
+            mid2 = dp->X(0.5, 0.0) + dp->corner_offset(0.5, 0.0);
           } else {
-            mid0 = 0.5 * (p0->getXtuple() + p1->getXtuple());
-            mid1 = 0.5 * (p1->getXtuple() + p2->getXtuple());
-            mid2 = 0.5 * (p2->getXtuple() + p0->getXtuple());
+            mid0 = 0.5 * (p0->getPosition() + p1->getPosition());
+            mid1 = 0.5 * (p1->getPosition() + p2->getPosition());
+            mid2 = 0.5 * (p2->getPosition() + p0->getPosition());
           }
         }
 
         auto [pa0, pb0] = l0->getPoints();
         auto [pa1, pb1] = l1->getPoints();
         auto [pa2, pb2] = l2->getPoints();
-        all_points.push_back({mid0, nullptr, pa0, pb0, l0, f->isTrueQuadraticElement});
-        all_points.push_back({mid1, nullptr, pa1, pb1, l1, f->isTrueQuadraticElement});
-        all_points.push_back({mid2, nullptr, pa2, pb2, l2, f->isTrueQuadraticElement});
+        all_nodes.push_back({l0, mid0, nullptr, pa0, pb0, l0, f->isTrueQuadraticElement});
+        all_nodes.push_back({l1, mid1, nullptr, pa1, pb1, l1, f->isTrueQuadraticElement});
+        all_nodes.push_back({l2, mid2, nullptr, pa2, pb2, l2, f->isTrueQuadraticElement});
 
-        cell_sizes.push_back(6);
-        cell_types.push_back(22); // VTK_QUADRATIC_TRIANGLE
+        all_cells.push_back({base + 0, base + 3, base + 5, f});
+        all_cells.push_back({base + 3, base + 1, base + 4, f});
+        all_cells.push_back({base + 5, base + 4, base + 2, f});
+        all_cells.push_back({base + 3, base + 4, base + 5, f});
       } else {
-        cell_sizes.push_back(3);
-        cell_types.push_back(5); // VTK_TRIANGLE
+        all_cells.push_back({base + 0, base + 1, base + 2, f});
       }
     }
 
-    const int num_points = (int)all_points.size();
-    const int num_cells = (int)cell_sizes.size();
+    // --- Build vtkUnstructuredGridWriter ---
+    // Use int index to distinguish same-entity nodes from different faces (no dedup)
+    vtkUnstructuredGridWriter<BEM_DOF_Base*> vtu;
+    vtu.reserve(all_nodes.size());
 
-    FILE *fp = fopen(filename.c_str(), "wb");
-    if (!fp)
+    // Register all nodes with unique VertexId = {node, local_index}
+    for (int i = 0; i < (int)all_nodes.size(); ++i)
+      vtu.addWithPosition(all_nodes[i].node, all_nodes[i].position, i);
+
+    // Register connectivity
+    for (const auto &cell : all_cells) {
+      std::array<BEM_DOF_Base*, 3> tri = {all_nodes[cell.i0].node, all_nodes[cell.i1].node, all_nodes[cell.i2].node};
+      // Use VertexId with local index for connectivity
+      vtu.connectivity3.push_back({{{all_nodes[cell.i0].node, cell.i0}, {all_nodes[cell.i1].node, cell.i1}, {all_nodes[cell.i2].node, cell.i2}}});
+    }
+
+    // --- Attach PointData ---
+    // dataForOutput now returns uomap_DOF_d / uomap_DOF_Tddd with both point and line midpoint data.
+    // addPointData iterates this->vertices (same order as Points) and looks up by std::get<0>(ID).
+    for (const auto &V_var : VV_name_comp_mapPVd) {
+      std::string Name = std::get<std::string>(V_var[0]);
+
+      if (V_var.size() > 1 && std::holds_alternative<uomap_DOF_d>(V_var[1])) {
+        // DOF-keyed scalar: data already contains both point and line midpoint values
+        vtu.addPointData(Name, std::get<uomap_DOF_d>(V_var[1]));
+
+      } else if (V_var.size() > 1 && std::holds_alternative<uomap_DOF_Tddd>(V_var[1])) {
+        // DOF-keyed vector: data already contains both point and line midpoint values
+        vtu.addPointData(Name, std::get<uomap_DOF_Tddd>(V_var[1]));
+
+      } else if (V_var.size() > 1 && std::holds_alternative<uomap_P_d>(V_var[1])) {
+        // Legacy: point-only scalar (should not appear with new dataForOutput)
+        const auto &smap = std::get<uomap_P_d>(V_var[1]);
+        std::unordered_map<BEM_DOF_Base*, double> dof_map(smap.begin(), smap.end());
+        vtu.addPointData(Name, dof_map);
+
+      } else if (V_var.size() > 1 && std::holds_alternative<uomap_P_Tddd>(V_var[1])) {
+        // Legacy: point-only vector
+        const auto &vmap = std::get<uomap_P_Tddd>(V_var[1]);
+        std::unordered_map<BEM_DOF_Base*, Tddd> dof_vmap(vmap.begin(), vmap.end());
+        vtu.addPointData(Name, dof_vmap);
+      }
+      // uomap_F_d handled below as CellData
+    }
+
+    // --- CellData ---
+    for (const auto &V_var : VV_name_comp_mapPVd) {
+      if (V_var.size() <= 1 || !std::holds_alternative<uomap_F_d>(V_var[1]))
+        continue;
+      std::string Name = std::get<std::string>(V_var[0]);
+      const auto &fmap = std::get<uomap_F_d>(V_var[1]);
+      std::vector<double> cell_values;
+      cell_values.reserve(all_cells.size());
+      for (const auto &cell : all_cells) {
+        auto it = fmap.find(cell.parent);
+        if (it != fmap.end() && isFinite(it->second))
+          cell_values.push_back(it->second);
+        else
+          cell_values.push_back(std::numeric_limits<double>::quiet_NaN());
+      }
+      vtu.addCellData(Name, cell_values);
+    }
+
+    // --- Write ---
+    std::ofstream ofs(filename);
+    if (!ofs)
       throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, filename + " can not be opened");
+    vtu.write(ofs);
 
-    fprintf(fp, "<?xml version='1.0' encoding='UTF-8'?>\n");
-    fprintf(fp, "<VTKFile xmlns='VTK' byte_order='LittleEndian' version='0.1' type='UnstructuredGrid'>\n");
-    fprintf(fp, "<UnstructuredGrid>\n");
-    fprintf(fp, "<Piece NumberOfCells='%d' NumberOfPoints='%d'>\n", num_cells, num_points);
-
-    // Points
-    fprintf(fp, "<Points>\n");
-    fprintf(fp, "<DataArray NumberOfComponents='3' type='Float32' Name='Position' format='ascii'>\n");
-    for (const auto &pe : all_points)
-      fprintf(fp, "%s %s %s ",
-              NumtoString(std::get<0>(pe.position)).c_str(),
-              NumtoString(std::get<1>(pe.position)).c_str(),
-              NumtoString(std::get<2>(pe.position)).c_str());
-    fprintf(fp, "\n</DataArray>\n");
-    fprintf(fp, "</Points>\n");
-
-    // PointData
-    if (!VV_name_comp_mapPVd.empty()) {
-      fprintf(fp, "<PointData>\n");
-      for (const auto &V_var : VV_name_comp_mapPVd) {
-        std::string Name = std::get<std::string>(V_var[0]);
-
-        if (V_var.size() > 1 && std::holds_alternative<uomap_P_d>(V_var[1])) {
-          const auto &smap = std::get<uomap_P_d>(V_var[1]);
-          fprintf(fp, "<DataArray NumberOfComponents='1' type='Float32' Name='%s' format='ascii'>\n", Name.c_str());
-          for (const auto &pe : all_points) {
-            if (pe.ptr) {
-              auto it = smap.find(pe.ptr);
-              if (it != smap.end() && isFinite(it->second))
-                fprintf(fp, "%s ", NumtoString(it->second).c_str());
-              else
-                fprintf(fp, "NaN ");
-            } else {
-              double val = 0.;
-              bool found = false;
-              if (pe.mid_line) {
-                if (Name == "direction_info_count") { val = pe.mid_line->debug_direction_info_count; found = true; }
-                else if (Name == "contact_faces_count") { val = pe.mid_line->debug_contact_faces_count; found = true; }
-                else if (Name == "body_vertices_count") { val = pe.mid_line->debug_body_vertices_count; found = true; }
-                else if (Name == "isInContact_pass_count") { val = pe.mid_line->debug_isInContact_pass_count; found = true; }
-                else if (pe.is_true_quad_mid) {
-                  if (Name == "φ") { val = pe.mid_line->phiphin[0]; found = true; }
-                  else if (Name == "φn") {
-                    if (pe.mid_line->phinOnFace.count(nullptr))
-                      val = pe.mid_line->phinOnFace.at(nullptr);
-                    else {
-                      // CORNER midpoint: area-weighted average for visualization only
-                      double wa = 0., wp = 0.;
-                      for (auto* f : pe.mid_line->getBoundaryFaces())
-                        if (f && pe.mid_line->phinOnFace.count(f)) { wp += pe.mid_line->phinOnFace.at(f) * f->area; wa += f->area; }
-                      val = (wa > 0.) ? wp / wa : pe.mid_line->phiphin[1];
-                    }
-                    found = true;
-                  }
-                  else if (Name == "φt") { val = pe.mid_line->phiphin_t[0]; found = true; }
-                  else if (Name == "φnt") { val = pe.mid_line->phiphin_t[1]; found = true; }
-                  else if (Name == "diag") { val = pe.mid_line->diag_coeff_BEM; found = true; }
-                }
-              }
-              if (!found) {
-                auto itA = smap.find(pe.mid_pA);
-                auto itB = smap.find(pe.mid_pB);
-                if (itA != smap.end() && itB != smap.end() &&
-                    isFinite(itA->second) && isFinite(itB->second)) {
-                  val = 0.5 * (itA->second + itB->second);
-                  found = true;
-                }
-              }
-              if (found && isFinite(val))
-                fprintf(fp, "%s ", NumtoString(val).c_str());
-              else
-                fprintf(fp, "NaN ");
-            }
-          }
-          fprintf(fp, "\n</DataArray>\n");
-        } else if (V_var.size() > 1 && std::holds_alternative<uomap_P_Tddd>(V_var[1])) {
-          const auto &vmap = std::get<uomap_P_Tddd>(V_var[1]);
-          fprintf(fp, "<DataArray NumberOfComponents='3' type='Float32' Name='%s' format='ascii'>\n", Name.c_str());
-          for (const auto &pe : all_points) {
-            if (pe.ptr) {
-              auto it = vmap.find(pe.ptr);
-              if (it != vmap.end()) {
-                const auto &v = it->second;
-                fprintf(fp, "%s %s %s ",
-                        isFinite(std::get<0>(v)) ? NumtoString(std::get<0>(v)).c_str() : "NaN",
-                        isFinite(std::get<1>(v)) ? NumtoString(std::get<1>(v)).c_str() : "NaN",
-                        isFinite(std::get<2>(v)) ? NumtoString(std::get<2>(v)).c_str() : "NaN");
-              } else {
-                fprintf(fp, "NaN NaN NaN ");
-              }
-            } else {
-              auto itA = vmap.find(pe.mid_pA);
-              auto itB = vmap.find(pe.mid_pB);
-              if (itA != vmap.end() && itB != vmap.end()) {
-                auto avg = 0.5 * (itA->second + itB->second);
-                fprintf(fp, "%s %s %s ",
-                        isFinite(std::get<0>(avg)) ? NumtoString(std::get<0>(avg)).c_str() : "NaN",
-                        isFinite(std::get<1>(avg)) ? NumtoString(std::get<1>(avg)).c_str() : "NaN",
-                        isFinite(std::get<2>(avg)) ? NumtoString(std::get<2>(avg)).c_str() : "NaN");
-              } else {
-                fprintf(fp, "NaN NaN NaN ");
-              }
-            }
-          }
-          fprintf(fp, "\n</DataArray>\n");
-        }
-      }
-      fprintf(fp, "</PointData>\n");
-    }
-
-    // Cells
-    fprintf(fp, "<Cells>\n");
-    fprintf(fp, "<DataArray type='Int32' Name='connectivity' format='ascii'>\n");
-    for (int i = 0; i < num_points; ++i)
-      fprintf(fp, "%d ", i);
-    fprintf(fp, "\n</DataArray>\n");
-    fprintf(fp, "<DataArray type='Int32' Name='offsets' format='ascii'>\n");
-    { int sum = 0; for (const auto &sz : cell_sizes) fprintf(fp, "%d ", sum += sz); }
-    fprintf(fp, "\n</DataArray>\n");
-    fprintf(fp, "<DataArray type='UInt8' Name='types' format='ascii'>\n");
-    for (const auto &t : cell_types)
-      fprintf(fp, "%d ", t);
-    fprintf(fp, "\n</DataArray>\n");
-    fprintf(fp, "</Cells>\n");
-
-    fprintf(fp, "</Piece>\n");
-    fprintf(fp, "</UnstructuredGrid>\n");
-    fprintf(fp, "</VTKFile>\n");
-#if defined(debug_mk_vtu)
-    std::cout << Red << "|" << colorReset << std::endl;
-#endif
-    fclose(fp);
-  } catch (std::exception &e) {
-    std::cerr << e.what() << colorReset << std::endl;
-    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "");
+  } catch (const error_message&) {
+    throw;
+  } catch (const std::exception& e) {
+    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, e.what());
   }
 }
 
@@ -939,7 +884,7 @@ void write_step(const OutputContext &ctx, const std::map<std::string, outputInfo
     const auto &info = it->second;
 
     std::filesystem::path filename = info.vtu_file_name + std::to_string(ctx.time_step) + ".vtu";
-    mk_vtu_quadratic(ctx.output_directory / filename, net->getBoundaryFaces(), dataForOutput(net, ctx.dt));
+    mk_vtu_quadratic((ctx.output_directory / filename).string(), net->getBoundaryFaces(), dataForOutput(net, ctx.dt));
     if (info.PVD) {
       info.PVD->push(filename, ctx.simulation_time);
       info.PVD->output();
@@ -970,7 +915,7 @@ void write_step(const OutputContext &ctx, const std::map<std::string, outputInfo
     const auto &info = it->second;
 
     std::filesystem::path filename = info.vtu_file_name + std::to_string(ctx.time_step) + ".vtu";
-    mk_vtu_quadratic(ctx.output_directory / filename, net->getBoundaryFaces(), dataForOutput(net, ctx.dt));
+    mk_vtu_quadratic((ctx.output_directory / filename).string(), net->getBoundaryFaces(), dataForOutput(net, ctx.dt));
     if (info.PVD) {
       info.PVD->push(filename, ctx.simulation_time);
       info.PVD->output();
@@ -1002,7 +947,7 @@ void write_step(const OutputContext &ctx, const std::map<std::string, outputInfo
     const auto &info = it->second;
 
     std::filesystem::path filename = info.vtu_file_name + std::to_string(ctx.time_step) + ".vtu";
-    mk_vtu_quadratic(ctx.output_directory / filename, net->getBoundaryFaces(), dataForOutput(net, ctx.dt));
+    mk_vtu_quadratic((ctx.output_directory / filename).string(), net->getBoundaryFaces(), dataForOutput(net, ctx.dt));
     if (info.PVD) {
       info.PVD->push(filename, ctx.simulation_time);
       info.PVD->output();
@@ -1010,10 +955,7 @@ void write_step(const OutputContext &ctx, const std::map<std::string, outputInfo
   }
 }
 
-void write_vpm(const OutputContext &ctx, const VortexMethod &vpm, PVDWriter &pvd) {
-  std::string filename = "vpm_" + std::to_string(ctx.time_step) + ".vtp";
-  std::filesystem::path path = ctx.output_directory / filename;
-
+void write_vpm_vtp(const std::filesystem::path &path, const VortexMethod &vpm) {
   std::ofstream ofs(path);
   if (!ofs) {
     std::cerr << "Error: Cannot open file for writing: " << path << std::endl;
@@ -1083,9 +1025,11 @@ void write_vpm(const OutputContext &ctx, const VortexMethod &vpm, PVDWriter &pvd
   ofs << "    </Piece>\n";
   ofs << "  </PolyData>\n";
   ofs << "</VTKFile>\n";
+}
 
-  ofs.close();
-
+void write_vpm(const OutputContext &ctx, const VortexMethod &vpm, PVDWriter &pvd) {
+  std::string filename = "vpm_" + std::to_string(ctx.time_step) + ".vtp";
+  write_vpm_vtp(ctx.output_directory / filename, vpm);
   pvd.push(filename, ctx.simulation_time);
   pvd.output();
 }

@@ -119,28 +119,16 @@ inline Complex incident_phin_hat(const WaterWaveTheory &wave, const Tddd &x, con
 inline Complex get_phi_on_face(const networkPoint *p, const networkFace *f) {
   if (!p)
     return Complex{0.0, 0.0};
-  if (f) {
-    auto it = p->phiOnFace.find(const_cast<networkFace *>(f));
-    if (it != p->phiOnFace.end())
-      return Complex{it->second, 0.0};
-  }
-  auto it = p->phiOnFace.find(nullptr);
-  if (it != p->phiOnFace.end())
-    return Complex{it->second, 0.0};
+  if (auto* d = p->findActiveBieDofOrDefault(const_cast<networkFace *>(f)))
+    return Complex{d->phi, 0.0};
   return Complex{std::get<0>(p->phiphin), 0.0};
 }
 
 inline Complex get_phin_on_face(const networkPoint *p, const networkFace *f) {
   if (!p)
     return Complex{0.0, 0.0};
-  if (f) {
-    auto it = p->phinOnFace.find(const_cast<networkFace *>(f));
-    if (it != p->phinOnFace.end())
-      return Complex{it->second, 0.0};
-  }
-  auto it = p->phinOnFace.find(nullptr);
-  if (it != p->phinOnFace.end())
-    return Complex{it->second, 0.0};
+  if (auto* d = p->findActiveBieDofOrDefault(const_cast<networkFace *>(f)))
+    return Complex{d->phin, 0.0};
   return Complex{std::get<1>(p->phiphin), 0.0};
 }
 

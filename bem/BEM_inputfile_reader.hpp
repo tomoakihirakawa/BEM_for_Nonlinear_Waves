@@ -2,19 +2,22 @@
 
 #include <filesystem>
 #include <optional>
+#include <regex>
 
 #include "BEM.hpp"
+#include "BEM_collision_settings.hpp"
 #include "basic.hpp"
 #include "TanakaSolitaryWave.hpp"
 
-std::string toLowerCase(const std::string &str) {
+std::string toLowerCase(const std::string& str) {
   std::string strLower = str;
   std::transform(strLower.begin(), strLower.end(), strLower.begin(), [](unsigned char c) { return std::tolower(c); });
   return strLower;
 }
 
 struct SimulationSettings {
-  enum class DomainMode { Time, Frequency };
+  enum class DomainMode { Time,
+                          Frequency };
   // Canonical settings file name (legacy: setting.json).
   const std::string settings_filename = "settings.json";
   const std::string legacy_setting_filename = "setting.json";
@@ -39,15 +42,21 @@ struct SimulationSettings {
     int end_time_step = 0;
     double end_time = 0.0;
     double max_dt = 0.0;
+    int rk_order = 4; // Runge-Kutta order (1=Euler, 2=Heun, 3=RK3, 4=RK4)
     struct NodeRelocationSettings {
-      enum class Method { none, ALE, interpolation };
-      enum class Surface { linear, pseudo_quadratic, true_quadratic };
-      enum class MidpointMode { nearest, cubic_hermite };
+      enum class Method { none,
+                          ALE,
+                          interpolation };
+      enum class Surface { linear,
+                           pseudo_quadratic,
+                           true_quadratic };
+      enum class MidpointMode { nearest };
       Method method = Method::none;
       int period = 0;
       Surface surface = Surface::pseudo_quadratic;
       MidpointMode midpoint_mode = MidpointMode::nearest;
       bool surface_explicitly_set = false;
+      bool debug_output = false;
     } node_relocation;
   } time;
 
@@ -63,6 +72,7 @@ struct SimulationSettings {
       bool linear = true;
       bool pseudo_quadratic = false;
       bool true_quadratic = false;
+      bool quadratic_linear_hybrid = false;
     } element;
 
     struct SolverSettings {
@@ -91,9 +101,9 @@ struct SimulationSettings {
       int solver_max_iter = 500;
       int solver_restart = 100;
       // Metal M2L GPU acceleration settings (requires GMRES + FMM)
-      bool use_metal_m2l = false;           // Enable Metal GPU acceleration for M2L
-      bool metal_m2l_threadgroup = false;   // true: use threadgroup parallelization
-      bool metal_m2l_sort_terms = false;    // Sort terms for improved memory locality
+      bool use_metal_m2l = false;         // Enable Metal GPU acceleration for M2L
+      bool metal_m2l_threadgroup = false; // true: use threadgroup parallelization
+      bool metal_m2l_sort_terms = false;  // Sort terms for improved memory locality
       // Nearfield integration mode: "scalar" (default), "simd" (NEON float 4-target), "simd_double" (NEON double 2-target), "metal" (GPU)
       std::string nearfield_mode = "cell_scalar";
       // P2M quadrature: number of Dunavant points (1, 3, 6, 7). Default=1 for backward compatibility.
@@ -101,8 +111,12 @@ struct SimulationSettings {
       // MAC criterion parameter (smaller = stricter separation = faster but less accurate)
       double mac_theta = 0.25;
       // FMM tree structure settings (requires GMRES + FMM)
-      int fmm_max_level = 7;               // Maximum tree depth
-      int fmm_bucket_max_points = 50;      // Bucket split threshold (number of points)
+      int fmm_max_level = 7;          // Maximum tree depth
+      int fmm_bucket_max_points = 50; // Bucket split threshold (number of points)
+      // Pressure-based detachment
+      bool enable_pressure_detachment = false;
+      double detachment_pressure_threshold = 0.0;
+      int detachment_consecutive_steps = 3;
     } solver;
   } bem;
 
@@ -123,31 +137,20 @@ struct SimulationSettings {
     double force_remesh_time = 0.0;
     int grid_refinement = 0;
 
-    // Initial ALE-style mesh pre-relaxation (no physical time advance)
+    // Initial mesh pre-relaxation (no physical time advance)
     struct InitialMeshPreRelax {
       // Optional; controlled by settings.json "initial_mesh_pre_relax".
       bool enabled = true;
-      int loop = 50;
-      double coef = 0.01;
+      int loop = 20;
+      double coef = 0.005;
     } initial_mesh_pre_relax;
 
     // Surface collision detection and resolution
-    struct CollisionSettings {
-      bool enabled = false;                  // Master enable/disable
-      double proximity_factor = 1.5;         // mean_edge_length × this factor = detection threshold
-      double normal_reversal_cos = -0.3;     // Adjacent face normal dot < this → folding detected
-      int min_zone_faces = 3;                // Minimum faces in zone to attempt resolution
-      bool detect_folding = true;            // Problem B: adjacent face folding detection
-      bool detect_non_adjacent = true;       // Problem A: non-adjacent collision detection
-      bool resolve_with_tetgen = true;       // Use TetGen local repair for non-adjacent collision zones
-    } collision;
+    // CollisionSettings is defined in BEM_collision.hpp (separate compilation unit)
+    CollisionSettings collision;
 
-    struct SubsurfaceAltitudeRejectSettings {
-      bool enabled = true;
-      double min_face_altitude_rel = 0.05;
-      double min_edge_angle_deg = 1.0;
-      double max_edge_angle_deg = 120.0;
-    } subsurface_altitude_reject;
+    // SubsurfaceAltitudeRejectSettings is defined in BEM_collision_settings.hpp
+    ::SubsurfaceAltitudeRejectSettings subsurface_altitude_reject;
 
     bool shell_visualization = false;
     bool front_advancing_debug = false;
@@ -165,14 +168,14 @@ struct SimulationSettings {
 
   /* ----------------------------- checkpoint settings ----------------------- */
   struct CheckpointSettings {
-    int interval = 0;           // 0=disabled, N=save every N steps
-    std::string restart_from;   // checkpoint file path (empty=fresh start)
-    int max_keep = 3;           // number of checkpoint files to keep (0=keep all)
+    int interval = 0;         // 0=disabled, N=save every N steps
+    std::string restart_from; // checkpoint file path (empty=fresh start)
+    int max_keep = 3;         // number of checkpoint files to keep (0=keep all)
   } checkpoint;
 
   /* ------------------------------- objects/data ----------------------------- */
   std::map<std::string, outputInfo> NetOutputInfo;
-  std::vector<Network *> FluidObject, RigidBodyObject, SoftBodyObject, AbsorberObject;
+  std::vector<Network*> FluidObject, RigidBodyObject, SoftBodyObject, AbsorberObject;
   std::vector<JSON> MeasurementJSONs;
 
   SimulationSettings(std::filesystem::path input_directory, DomainMode mode_in = DomainMode::Time)
@@ -194,14 +197,14 @@ struct SimulationSettings {
     common.input_directory = std::move(input_directory);
     const auto mode_label = (domain_mode == DomainMode::Time) ? std::string("time_domain") : std::string("frequency_domain");
 
-    auto pick_key = [&](std::initializer_list<const char *> keys) -> std::optional<std::string> {
-      for (const auto *k : keys) {
+    auto pick_key = [&](std::initializer_list<const char*> keys) -> std::optional<std::string> {
+      for (const auto* k : keys) {
         if (settingJSON.find(k))
           return std::string(k);
       }
       return std::nullopt;
     };
-    auto require_key = [&](std::initializer_list<const char *> keys, const std::string &label) -> std::string {
+    auto require_key = [&](std::initializer_list<const char*> keys, const std::string& label) -> std::string {
       auto hit = pick_key(keys);
       if (!hit) {
         throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__,
@@ -217,7 +220,7 @@ struct SimulationSettings {
       common.output_directory = common.input_directory / common.output_directory;
     // Allow overriding output directory without editing the input case.
     // Useful for sandboxed runs / short benchmarks.
-    if (const char *out_env = std::getenv("BEM_OUTPUT_DIR")) {
+    if (const char* out_env = std::getenv("BEM_OUTPUT_DIR")) {
       if (out_env[0] != '\0') {
         common.output_directory = std::filesystem::path(out_env);
         std::cout << Yellow << "Override output_directory via BEM_OUTPUT_DIR: " << common.output_directory << colorReset << std::endl;
@@ -228,11 +231,11 @@ struct SimulationSettings {
 
     // Helper: parse node_relocation from a string array
     // ["method", period, "surface", "midpoint_mode"]
-    auto parse_node_relocation = [&](const std::vector<std::string> &arr) {
+    auto parse_node_relocation = [&](const std::vector<std::string>& arr) {
       using M = TimeDomainSettings::NodeRelocationSettings::Method;
       using S = TimeDomainSettings::NodeRelocationSettings::Surface;
       using MM = TimeDomainSettings::NodeRelocationSettings::MidpointMode;
-      auto &nr = time.node_relocation;
+      auto& nr = time.node_relocation;
       auto method_str = toLowerCase(arr[0]);
       if (method_str == "none")
         nr.method = M::none;
@@ -262,19 +265,17 @@ struct SimulationSettings {
         auto midpoint_mode_str = toLowerCase(arr[3]);
         if (midpoint_mode_str == "nearest")
           nr.midpoint_mode = MM::nearest;
-        else if (midpoint_mode_str == "cubic_hermite" || midpoint_mode_str == "hermite")
-          nr.midpoint_mode = MM::cubic_hermite;
         else
           throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__,
-                              "node_relocation midpoint_mode must be nearest or cubic_hermite (got: " + arr[3] + ")");
+                              "node_relocation midpoint_mode must be nearest (got: " + arr[3] + ")");
       }
     };
 
     // Helper: parse legacy ALE/ALEPERIOD keys into node_relocation
-    auto parse_legacy_ale = [&](const std::string &ale_value, int period) {
+    auto parse_legacy_ale = [&](const std::string& ale_value, int period) {
       using M = TimeDomainSettings::NodeRelocationSettings::Method;
       using S = TimeDomainSettings::NodeRelocationSettings::Surface;
-      auto &nr = time.node_relocation;
+      auto& nr = time.node_relocation;
       nr.period = period;
       auto val = toLowerCase(ale_value);
       if (val == "none") {
@@ -338,15 +339,15 @@ struct SimulationSettings {
       /*                           read settings.json                               */
       /* -------------------------------------------------------------------------- */
 
-      for (auto &[key, value] : settingJSON())
+      for (auto& [key, value] : settingJSON())
         std::cout << key << ": " << value << std::endl;
 
       // Required key validation already handled above (mode-aware).
 
       /* ----------------------------- meshing options ---------------------------- */
 
-      settingJSON.find("meshing_options", [&](const auto &STR_VEC) {
-        for (const auto &STR_VEC : STR_VEC) {
+      settingJSON.find("meshing_options", [&](const auto& STR_VEC) {
+        for (const auto& STR_VEC : STR_VEC) {
           if (STR_VEC == "tetrahedralize")
             remeshing.tetrahedralize = true;
           if (STR_VEC == "surface_flip")
@@ -369,6 +370,9 @@ struct SimulationSettings {
         } else if (elem_str == "true_quadratic" || elem_str == "true_quad" || elem_str == "quadratic") {
           bem.element.linear = false;
           bem.element.true_quadratic = true;
+        } else if (elem_str.contains("hybrid")) {
+          bem.element.linear = false;
+          bem.element.quadratic_linear_hybrid = true;
         } else if (elem_str.contains("quad") && elem_str.contains("pseudo")) {
           bem.element.linear = false;
           bem.element.pseudo_quadratic = true;
@@ -385,36 +389,58 @@ struct SimulationSettings {
         std::cout << "PSEUDO_QUADRATIC_ELEMENT" << std::endl;
       if (bem.element.true_quadratic)
         std::cout << "TRUE_QUADRATIC_ELEMENT" << std::endl;
+      if (bem.element.quadratic_linear_hybrid)
+        std::cout << "QUADRATIC_LINEAR_HYBRID_ELEMENT" << std::endl;
 
       {
         using M = TimeDomainSettings::NodeRelocationSettings::Method;
         using S = TimeDomainSettings::NodeRelocationSettings::Surface;
         using MM = TimeDomainSettings::NodeRelocationSettings::MidpointMode;
-        auto &nr = time.node_relocation;
+        auto& nr = time.node_relocation;
         if (nr.method == M::none)
           std::cout << "NODE_RELOCATION: none (pure Lagrangian)" << std::endl;
         else {
           std::cout << "NODE_RELOCATION: " << (nr.method == M::ALE ? "ALE" : "interpolation")
                     << ", period=" << nr.period;
           if (nr.method == M::interpolation)
-            std::cout << ", midpoint_mode=" << (nr.midpoint_mode == MM::cubic_hermite ? "cubic_hermite" : "nearest");
+            std::cout << ", midpoint_mode=nearest";
           std::cout << std::endl;
         }
       }
 
+      settingJSON.find("node_relocation_debug", [&](const auto& v) {
+        time.node_relocation.debug_output = stob(v)[0];
+      });
+      std::cout << "NODE_RELOCATION_DEBUG: " << (time.node_relocation.debug_output ? "true" : "false") << std::endl;
+
+      // Runge-Kutta order (1=Euler, 2=Heun, 3=RK3, 4=RK4)
+      settingJSON.find("rk_order", [&](const auto& v) {
+        int order = std::stoi(v[0]);
+        if (order < 1 || order > 4)
+          throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "rk_order must be 1, 2, 3, or 4 (got " + std::to_string(order) + ")");
+        time.rk_order = order;
+      });
+      std::cout << "RK_ORDER: " << time.rk_order << std::endl;
+
       std::cout << "" << std::endl;
 
-      if (settingJSON.find("WATER_DENSITY", [&](auto STR_VEC) {
-            common.water_density = stod(STR_VEC[0]);
-            _WATER_DENSITY_ = common.water_density;
-          }))
-        std::cout << "WATER_DENSITY: " << common.water_density << std::endl;
-
-      if (settingJSON.find("GRAVITY", [&](auto STR_VEC) {
-            common.gravity = stod(STR_VEC[0]);
-            _GRAVITY_ = common.gravity;
-          }))
-        std::cout << "GRAVITY: " << common.gravity << std::endl;
+      // Accept both uppercase (canonical) and lowercase (legacy) keys
+      {
+        const char* wd_key = settingJSON.find("WATER_DENSITY") ? "WATER_DENSITY" : (settingJSON.find("water_density") ? "water_density" : nullptr);
+        if (wd_key && settingJSON.find(wd_key, [&](auto STR_VEC) {
+              common.water_density = stod(STR_VEC[0]);
+              _WATER_DENSITY_ = common.water_density;
+            }))
+          std::cout << "WATER_DENSITY: " << common.water_density << std::endl;
+      }
+      {
+        const char* g_key = settingJSON.find("GRAVITY") ? "GRAVITY" : (settingJSON.find("gravity") ? "gravity" : nullptr);
+        if (g_key && settingJSON.find(g_key, [&](auto STR_VEC) {
+              common.gravity = stod(STR_VEC[0]);
+              _GRAVITY_ = common.gravity;
+            }))
+          std::cout << "GRAVITY: " << common.gravity << std::endl;
+      }
 
       auto set_preconditioner = [&](std::string v) {
         v = toLowerCase(StringTrim(v, {" "}));
@@ -444,7 +470,7 @@ struct SimulationSettings {
         throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "Unknown preconditioner \"" + v + "\". Supported: \"ILU\", \"MILU\", \"ILUT\", \"SCHWARZ\", \"NONE\".");
       };
 
-      auto set_ilu_neighborhood = [&](std::string type, const std::optional<std::string> &num_str = std::nullopt) {
+      auto set_ilu_neighborhood = [&](std::string type, const std::optional<std::string>& num_str = std::nullopt) {
         type = toLowerCase(StringTrim(type, {" "}));
         if (type == "buckets" || type == "bucket") {
           bem.solver.ilu_neighborhood_type = "BUCKETS";
@@ -489,7 +515,7 @@ struct SimulationSettings {
       };
 
       // Solver settings
-      settingJSON.find("solver", [&](const auto &v) {
+      settingJSON.find("solver", [&](const auto& v) {
         if (v.size() >= 1)
           bem.solver.solver_type = StringTrim(v[0], {" "});
         if (v.size() >= 2)
@@ -551,21 +577,21 @@ struct SimulationSettings {
           }
         }
       });
-      settingJSON.find("solver_tol", [&](const auto &v) { bem.solver.solver_tol = std::stod(v[0]); });
-      settingJSON.find("solver_max_iter", [&](const auto &v) { bem.solver.solver_max_iter = std::stoi(v[0]); });
-      settingJSON.find("solver_restart", [&](const auto &v) { bem.solver.solver_restart = std::stoi(v[0]); });
-      settingJSON.find("preconditioner", [&](const auto &v) { set_preconditioner(v[0]); });
-      settingJSON.find("milu_omega", [&](const auto &v) { bem.solver.milu_omega = std::stod(v[0]); });
-      settingJSON.find("ilut_drop_tol", [&](const auto &v) { bem.solver.ilut_drop_tol = std::stod(v[0]); });
-      settingJSON.find("ilut_max_entries_per_row", [&](const auto &v) { bem.solver.ilut_max_entries_per_row = std::stoi(v[0]); });
-      settingJSON.find("ilut_pivot_min", [&](const auto &v) { bem.solver.ilut_pivot_min = std::stod(v[0]); });
-      settingJSON.find("schwarz_core_k", [&](const auto &v) { bem.solver.schwarz_core_k = std::stoi(v[0]); });
-      settingJSON.find("schwarz_overlap_k", [&](const auto &v) { bem.solver.schwarz_overlap_k = std::stoi(v[0]); });
-      settingJSON.find("schwarz_max_core_size", [&](const auto &v) { bem.solver.schwarz_max_core_size = std::stoi(v[0]); });
-      settingJSON.find("schwarz_max_block_size", [&](const auto &v) { bem.solver.schwarz_max_block_size = std::stoi(v[0]); });
-      settingJSON.find("schwarz_pivot_min", [&](const auto &v) { bem.solver.schwarz_pivot_min = std::stod(v[0]); });
-      settingJSON.find("schwarz_diag_shift", [&](const auto &v) { bem.solver.schwarz_diag_shift = std::stod(v[0]); });
-      settingJSON.find("coupling", [&](const auto &v) {
+      settingJSON.find("solver_tol", [&](const auto& v) { bem.solver.solver_tol = std::stod(v[0]); });
+      settingJSON.find("solver_max_iter", [&](const auto& v) { bem.solver.solver_max_iter = std::stoi(v[0]); });
+      settingJSON.find("solver_restart", [&](const auto& v) { bem.solver.solver_restart = std::stoi(v[0]); });
+      settingJSON.find("preconditioner", [&](const auto& v) { set_preconditioner(v[0]); });
+      settingJSON.find("milu_omega", [&](const auto& v) { bem.solver.milu_omega = std::stod(v[0]); });
+      settingJSON.find("ilut_drop_tol", [&](const auto& v) { bem.solver.ilut_drop_tol = std::stod(v[0]); });
+      settingJSON.find("ilut_max_entries_per_row", [&](const auto& v) { bem.solver.ilut_max_entries_per_row = std::stoi(v[0]); });
+      settingJSON.find("ilut_pivot_min", [&](const auto& v) { bem.solver.ilut_pivot_min = std::stod(v[0]); });
+      settingJSON.find("schwarz_core_k", [&](const auto& v) { bem.solver.schwarz_core_k = std::stoi(v[0]); });
+      settingJSON.find("schwarz_overlap_k", [&](const auto& v) { bem.solver.schwarz_overlap_k = std::stoi(v[0]); });
+      settingJSON.find("schwarz_max_core_size", [&](const auto& v) { bem.solver.schwarz_max_core_size = std::stoi(v[0]); });
+      settingJSON.find("schwarz_max_block_size", [&](const auto& v) { bem.solver.schwarz_max_block_size = std::stoi(v[0]); });
+      settingJSON.find("schwarz_pivot_min", [&](const auto& v) { bem.solver.schwarz_pivot_min = std::stod(v[0]); });
+      settingJSON.find("schwarz_diag_shift", [&](const auto& v) { bem.solver.schwarz_diag_shift = std::stod(v[0]); });
+      settingJSON.find("coupling", [&](const auto& v) {
         coupling_explicitly_set = true;
         if (v.size() >= 1)
           set_coupling(v[0]);
@@ -579,32 +605,37 @@ struct SimulationSettings {
       });
 
       // Metal M2L GPU acceleration settings (requires GMRES + FMM)
-      settingJSON.find("use_metal_m2l", [&](const auto &v) { bem.solver.use_metal_m2l = stob(v)[0]; });
-      settingJSON.find("metal_m2l_threadgroup", [&](const auto &v) { bem.solver.metal_m2l_threadgroup = stob(v)[0]; });
-      settingJSON.find("metal_m2l_sort_terms", [&](const auto &v) { bem.solver.metal_m2l_sort_terms = stob(v)[0]; });
+      settingJSON.find("use_metal_m2l", [&](const auto& v) { bem.solver.use_metal_m2l = stob(v)[0]; });
+      settingJSON.find("metal_m2l_threadgroup", [&](const auto& v) { bem.solver.metal_m2l_threadgroup = stob(v)[0]; });
+      settingJSON.find("metal_m2l_sort_terms", [&](const auto& v) { bem.solver.metal_m2l_sort_terms = stob(v)[0]; });
 
       // P2M quadrature points (Dunavant rule)
-      settingJSON.find("p2m_quadrature_points", [&](const auto &v) { bem.solver.p2m_quadrature_points = std::stoi(v[0]); });
+      settingJSON.find("p2m_quadrature_points", [&](const auto& v) { bem.solver.p2m_quadrature_points = std::stoi(v[0]); });
 
       // MAC criterion parameter
-      settingJSON.find("mac_theta", [&](const auto &v) { bem.solver.mac_theta = std::stod(v[0]); });
+      settingJSON.find("mac_theta", [&](const auto& v) { bem.solver.mac_theta = std::stod(v[0]); });
 
       // Nearfield integration mode
-      settingJSON.find("nearfield_mode", [&](const auto &v) { bem.solver.nearfield_mode = v[0]; });
+      settingJSON.find("nearfield_mode", [&](const auto& v) { bem.solver.nearfield_mode = v[0]; });
 
       // FMM tree structure settings (requires GMRES + FMM)
-      settingJSON.find("fmm_max_level", [&](const auto &v) { bem.solver.fmm_max_level = stoi(v)[0]; });
-      settingJSON.find("fmm_bucket_max_points", [&](const auto &v) { bem.solver.fmm_bucket_max_points = stoi(v)[0]; });
+      settingJSON.find("fmm_max_level", [&](const auto& v) { bem.solver.fmm_max_level = stoi(v)[0]; });
+      settingJSON.find("fmm_bucket_max_points", [&](const auto& v) { bem.solver.fmm_bucket_max_points = stoi(v)[0]; });
+
+      // Pressure-based detachment
+      settingJSON.find("pressure_detachment_enabled", [&](const auto& v) { bem.solver.enable_pressure_detachment = stob(v)[0]; });
+      settingJSON.find("pressure_detachment_threshold", [&](const auto& v) { bem.solver.detachment_pressure_threshold = std::stod(v[0]); });
+      settingJSON.find("pressure_detachment_consecutive_steps", [&](const auto& v) { bem.solver.detachment_consecutive_steps = std::stoi(v[0]); });
 
       // Remeshing schedule / controls
       settingJSON.find("stop_remesh_time", [&](auto STR_VEC) { remeshing.stop_remesh_time = stod(STR_VEC[0]); });
       settingJSON.find("force_remesh_time", [&](auto STR_VEC) { remeshing.force_remesh_time = stod(STR_VEC[0]); });
       settingJSON.find("grid_refinement", [&](auto STR_VEC) { remeshing.grid_refinement = stoi(STR_VEC[0]); });
-      settingJSON.find("min_edge_length", [&](const auto &v) { remeshing.min_edge_length = std::stod(v[0]); });
+      settingJSON.find("min_edge_length", [&](const auto& v) { remeshing.min_edge_length = std::stod(v[0]); });
 
       // Initial mesh pre-relaxation (ALE-style), before the first remesh/collapse.
       // settings.json spec: "initial_mesh_pre_relax": ["true", "<loop:int>", "<coef:double>"]
-      settingJSON.find("initial_mesh_pre_relax", [&](const auto &v) {
+      settingJSON.find("initial_mesh_pre_relax", [&](const auto& v) {
         if (v.empty())
           return;
         remeshing.initial_mesh_pre_relax.enabled = stob(v)[0];
@@ -618,54 +649,54 @@ struct SimulationSettings {
       });
 
       // Surface collision detection and resolution
-      settingJSON.find("collision_enabled", [&](const auto &v) { remeshing.collision.enabled = stob(v)[0]; });
-      settingJSON.find("collision_proximity_factor", [&](const auto &v) { remeshing.collision.proximity_factor = std::stod(v[0]); });
-      settingJSON.find("collision_normal_reversal_cos", [&](const auto &v) { remeshing.collision.normal_reversal_cos = std::stod(v[0]); });
-      settingJSON.find("collision_min_zone_faces", [&](const auto &v) { remeshing.collision.min_zone_faces = std::stoi(v[0]); });
-      settingJSON.find("collision_detect_folding", [&](const auto &v) { remeshing.collision.detect_folding = stob(v)[0]; });
-      settingJSON.find("collision_detect_non_adjacent", [&](const auto &v) { remeshing.collision.detect_non_adjacent = stob(v)[0]; });
-      settingJSON.find("collision_resolve_with_tetgen", [&](const auto &v) { remeshing.collision.resolve_with_tetgen = stob(v)[0]; });
-      settingJSON.find("subsurface_altitude_reject", [&](const auto &v) { remeshing.subsurface_altitude_reject.enabled = stob(v)[0]; });
-      settingJSON.find("subsurface_min_face_altitude_rel", [&](const auto &v) { remeshing.subsurface_altitude_reject.min_face_altitude_rel = std::stod(v[0]); });
-      settingJSON.find("subsurface_min_edge_angle_deg", [&](const auto &v) { remeshing.subsurface_altitude_reject.min_edge_angle_deg = std::stod(v[0]); });
-      settingJSON.find("subsurface_max_edge_angle_deg", [&](const auto &v) { remeshing.subsurface_altitude_reject.max_edge_angle_deg = std::stod(v[0]); });
-      settingJSON.find("shell_visualization", [&](const auto &v) { remeshing.shell_visualization = stob(v)[0]; });
-      settingJSON.find("front_advancing_debug", [&](const auto &v) { remeshing.front_advancing_debug = stob(v)[0]; });
+      settingJSON.find("collision_enabled", [&](const auto& v) { remeshing.collision.enabled = stob(v)[0]; });
+      settingJSON.find("collision_proximity_factor", [&](const auto& v) { remeshing.collision.proximity_factor = std::stod(v[0]); });
+      settingJSON.find("collision_normal_reversal_cos", [&](const auto& v) { remeshing.collision.normal_reversal_cos = std::stod(v[0]); });
+      settingJSON.find("collision_min_zone_faces", [&](const auto& v) { remeshing.collision.min_zone_faces = std::stoi(v[0]); });
+      settingJSON.find("collision_detect_folding", [&](const auto& v) { remeshing.collision.detect_folding = stob(v)[0]; });
+      settingJSON.find("collision_detect_non_adjacent", [&](const auto& v) { remeshing.collision.detect_non_adjacent = stob(v)[0]; });
+      settingJSON.find("collision_resolve_with_tetgen", [&](const auto& v) { remeshing.collision.resolve_with_tetgen = stob(v)[0]; });
+      settingJSON.find("subsurface_altitude_reject", [&](const auto& v) { remeshing.subsurface_altitude_reject.enabled = stob(v)[0]; });
+      settingJSON.find("subsurface_min_face_altitude_rel", [&](const auto& v) { remeshing.subsurface_altitude_reject.min_face_altitude_rel = std::stod(v[0]); });
+      settingJSON.find("subsurface_min_edge_angle_deg", [&](const auto& v) { remeshing.subsurface_altitude_reject.min_edge_angle_deg = std::stod(v[0]); });
+      settingJSON.find("subsurface_max_edge_angle_deg", [&](const auto& v) { remeshing.subsurface_altitude_reject.max_edge_angle_deg = std::stod(v[0]); });
+      settingJSON.find("shell_visualization", [&](const auto& v) { remeshing.shell_visualization = stob(v)[0]; });
+      settingJSON.find("front_advancing_debug", [&](const auto& v) { remeshing.front_advancing_debug = stob(v)[0]; });
 
       // VPM (optional)
-      settingJSON.find("use_VPM", [&](const auto &v) { vpm.enabled = stob(v)[0]; });
-      settingJSON.find("VPM_wall_min_absorb_receivers", [&](const auto &v) { vpm.wall_min_absorb_receivers = static_cast<std::size_t>(std::stoll(v[0])); });
-      settingJSON.find("VPM_wall_min_absorb_total_weight", [&](const auto &v) { vpm.wall_min_absorb_total_weight = std::stod(v[0]); });
-      settingJSON.find("VPM_sigma_factor", [&](const auto &v) { vpm.sigma_factor = std::stod(v[0]); });
-      settingJSON.find("VPM_stretching_scheme", [&](const auto &v) {
+      settingJSON.find("use_VPM", [&](const auto& v) { vpm.enabled = stob(v)[0]; });
+      settingJSON.find("VPM_wall_min_absorb_receivers", [&](const auto& v) { vpm.wall_min_absorb_receivers = static_cast<std::size_t>(std::stoll(v[0])); });
+      settingJSON.find("VPM_wall_min_absorb_total_weight", [&](const auto& v) { vpm.wall_min_absorb_total_weight = std::stod(v[0]); });
+      settingJSON.find("VPM_sigma_factor", [&](const auto& v) { vpm.sigma_factor = std::stod(v[0]); });
+      settingJSON.find("VPM_stretching_scheme", [&](const auto& v) {
         if (!v.empty())
           vpm.stretching_scheme = v[0];
       });
-      settingJSON.find("VPM_PSE_correction", [&](const auto &v) {
+      settingJSON.find("VPM_PSE_correction", [&](const auto& v) {
         if (!v.empty())
           vpm.PSE_correction = v[0];
       });
 
       // Checkpoint settings
-      settingJSON.find("checkpoint_interval", [&](const auto &v) { checkpoint.interval = std::stoi(v[0]); });
-      settingJSON.find("restart_from_checkpoint", [&](const auto &v) { if (!v.empty()) checkpoint.restart_from = v[0]; });
-      settingJSON.find("checkpoint_max_keep", [&](const auto &v) { checkpoint.max_keep = std::stoi(v[0]); });
+      settingJSON.find("checkpoint_interval", [&](const auto& v) { checkpoint.interval = std::stoi(v[0]); });
+      settingJSON.find("restart_from_checkpoint", [&](const auto& v) { if (!v.empty()) checkpoint.restart_from = v[0]; });
+      settingJSON.find("checkpoint_max_keep", [&](const auto& v) { checkpoint.max_keep = std::stoi(v[0]); });
 
       // Frequency-domain optional settings (parsed even in time mode; used by main_freq_domain).
-      auto parse_double_list = [&](const std::vector<std::string> &v, std::vector<double> &out) {
+      auto parse_double_list = [&](const std::vector<std::string>& v, std::vector<double>& out) {
         out.clear();
         out.reserve(v.size());
-        for (const auto &s : v)
+        for (const auto& s : v)
           out.push_back(std::stod(s));
       };
-      auto parse_int_list = [&](const std::vector<std::string> &v, std::vector<int> &out) {
+      auto parse_int_list = [&](const std::vector<std::string>& v, std::vector<int>& out) {
         out.clear();
         out.reserve(v.size());
-        for (const auto &s : v)
+        for (const auto& s : v)
           out.push_back(std::stoi(s));
       };
-      auto set_omegas = [&](const std::vector<std::string> &v) { parse_double_list(v, frequency.omegas); };
-      auto set_dofs = [&](const std::vector<std::string> &v) { parse_int_list(v, frequency.dofs); };
+      auto set_omegas = [&](const std::vector<std::string>& v) { parse_double_list(v, frequency.omegas); };
+      auto set_dofs = [&](const std::vector<std::string>& v) { parse_int_list(v, frequency.dofs); };
       if (!settingJSON.find("freq_omegas", set_omegas)) {
         if (!settingJSON.find("frequency_omegas", set_omegas)) {
           settingJSON.find("omegas", set_omegas);
@@ -686,7 +717,7 @@ struct SimulationSettings {
         JSON injson(common.input_directory / input_file_name);
 
         /* -------------------- display contents of the JSON file ------------------- */
-        for (auto &[key, value] : injson())
+        for (auto& [key, value] : injson())
           std::cout << Green << key << colorReset << ": " << value << std::endl;
         auto object_name = injson.at("name")[0];
 
@@ -726,23 +757,13 @@ struct SimulationSettings {
             setOutputInfo(injson.at("name")[0] + "_aft_candidates", common.output_directory);
           }
 
-          /* ----------------------------- 境界面データの回転と平行移動 ----------------------------- */
-          if (injson.find("rotation")) {
-            const auto angle_theta = stod(injson.at("rotation"));
-            std::array<double, 3> axis = {angle_theta[0], angle_theta[1], angle_theta[2]};
-            const auto angle = angle_theta[3];
-            net->rotate(angle, axis);
-          }
-          if (injson.find("translation")) {
-            const auto translation = stod(injson.at("translation"));
-            net->translate(std::array<double, 3>{translation[0], translation[1], translation[2]});
-          }
+          // rotation/translation は applyTransformations (Network.cpp) で処理済み
 
           setTypes(net);
           std::filesystem::copy_file(common.input_directory / input_file_name, common.output_directory / input_file_name, std::filesystem::copy_options::overwrite_existing);
           mk_vtu(common.output_directory / (object_name + "_init.vtu"), {net->getFaces()});
           /* -------------------------------------------------------------------------- */
-          for (auto &[key, value] : injson()) {
+          for (auto& [key, value] : injson()) {
             if (key.contains("mooring")) {
               //$ ------------------------ MOORING ---------------------- */
               //$ extract key the contains "mooring" as key name. extract them as vector
@@ -788,7 +809,7 @@ struct SimulationSettings {
               setOutputInfo(name, common.output_directory);
 
               std::cout << std::right << std::setw(15) << "MooringLine->setEquilibriumState" << std::endl;
-              auto boundary_condition = [&](networkPoint *p) {
+              auto boundary_condition = [&](networkPoint* p) {
                 if (p == mooring_net->lastPoint || p == mooring_net->firstPoint) {
                   p->acceleration.fill(0.);
                   p->velocity.fill(0.);
@@ -809,8 +830,8 @@ struct SimulationSettings {
     // If coupling is not explicitly specified and there are no movable bodies, disable coupling.
     if (!coupling_explicitly_set) {
       bool has_movable_body = false;
-      for (auto *net : Join(RigidBodyObject, SoftBodyObject)) {
-        for (const auto &fixed : net->isFixed) {
+      for (auto* net : Join(RigidBodyObject, SoftBodyObject)) {
+        for (const auto& fixed : net->isFixed) {
           if (!fixed) {
             has_movable_body = true;
             break;
@@ -828,7 +849,7 @@ struct SimulationSettings {
 
   /* -------------------------------------------------------------------------- */
 
-  void setOutputInfo(auto output_name, const std::filesystem::path &output_directory) {
+  void setOutputInfo(auto output_name, const std::filesystem::path& output_directory) {
     std::cout << "setOutputInfo" << std::endl;
     this->NetOutputInfo[output_name].pvd_file_name = output_name;
     this->NetOutputInfo[output_name].vtu_file_name = output_name + "_";
@@ -837,7 +858,7 @@ struct SimulationSettings {
 
   /* -------------------------------------------------------------------------- */
 
-  void setTypes(Network *net) {
+  void setTypes(Network* net) {
     std::cout << "setTypes" << std::endl;
     //$ set type
     auto type = net->inputJSON.at("type")[0];
@@ -871,8 +892,8 @@ struct SimulationSettings {
           double x0 = (vec.size() > 3) ? vec[3] : 0.0;
           auto sw = std::make_shared<TanakaSolitaryWave>();
           sw->solve(Hh, h, bz, x0);
-          net->ic_phi = [sw](const Tddd &X, double t) { return sw->phi(X, t); };
-          net->ic_eta = [sw](const Tddd &X, double t) { return sw->eta(X, t); };
+          net->ic_phi = [sw](const Tddd& X, double t) { return sw->phi(X, t); };
+          net->ic_eta = [sw](const Tddd& X, double t) { return sw->eta(X, t); };
           std::cout << "  [initial_condition] solitary_wave_theory: H/h=" << Hh << ", h=" << h << ", bz=" << bz << ", x0=" << x0 << std::endl;
         } else if (ic_type == "wave_theory") {
           auto vec = stod(std::vector<std::string>(STR_VEC.begin() + 1, STR_VEC.end()));
@@ -884,8 +905,8 @@ struct SimulationSettings {
           wt->bottom_z = vec[3];
           if (vec.size() > 4)
             wt->theta = vec[4] / 180. * M_PI;
-          net->ic_phi = [wt](const Tddd &X, double t) { return wt->phi(X, t); };
-          net->ic_eta = [wt](const Tddd &X, double t) { return wt->eta(X, t); };
+          net->ic_phi = [wt](const Tddd& X, double t) { return wt->phi(X, t); };
+          net->ic_eta = [wt](const Tddd& X, double t) { return wt->eta(X, t); };
           std::cout << "  [initial_condition] wave_theory: A=" << wt->A << ", T=" << vec[1] << ", h=" << vec[2] << std::endl;
         } else if (ic_type == "wave_theory_l") {
           auto vec = stod(std::vector<std::string>(STR_VEC.begin() + 1, STR_VEC.end()));
@@ -897,8 +918,8 @@ struct SimulationSettings {
           wt->bottom_z = vec[3];
           if (vec.size() > 4)
             wt->theta = vec[4] / 180. * M_PI;
-          net->ic_phi = [wt](const Tddd &X, double t) { return wt->phi(X, t); };
-          net->ic_eta = [wt](const Tddd &X, double t) { return wt->eta(X, t); };
+          net->ic_phi = [wt](const Tddd& X, double t) { return wt->phi(X, t); };
+          net->ic_eta = [wt](const Tddd& X, double t) { return wt->eta(X, t); };
           std::cout << "  [initial_condition] wave_theory_L: A=" << wt->A << ", L=" << vec[1] << ", h=" << vec[2] << std::endl;
         } else {
           throw std::runtime_error("Unknown initial_condition type: " + ic_type);
@@ -918,10 +939,10 @@ struct SimulationSettings {
         net->water_wave_theory.bottom_z = vec[3];
         if (vec.size() > 4)
           net->water_wave_theory.theta = vec[4] / 180. * M_PI;
-        net->absorb_velocity = [net](const Tddd &X, double t) { return net->water_wave_theory.gradPhi(X, t); };
-        net->absorb_gradPhi_t = [net](const Tddd &X, double t) { return net->water_wave_theory.gradPhi_t(X, t); };
-        net->absorb_phi = [net](const Tddd &X, const double t) { return net->water_wave_theory.phi(X, t); };
-        net->absorb_eta = [net](const Tddd &X, const double t) { return net->water_wave_theory.eta(X, t); };
+        net->absorb_velocity = [net](const Tddd& X, double t) { return net->water_wave_theory.gradPhi(X, t); };
+        net->absorb_gradPhi_t = [net](const Tddd& X, double t) { return net->water_wave_theory.gradPhi_t(X, t); };
+        net->absorb_phi = [net](const Tddd& X, const double t) { return net->water_wave_theory.phi(X, t); };
+        net->absorb_eta = [net](const Tddd& X, const double t) { return net->water_wave_theory.eta(X, t); };
         net->absorb_gamma = [net](double sd) { return std::clamp(sd / (3. * net->water_wave_theory.L), 0., 1.); };
       });
       net->inputJSON.find("random_wave_theory", [&](auto STR_VEC) {
@@ -956,10 +977,10 @@ struct SimulationSettings {
 
         std::cout << net->random_water_wave_theory;
 
-        net->absorb_velocity = [net](const Tddd &X, double t) { return net->random_water_wave_theory.gradPhi(X, t); };
-        net->absorb_gradPhi_t = [net](const Tddd &X, double t) { return net->random_water_wave_theory.gradPhi_t(X, t); };
-        net->absorb_phi = [net](const Tddd &X, const double t) { return net->random_water_wave_theory.phi(X, t); };
-        net->absorb_eta = [net](const Tddd &X, const double t) { return net->random_water_wave_theory.eta(X, t); };
+        net->absorb_velocity = [net](const Tddd& X, double t) { return net->random_water_wave_theory.gradPhi(X, t); };
+        net->absorb_gradPhi_t = [net](const Tddd& X, double t) { return net->random_water_wave_theory.gradPhi_t(X, t); };
+        net->absorb_phi = [net](const Tddd& X, const double t) { return net->random_water_wave_theory.phi(X, t); };
+        net->absorb_eta = [net](const Tddd& X, const double t) { return net->random_water_wave_theory.eta(X, t); };
         net->absorb_gamma = [net](double sd) { return std::clamp(sd / (3. * net->random_water_wave_theory.L13), 0., 1.); };
       });
       net->inputJSON.find("solitary_wave_theory", [&](auto STR_VEC) {
@@ -973,10 +994,10 @@ struct SimulationSettings {
         double x0 = (vec.size() > 3) ? vec[3] : 0.0;
         auto sw = std::make_shared<TanakaSolitaryWave>();
         sw->solve(Hh, h, bz, x0);
-        net->absorb_velocity = [sw](const Tddd &X, double t) { return sw->gradPhi(X, t); };
-        net->absorb_gradPhi_t = [sw](const Tddd &X, double t) { return sw->gradPhi_t(X, t); };
-        net->absorb_phi = [sw](const Tddd &X, const double t) { return sw->phi(X, t); };
-        net->absorb_eta = [sw](const Tddd &X, const double t) { return sw->eta(X, t); };
+        net->absorb_velocity = [sw](const Tddd& X, double t) { return sw->gradPhi(X, t); };
+        net->absorb_gradPhi_t = [sw](const Tddd& X, double t) { return sw->gradPhi_t(X, t); };
+        net->absorb_phi = [sw](const Tddd& X, const double t) { return sw->phi(X, t); };
+        net->absorb_eta = [sw](const Tddd& X, const double t) { return sw->eta(X, t); };
         net->absorb_gamma = [sw](double sd) { return std::clamp(sd / (3. * sw->L), 0., 1.); };
       });
       net->inputJSON.find("wave_theory_L", [&](auto STR_VEC) {
@@ -987,18 +1008,22 @@ struct SimulationSettings {
         net->water_wave_theory.bottom_z = vec[3];
         if (vec.size() > 4)
           net->water_wave_theory.theta = vec[4] / 180. * M_PI;
-        net->absorb_velocity = [net](const Tddd &X, double t) { return net->water_wave_theory.gradPhi(X, t); };
-        net->absorb_gradPhi_t = [net](const Tddd &X, double t) { return net->water_wave_theory.gradPhi_t(X, t); };
-        net->absorb_phi = [net](const Tddd &X, const double t) { return net->water_wave_theory.phi(X, t); };
-        net->absorb_eta = [net](const Tddd &X, const double t) { return net->water_wave_theory.eta(X, t); };
+        net->absorb_velocity = [net](const Tddd& X, double t) { return net->water_wave_theory.gradPhi(X, t); };
+        net->absorb_gradPhi_t = [net](const Tddd& X, double t) { return net->water_wave_theory.gradPhi_t(X, t); };
+        net->absorb_phi = [net](const Tddd& X, const double t) { return net->water_wave_theory.phi(X, t); };
+        net->absorb_eta = [net](const Tddd& X, const double t) { return net->water_wave_theory.eta(X, t); };
         net->absorb_gamma = [net](double sd) { return std::clamp(sd / (3. * net->water_wave_theory.L), 0., 1.); };
       });
     }
 
     //! isFixedはdefaultでfalse．指定された分だけ順に置き換わる
     //! ただし，指定が１つだけなら，それを全てのに適用する．
-    if (net->inputJSON.find("isFixed")) {
-      auto isFixed = stob(net->inputJSON.at("isFixed"));
+    //! 後方互換: "fixed" キーも受け入れる（"isFixed" を優先）
+    const char* fixed_key = net->inputJSON.find("isFixed") ? "isFixed" : (net->inputJSON.find("fixed") ? "fixed" : nullptr);
+    if (fixed_key) {
+      if (net->inputJSON.find("fixed") && net->inputJSON.find("isFixed"))
+        std::cerr << "Warning: both \"isFixed\" and \"fixed\" found in " << net->getName() << ".json. Using \"isFixed\"." << std::endl;
+      auto isFixed = stob(net->inputJSON.at(fixed_key));
       if (isFixed.size() == 1)
         net->isFixed.fill(isFixed[0]);
       else
@@ -1066,7 +1091,6 @@ struct SimulationSettings {
           iss >> t >> x >> y >> z >> q0 >> q1 >> q2;
           T.push_back(t);
           XYZ_Angles.push_back({x, y, z, q0, q1, q2});
-          // std::cout << t << " " << x << " " << y << " " << z << " " << q0 << " " << q1 << " " << q2 << std::endl;
         }
         file.close();
         net->intpMotionRigidBody.set(3, T, XYZ_Angles);

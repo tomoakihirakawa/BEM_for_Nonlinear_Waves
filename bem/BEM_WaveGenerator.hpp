@@ -16,6 +16,29 @@ inline std::string normalizeVelocityName(std::string value) {
   return value;
 }
 
+inline bool isSupportedRigidBodyVelocityName(std::string name) {
+  name = normalizeVelocityName(std::move(name));
+  return name == "update" ||
+         name == "fixed" ||
+         name == "floating" ||
+         name == "file" ||
+         name.contains("goring1979") ||
+         name.contains("retzler2000") ||
+         name.contains("chaplin2000") ||
+         name.contains("flap") ||
+         name.contains("piston") ||
+         name.contains("sinusoidal") ||
+         name.contains("sin") ||
+         name.contains("cos") ||
+         name.contains("constant") ||
+         name.contains("const") ||
+         name.contains("hadzic2005");
+}
+
+inline std::string supportedRigidBodyVelocityNames() {
+  return "update, fixed, floating, file, Goring1979, Retzler2000, Chaplin2000, flap, piston, sinusoidal/sin/cos, constant/const, Hadzic2005";
+}
+
 /*DOC_EXTRACT 0_5_WAVE_GENERATION
 
 ## 陽に与えられる境界条件（造波装置など）
@@ -114,49 +137,14 @@ inline Tddd relativeVelocity(const Network *net, const networkPoint *p, double t
       }
     }
     return {0., 0., 0.};
-  } catch (std::exception &e) {
-    std::cerr << e.what() << std::endl;
+  } catch (const std::exception&) {
     throw;
   }
 };
 
-// inline Tddd relativeVelocity(const Network *net, const networkPoint *p, double t) {
-//   try {
-//     if (net->inputJSON.find("relative_velocity")) {
-//       auto strings = net->inputJSON.at("relative_velocity");
-//       std::string name = strings[0];
-//       if (name.contains("swimming")) {
-//         // Example: ["swimming", "start", "A", "T", "lambda"]
-//         if (strings.size() < 5)
-//           throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "strings size < 5");
-//         double start = std::stod(strings[1]);
-//         if (t < start)
-//           return {0., 0., 0.};
-
-//         double A = std::stod(strings[2]);
-//         double T = std::stod(strings[3]);
-//         double L = std::stod(strings[4]);
-//         double w = 2. * M_PI / T;
-//         double k = 2. * M_PI / L;
-//         A *= std::pow(std::abs(p->initialX[0]) / L, 2.); // 振幅Aは，変位ではなく，速度の振幅として与える
-//         double vy = A * w * std::sin(w * (t - start) - k * std::abs(p->initialX[0]));
-//         // ローカル座標系での速度ベクトルを返す
-//         Tddd v_local = {0., vy, 0.};
-//         // 物体の姿勢(Q)に合わせて回転させて返す
-//         return Dot(net->Q.Rv(), v_local);
-//       }
-//     }
-//     return {0., 0., 0.};
-//   } catch (std::exception &e) {
-//     std::cerr << e.what() << std::endl;
-//     throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "error in relativeVelocity");
-//   }
-// };
-
 inline Tddd velocityOnBody(const Network *net, const networkPoint *p, double t) { return net->velocityRigidBody(p->X) + relativeVelocity(net, p, t); }
 
 inline T6d velocity(const std::string &name, const std::vector<std::string> strings, networkPoint *p, double t) {
-  // std::cout << "velocity(point): " << name << std::endl;
   if ((name.contains("velocity") || name.contains("flow"))) {
     if (strings.size() >= 6) {
       double start = std::stod(strings[1]);
@@ -206,10 +194,9 @@ inline T6d velocity(const std::string &name, const std::vector<std::string> stri
 };
 
 inline T6d velocity(const std::string &name, const std::vector<std::string> strings, double t) {
-  // std::cout << "velocity(global): " << name << std::endl;
   auto g = _GRAVITY_;
   try {
-    if (name.contains("Goring1979")) {
+    if (name.contains("goring1979")) {
       if (strings.size() < 4)
         throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "string must be == 4");
       const double start = std::stod(strings[1]);
@@ -220,7 +207,7 @@ inline T6d velocity(const std::string &name, const std::vector<std::string> stri
       double eta = H * std::pow(std::cosh(k * (-c * (t - start))), -2);
       return {c * eta / (h + eta), 0., 0., 0, 0, 0};
 
-    } else if (name.contains("Retzler2000")) {
+    } else if (name.contains("retzler2000")) {
       const std::vector<Tdd> sample = {{-0.15, 0.},      {-0.11, 0.},      {-0.1, 0.},      {-0.09, 0.},      {-0.08, 0.},      {-0.07, 0.},      {-0.06, 0.},     {-0.0504, 0.0079}, {-0.024, 0.0693}, {-0.0006, 0.1376}, {0.0283, 0.2485},  {0.0504, 0.3594},  {0.059, 0.403},    {0.0695, 0.4426},  {0.083, 0.4792},   {0.1002, 0.5168}, {0.1107, 0.5416}, {0.1211, 0.5663}, {0.1322, 0.5911}, {0.15, 0.6198}, {0.1617, 0.6307},
                                        {0.1764, 0.6446}, {0.1887, 0.6604}, {0.201, 0.6792}, {0.2182, 0.6802}, {0.2305, 0.6446}, {0.2508, 0.5743}, {0.2785, 0.403}, {0.3, 0.2356},     {0.3197, 0.104},  {0.332, 0.0277},   {0.3504, -0.0396}, {0.3707, -0.0851}, {0.3891, -0.0832}, {0.4002, -0.0683}, {0.4254, -0.0307}, {0.45, -0.0099},  {0.5, 0.},        {0.55, 0.},       {0.6, 0.},        {0.65, 0.},     {0.7, 0.}};
       double start = std::stod(strings[1]);
@@ -228,7 +215,7 @@ inline T6d velocity(const std::string &name, const std::vector<std::string> stri
       const auto intp = InterpolationBspline(3, time, value);
       return {intp(t - start), 0., 0., 0., 0., 0.};
 
-    } else if (name.contains("Chaplin2000")) {
+    } else if (name.contains("chaplin2000")) {
       double start = std::stod(strings[1]);
       if (t < start)
         return {0., 0., 0., 0., 0., 0.};
@@ -334,21 +321,22 @@ inline T6d velocity(const std::string &name, const std::vector<std::string> stri
       double a = std::stod(strings[2]);
       T6d axis = {std::stod(strings[3]), std::stod(strings[4]), std::stod(strings[5]), std::stod(strings[6]), std::stod(strings[7]), std::stod(strings[8])};
       return a * axis;
-    } else if (name.contains("Hadzic2005")) {
+    } else if (name.contains("hadzic2005")) {
       double start = std::stod(strings[1]);
       Hadzic2005 hadzic2005(start);
       return hadzic2005.getVelocity(t);
     }
     std::cout << "velocity: " << name << " does not exist" << std::endl;
     return {0., 0., 0., 0., 0., 0.};
-  } catch (std::exception &e) {
-    std::cerr << e.what() << std::endl;
-    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "error in velocity");
+  } catch (const error_message&) {
+    throw;
+  } catch (const std::exception& e) {
+    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "error in velocity: " + std::string(e.what()));
   }
 };
 
 inline T6d acceleration(const std::string &name, const std::vector<std::string> strings, const double t) {
-  if (name.contains("Hadzic2005")) {
+  if (name.contains("hadzic2005")) {
     double start = std::stod(strings[1]);
     Hadzic2005 hadzic2005(start);
     return hadzic2005.getAccel(t);

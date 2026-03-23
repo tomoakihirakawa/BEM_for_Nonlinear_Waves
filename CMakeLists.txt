@@ -153,6 +153,10 @@ set(EXTRA_SOURCES
     "${PROJECT_SOURCE_DIR}/lib/src/networkLine.cpp"
     "${PROJECT_SOURCE_DIR}/lib/src/networkFace.cpp"
     "${PROJECT_SOURCE_DIR}/lib/src/networkTetra.cpp"
+    "${PROJECT_SOURCE_DIR}/bem/BEM_checkpoint.cpp"
+    "${PROJECT_SOURCE_DIR}/bem/BEM_penetration.cpp"
+    "${PROJECT_SOURCE_DIR}/bem/BEM_collision.cpp"
+    "${PROJECT_SOURCE_DIR}/bem/BEM_remesh_main.cpp"
 )
 
 set(VALID_SOURCES ${SOURCE_FILE})
@@ -174,6 +178,7 @@ add_executable(${BASE_NAME} ${VALID_SOURCES})
 # --- Include directories ---
 target_include_directories(${BASE_NAME} PUBLIC
   "${PROJECT_SOURCE_DIR}/lib/include"
+  "${PROJECT_SOURCE_DIR}/bem"
 )
 
 # --- Compile options ---

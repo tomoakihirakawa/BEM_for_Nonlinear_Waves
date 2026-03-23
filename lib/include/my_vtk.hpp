@@ -6,6 +6,20 @@
 using map_P_Vd = std::map<netP *, V_d>;
 using map_P_Vi = std::map<netP *, V_i>;
 
+/*
+VTK output entry points are currently split by responsibility.
+
+- `vtkUnstructuredGridWriter` / `vtkPolygonWriter` in vtkWriter.hpp
+  Generic typed writers. Prefer these when building new output code.
+- `OutputParaView::mk_vtu_quadratic` in bem/OutputParaview.hpp
+  Canonical BEM boundary-surface writer. It is quadratic-element aware and supports CellData.
+- `mk_vtu(...)` overloads in this file
+  Legacy convenience/debug helpers for quick linear VTU dumps of points, lines, and faces.
+
+New feature work should usually go to the first two layers; the overloads below are kept for
+existing call sites and lightweight debugging.
+*/
+
 /*DataArray_detail
 networkPointをvtuとして出力するための関数．
 引数variant内の`map`に，networkPointの値が欠けていたとしても，`NaN`を代わりに返す．
@@ -214,9 +228,10 @@ template <class T> void writeDataArray(FILE *fp, const std::vector<T> &Points, c
       // fprintf(fp, "\n");
     }
     fprintf(fp, "\n</DataArray>\n");
-  } catch (std::exception &e) {
-    std::cerr << e.what() << colorReset << std::endl;
-    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "");
+  } catch (const error_message&) {
+    throw;
+  } catch (const std::exception& e) {
+    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, e.what());
   };
 };
 // map double
@@ -238,9 +253,10 @@ template <class T> void writeDataArray(FILE *fp, const std::vector<T> &Points, c
       // fprintf(fp, "\n");
     }
     fprintf(fp, "\n</DataArray>\n");
-  } catch (std::exception &e) {
-    std::cerr << e.what() << colorReset << std::endl;
-    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "");
+  } catch (const error_message&) {
+    throw;
+  } catch (const std::exception& e) {
+    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, e.what());
   };
 };
 /* ------------------------------------------------------ */
@@ -248,7 +264,10 @@ template <class T> void writeDataArray(FILE *fp, const std::vector<T> &Points, c
 using uomap_P_Tddd = std::unordered_map<networkPoint *, Tddd>;
 using uomap_P_d = std::unordered_map<networkPoint *, double>;
 using uomap_F_d = std::unordered_map<networkFace *, double>;
-using VarForOutput = std::variant<std::string, int, uomap_P_Tddd, uomap_P_d>;
+// DOF-keyed maps: BEM_DOF_Base* accepts both networkPoint* and networkLine*
+using uomap_DOF_Tddd = std::unordered_map<BEM_DOF_Base *, Tddd>;
+using uomap_DOF_d = std::unordered_map<BEM_DOF_Base *, double>;
+using VarForOutput = std::variant<std::string, int, uomap_P_Tddd, uomap_P_d, uomap_F_d, uomap_DOF_Tddd, uomap_DOF_d>;
 using V_VarForOutput = std::vector<VarForOutput>;
 using VV_VarForOutput = std::vector<V_VarForOutput>;
 /* ------------------------------------------------------ */
@@ -263,14 +282,21 @@ template <class T> void DataArray(FILE *fp, const std::vector<T> &Points, const 
         writeDataArray(fp, Points, Name, std::get<std::unordered_map<T, double>>(V_name_comp_mapPVd[1]));
       } else if (V_name_comp_mapPVd.size() > 0 && std::holds_alternative<std::unordered_map<T, Tddd>>(V_name_comp_mapPVd[1])) {
         writeDataArray(fp, Points, Name, std::get<std::unordered_map<T, Tddd>>(V_name_comp_mapPVd[1]));
+      } else if (V_name_comp_mapPVd.size() > 1 && std::holds_alternative<uomap_F_d>(V_name_comp_mapPVd[1])) {
+        // Generic point-based VTU writers do not support CellData. Face-based
+        // diagnostics are emitted only by element-aware writers such as
+        // OutputParaView::mk_vtu_quadratic().
+        continue;
       } else {
         std::stringstream ss;
         ss << Name << std::endl;
         throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, ss.str());
       }
     };
-  } catch (std::exception &e) {
-    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "");
+  } catch (const error_message&) {
+    throw;
+  } catch (const std::exception& e) {
+    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, e.what());
   }
 };
 //-----------------------------------------
@@ -451,9 +477,10 @@ inline void mk_vtu(const std::string &filename, const std::vector<T4Tddd> &VV_po
 #endif
     }
     fclose(fp);
-  } catch (std::exception &e) {
-    std::cerr << e.what() << colorReset << std::endl;
-    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "");
+  } catch (const error_message&) {
+    throw;
+  } catch (const std::exception& e) {
+    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, e.what());
   };
 };
 /* ------------------------------------------------------ */
@@ -562,9 +589,10 @@ inline void mk_vtu(const std::string &filename, const VV_netPp &VV_points, const
 #endif
     }
     fclose(fp);
-  } catch (std::exception &e) {
-    std::cerr << e.what() << colorReset << std::endl;
-    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "");
+  } catch (const error_message&) {
+    throw;
+  } catch (const std::exception& e) {
+    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, e.what());
   };
 }
 /* ------------------------------------------------------ */

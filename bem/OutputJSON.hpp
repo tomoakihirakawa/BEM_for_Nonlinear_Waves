@@ -13,41 +13,15 @@ struct HydroWrench {
   double area = 0.0;
 };
 
-inline bool faceActsOnBody(const networkFace *f, const Network *body) {
-  if (!f || !body)
-    return false;
-  if (!f->Neumann)
-    return false;
-  const auto [p0, p1, p2] = f->getPoints();
-  for (const auto *p : {p0, p1, p2}) {
-    const auto effectiveFaces = getEffectiveContactFaces(p);
-    const bool touches_body = std::ranges::any_of(effectiveFaces, [&](const auto *F) { return F && (F->getNetwork() == body); });
-    if (!touches_body)
-      return false;
-  }
-  return true;
-}
-
 inline HydroWrench integratePressureOnBodyFaces(const std::unordered_set<networkFace *> &allFaces, const Network *body) {
   HydroWrench out;
   if (!body)
     return out;
-
-  // Fast, low-order surface integral:
-  // - pressure is piecewise linear on each triangle -> use vertex average
-  // - geometry uses precomputed face normal/centroid/area
-  for (const auto *f : allFaces) {
-    if (!faceActsOnBody(f, body))
-      continue;
-
-    const auto [p0, p1, p2] = f->getPoints();
-    const double p = (p0->pressure + p1->pressure + p2->pressure) / 3.0;
-    const Tddd df = p * f->area * f->normal;
-    out.force += df;
-    out.torque += Cross(f->centroid - body->COM, df);
-    out.area += f->area;
-  }
-
+  auto interaction = calculateFluidInteraction(allFaces, body);
+  const auto [force, torque] = interaction.surfaceIntegralOfPressure();
+  out.force = force;
+  out.torque = torque;
+  out.area = interaction.area;
   return out;
 }
 

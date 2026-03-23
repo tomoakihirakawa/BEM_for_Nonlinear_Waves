@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "BEM_collision.hpp"
+#include "BEM_node_face_state.hpp"
 
 struct SubsurfaceAltitudeCheckResult {
   std::size_t checked_lines = 0;
@@ -221,27 +222,6 @@ inline double localMeanFaceAreaForPoints(const std::vector<networkPoint*>& point
   return (count > 0) ? sum / static_cast<double>(count) : 0.0;
 }
 
-inline double localLineLength(const networkLine* l) {
-  if (!l)
-    return 0.0;
-  std::unordered_set<networkPoint*> adjacent_points;
-  for (const auto& f : l->getBoundaryFaces()) {
-    auto points = f->getPoints();
-    adjacent_points.insert(points.begin(), points.end());
-  }
-  std::unordered_set<networkLine*> adjacent_lines;
-  for (const auto& p : adjacent_points)
-    for (const auto& L : p->getBoundaryLines())
-      if (L != l)
-        adjacent_lines.insert(L);
-  if (adjacent_lines.empty())
-    return 0.0;
-  double ret = 0.0;
-  for (const auto& L : adjacent_lines)
-    ret += L->length();
-  return ret / adjacent_lines.size();
-}
-
 inline double minimumInteriorAngleDeg(networkFace* face) {
   if (!face)
     return 1E+100;
@@ -324,7 +304,7 @@ inline CornerConnectedNeumannCollapseResult collapseCornerConnectedNeumannLinesA
       const auto faces = l->getBoundaryFaces();
       if (faces.size() != 2 || !faces[0] || !faces[1])
         continue;
-      const double local_mean_len = localLineLength(l);
+      const double local_mean_len = localEdgeLength(l);
       if (!(local_mean_len > 0.0) || !std::isfinite(local_mean_len))
         continue;
       const double area0 = boundaryFaceArea(faces[0]);
@@ -658,7 +638,7 @@ inline void refreshFaceBadQualityHistory(
     const int time_step,
     const std::optional<int> rk_step,
     const double tiny_face_bad_ratio,
-    const SimulationSettings::RemeshingSettings::SubsurfaceAltitudeRejectSettings& subsurface_settings,
+    const SubsurfaceAltitudeRejectSettings& subsurface_settings,
     const double tiny_face_clear_ratio = 0.12,
     const double subsurface_clear_ratio = 0.08) {
   std::unordered_map<networkFace*, double> min_altitude_ratio;
@@ -716,7 +696,7 @@ inline void refreshFaceBadQualityHistory(
 
 inline SubsurfaceAltitudeCheckResult checkSubsurfaceFaceAltitude(
     Network& water,
-    const SimulationSettings::RemeshingSettings::SubsurfaceAltitudeRejectSettings& settings) {
+    const SubsurfaceAltitudeRejectSettings& settings) {
   SubsurfaceAltitudeCheckResult out;
   if (!settings.enabled)
     return out;
@@ -758,7 +738,7 @@ inline void throwIfSubsurfaceFaceAltitudeTooSmall(
     Network& water,
     const int time_step,
     const std::optional<int> rk_step,
-    const SimulationSettings::RemeshingSettings::SubsurfaceAltitudeRejectSettings& settings) {
+    const SubsurfaceAltitudeRejectSettings& settings) {
   if (!settings.enabled)
     return;
   const auto result = checkSubsurfaceFaceAltitude(water, settings);
@@ -820,10 +800,11 @@ inline bool flipIfOnce(Network& water, const Tdd& limit_Dirichlet, const Tdd& li
     }
     std::cout << Green << "  No edges flipped." << colorReset << std::endl;
     return false;
-  } catch (std::exception& e) {
-    std::cerr << e.what() << colorReset << std::endl;
-    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "");
-  };
+  } catch (const error_message&) {
+    throw;
+  } catch (const std::exception& e) {
+    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, e.what());
+  }
 }
 
 inline bool flipIfBatched(Network& water, const Tdd& limit_Dirichlet, const Tdd& limit_Neumann, const char* tag = nullptr,
@@ -928,15 +909,35 @@ inline bool flipIfBatched(Network& water, const Tdd& limit_Dirichlet, const Tdd&
   return false;
 }
 
-inline void remesh_for_main_loop(Network& water, const int time_step, const double min_edge_length, const bool tetrahedralize, const bool surface_flip,
-                                 const SimulationSettings::RemeshingSettings::CollisionSettings& collision_settings = {},
-                                 const bool surface_split = true, const bool surface_collapse = true) {
+void remesh_for_main_loop(Network& water, int time_step, double min_edge_length, bool tetrahedralize, bool surface_flip,
+                          const CollisionSettings& collision_settings = {},
+                          bool surface_split = true, bool surface_collapse = true,
+                          bool skip_post_remesh_quality_rejects = false);
+
+// Implementation moved to BEM_remesh_main.cpp
+#if 0  // --- implementation guard (compiled in BEM_remesh_main.cpp) ---
+inline void remesh_for_main_loop_IMPL_UNUSED(Network& water, const int time_step, const double min_edge_length, const bool tetrahedralize, const bool surface_flip,
+                                 const CollisionSettings& collision_settings,
+                                 const bool surface_split, const bool surface_collapse) {
   const double rad = M_PI / 180.0;
   const double cos_3rad = std::cos(3.0 * rad);
   const double cos_rad = std::cos(rad);
   const double global_mean_len = Mean(extLength(water.getLines()));
   const double limit_len = (min_edge_length > 0.0) ? min_edge_length : global_mean_len * 0.1;
   constexpr double min_local_face_area_ratio = 0.05;
+
+  // Safety: ensure X_mid is at least at the linear midpoint for all boundary lines.
+  // OBJ loading leaves X_mid at {0,0,0}; detectFoldedFaces Check 2 depends on valid X_mid.
+  for (auto* l : water.getBoundaryLines()) {
+    if (l->X_mid[0] == 0. && l->X_mid[1] == 0. && l->X_mid[2] == 0.) {
+      auto [pA, pB] = l->getPoints();
+      const Tddd mid = 0.5 * (pA->X + pB->X);
+      // Only fix if the linear midpoint is non-zero (i.e. line is not at origin)
+      if (mid[0] != 0. || mid[1] != 0. || mid[2] != 0.) {
+        l->setXSingle(mid);
+      }
+    }
+  }
 
   /* --------------------------------- 四面体の削除 --------------------------------- */
   std::cout << "孤立した四面体の削除を開始" << std::endl;
@@ -1053,7 +1054,7 @@ inline void remesh_for_main_loop(Network& water, const int time_step, const doub
       if (faces.size() != 2 || !faces[0] || !faces[1])
         return out;
 
-      const double local_mean_len = localLineLength(l);
+      const double local_mean_len = localEdgeLength(l);
       const double len = l->length();
       if (!(local_mean_len > 0.0) || !(len > 0.0) || !std::isfinite(local_mean_len) || !std::isfinite(len))
         return out;
@@ -1126,14 +1127,17 @@ inline void remesh_for_main_loop(Network& water, const int time_step, const doub
             if (nl)
               out.insert(nl);
     };
+    static const bool enable_corner_neumann_debug = (std::getenv("BEM_CORNER_DEBUG") && std::string(std::getenv("BEM_CORNER_DEBUG")) != "0");
     auto log_corner_connected_neumann_line = [&](const char* phase, const networkLine* l, const char* event = nullptr) {
+      if (!enable_corner_neumann_debug)
+        return;
       if (!isPostTypeCollapseTargetLine(l))
         return;
       auto [p0, p1] = l->getPoints();
       const auto faces = l->getBoundaryFaces();
       const int n_faces = static_cast<int>(faces.size());
       const double len = l->length();
-      const double local_mean_len = (n_faces == 2 && faces[0] && faces[1]) ? localLineLength(l) : -1.0;
+      const double local_mean_len = (n_faces == 2 && faces[0] && faces[1]) ? localEdgeLength(l) : -1.0;
       double alt0 = -1.0, alt1 = -1.0, alt_threshold = -1.0;
       double alt_ratio0 = -1.0, alt_ratio1 = -1.0;
       double aspect_ratio0 = -1.0, aspect_ratio1 = -1.0;
@@ -1148,10 +1152,10 @@ inline void remesh_for_main_loop(Network& water, const int time_step, const doub
       if (n_faces == 2 && faces[0] && faces[1] && p0 && p1) {
         auto* f0 = faces[0];
         auto* f1 = faces[1];
-        face0_dirichlet = f0->Dirichlet;
-        face0_neumann = f0->Neumann;
-        face1_dirichlet = f1->Dirichlet;
-        face1_neumann = f1->Neumann;
+        face0_dirichlet = isDirichletBoundaryState(p0, f0) && isDirichletBoundaryState(p1, f0);
+        face0_neumann = isNeumannBoundaryState(p0, f0) && isNeumannBoundaryState(p1, f0);
+        face1_dirichlet = isDirichletBoundaryState(p0, f1) && isDirichletBoundaryState(p1, f1);
+        face1_neumann = isNeumannBoundaryState(p0, f1) && isNeumannBoundaryState(p1, f1);
         auto [a, this0, b, l1, p2, l2] = f0->getPointsAndLines(const_cast<networkLine*>(l));
         auto [q0, this1, q1, e1, q2, e2] = f1->getPointsAndLines(const_cast<networkLine*>(l));
         if (this0 == l && this1 == l && a == q1 && b == q0) {
@@ -1178,7 +1182,8 @@ inline void remesh_for_main_loop(Network& water, const int time_step, const doub
           area_ratio1 = (mean_area1 > 0.0) ? area1 / mean_area1 : -1.0;
           normal_dot = Dot(f0->normal, f1->normal);
           common_points = static_cast<int>(Intersection(p0->getNeighborPointsOnSurfaces(),
-                                                        p1->getNeighborPointsOnSurfaces()).size());
+                                                        p1->getNeighborPointsOnSurfaces())
+                                               .size());
           opp0_lines = p2 ? static_cast<int>(p2->getLines().size()) : -1;
           opp1_lines = q2 ? static_cast<int>(q2->getLines().size()) : -1;
         }
@@ -1273,7 +1278,7 @@ inline void remesh_for_main_loop(Network& water, const int time_step, const doub
           if (!line_alive(l))
             continue;
           auto it = local_mean_cache.find(l);
-          auto local_mean_len = (it != local_mean_cache.end()) ? it->second : localLineLength(l);
+          auto local_mean_len = (it != local_mean_cache.end()) ? it->second : localEdgeLength(l);
           if (it == local_mean_cache.end())
             local_mean_cache.emplace(l, local_mean_len);
           if (should_split(l, local_mean_len))
@@ -1291,7 +1296,7 @@ inline void remesh_for_main_loop(Network& water, const int time_step, const doub
           if (!line_alive(l))
             continue;
           auto len = l->length();
-          auto local_mean_len = localLineLength(l);
+          auto local_mean_len = localEdgeLength(l);
           if (!should_split(l, local_mean_len))
             continue;
           // Check topology of adjacent lines BEFORE split
@@ -1558,7 +1563,7 @@ inline void remesh_for_main_loop(Network& water, const int time_step, const doub
             auto [a, b, c] = f0->getPoints(l);
             auto [_, __, d] = f1->getPoints(l);
 
-            auto local_mean_len = localLineLength(l);
+            auto local_mean_len = localEdgeLength(l);
 
             // Aspect-ratio collapse: if either adjacent triangle has very low height
             // (altitude < 10% of local mean edge length), collapse regardless of Neumann.
@@ -1593,11 +1598,11 @@ inline void remesh_for_main_loop(Network& water, const int time_step, const doub
                   log_corner_connected_neumann_line("collapse", l, "corner_neumann_area_alt_attempt");
                 if (l->Collapse()) {
                   changed_in_batch = true;
-                  if (std::ranges::find(corner_connected_neumann_shortlist, l) != corner_connected_neumann_shortlist.end())
+                  if (enable_corner_neumann_debug && std::ranges::find(corner_connected_neumann_shortlist, l) != corner_connected_neumann_shortlist.end())
                     std::cout << Magenta << "[corner_neumann_debug] collapse event=corner_neumann_area_alt_success" << colorReset << std::endl;
                   continue;
                 }
-                if (std::ranges::find(corner_connected_neumann_shortlist, l) != corner_connected_neumann_shortlist.end())
+                if (enable_corner_neumann_debug && std::ranges::find(corner_connected_neumann_shortlist, l) != corner_connected_neumann_shortlist.end())
                   std::cout << Magenta << "[corner_neumann_debug] collapse event=corner_neumann_area_alt_failed"
                             << " alt_ratio_min=" << std::min(alt_ratio0, alt_ratio1)
                             << " area_ratio_min=" << std::min(area_ratio0, area_ratio1)
@@ -1776,3 +1781,4 @@ inline void remesh_for_main_loop(Network& water, const int time_step, const doub
 
   water.improveTetrahedraDelaunay();
 }
+#endif  // --- end implementation guard ---

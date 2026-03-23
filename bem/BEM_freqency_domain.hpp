@@ -17,6 +17,7 @@
 // Declare them here to make this header self-contained.
 extern bool use_pseudo_quadratic_element;
 extern bool use_true_quadratic_element;
+extern bool use_quadratic_linear_hybrid;
 extern double simulation_time;
 extern double coupling_tol;
 
@@ -139,8 +140,6 @@ inline double l2_norm(const std::vector<Complex> &v) {
 struct BoundaryStateGuard {
   struct FaceState {
     networkFace *f = nullptr;
-    bool Dirichlet = false;
-    bool Neumann = false;
     bool isLinearElement = true;
     bool isPseudoQuadraticElement = false;
     bool isTrueQuadraticElement = false;
@@ -181,7 +180,7 @@ struct BoundaryStateGuard {
 
     faces.reserve(uniq_faces.size());
     for (auto *f : uniq_faces) {
-      faces.push_back(FaceState{f, f->Dirichlet, f->Neumann, f->isLinearElement, f->isPseudoQuadraticElement, f->isTrueQuadraticElement});
+      faces.push_back(FaceState{f, f->isLinearElement, f->isPseudoQuadraticElement, f->isTrueQuadraticElement});
     }
     lines.reserve(uniq_lines.size());
     for (auto *l : uniq_lines) {
@@ -197,8 +196,6 @@ struct BoundaryStateGuard {
     for (const auto &s : faces) {
       if (!s.f)
         continue;
-      s.f->Dirichlet = s.Dirichlet;
-      s.f->Neumann = s.Neumann;
       s.f->isLinearElement = s.isLinearElement;
       s.f->isPseudoQuadraticElement = s.isPseudoQuadraticElement;
       s.f->isTrueQuadraticElement = s.isTrueQuadraticElement;
@@ -227,35 +224,42 @@ inline void apply_face_bc_to_mesh(const std::vector<Network *> &nets, const Boun
   if (!bc.face_bc)
     throw std::runtime_error("apply_face_bc_to_mesh: face_bc is not set");
 
+  std::unordered_map<networkFace *, FaceBC> face_bc_map;
+
   for (auto *net : nets) {
     if (!net)
       continue;
     net->setGeometricPropertiesForce();
     for (auto *f : net->getBoundaryFaces()) {
       const FaceBC t = bc.face_bc(*f);
-      if (t == FaceBC::Neumann) {
-        f->Neumann = true;
-        f->Dirichlet = false;
-      } else {
-        // Dirichlet or Robin are "Dirichlet-type" for indexing (unknown is phi_n).
-        f->Dirichlet = true;
-        f->Neumann = false;
-        if (t == FaceBC::Robin)
-          robin_faces_out.emplace(f);
-      }
+      face_bc_map[f] = t;
+      if (t == FaceBC::Robin)
+        robin_faces_out.emplace(f);
     }
 
     for (auto *l : net->getLines()) {
       const auto &fs = l->getBoundaryFaces();
-      l->Neumann = std::ranges::all_of(fs, [](const auto *f) { return f->Neumann; });
-      l->Dirichlet = std::ranges::all_of(fs, [](const auto *f) { return f->Dirichlet; });
+      l->Neumann = std::ranges::all_of(fs, [&](const auto *f) {
+        auto it = face_bc_map.find(f);
+        return it != face_bc_map.end() && it->second == FaceBC::Neumann;
+      });
+      l->Dirichlet = std::ranges::all_of(fs, [&](const auto *f) {
+        auto it = face_bc_map.find(f);
+        return it != face_bc_map.end() && it->second != FaceBC::Neumann;
+      });
       l->CORNER = (!l->Neumann && !l->Dirichlet);
     }
 
     for (auto *p : net->getPoints()) {
       const auto &fs = p->getBoundaryFaces();
-      p->Neumann = std::ranges::all_of(fs, [](const auto *f) { return f->Neumann; });
-      p->Dirichlet = std::ranges::all_of(fs, [](const auto *f) { return f->Dirichlet; });
+      p->Neumann = std::ranges::all_of(fs, [&](const auto *f) {
+        auto it = face_bc_map.find(f);
+        return it != face_bc_map.end() && it->second == FaceBC::Neumann;
+      });
+      p->Dirichlet = std::ranges::all_of(fs, [&](const auto *f) {
+        auto it = face_bc_map.find(f);
+        return it != face_bc_map.end() && it->second != FaceBC::Neumann;
+      });
       p->CORNER = (!p->Neumann && !p->Dirichlet);
       setIsMultipleNode(p);
     }
@@ -267,7 +271,9 @@ inline void apply_face_bc_to_mesh(const std::vector<Network *> &nets, const Boun
         f->isLinearElement = false;
       } else {
         f->isTrueQuadraticElement = false;
-        f->isPseudoQuadraticElement = use_pseudo_quadratic_element && f->Dirichlet;
+        auto it = face_bc_map.find(f);
+        const bool face_is_dirichlet_type = it != face_bc_map.end() && it->second != FaceBC::Neumann;
+        f->isPseudoQuadraticElement = use_pseudo_quadratic_element && face_is_dirichlet_type;
         f->isLinearElement = !f->isPseudoQuadraticElement;
       }
     }
@@ -354,7 +360,7 @@ inline Solution solve_linear_bvp(const std::vector<Network *> &nets, const Linea
     if (!p_row)
       throw std::runtime_error("solve_linear_bvp: id_by_index has null point");
 
-    const bool row_is_corner_neumann = (p_row->CORNER && isNeumannID_BEM(p_row, f_row));
+    const bool row_is_corner_neumann = (p_row->CORNER && isNeumannBieDofKey(p_row, f_row));
     if (row_is_corner_neumann) {
       // Replace BIE row by continuity constraint: phi(neumann-id) == phi(dirichlet-id).
       A[aidx(i, i)] = max_value;
@@ -386,7 +392,7 @@ inline Solution solve_linear_bvp(const std::vector<Network *> &nets, const Linea
       if (!p_col)
         throw std::runtime_error("solve_linear_bvp: id_by_index has null point (col)");
 
-      if (isDirichletID_BEM(p_col, f_col)) {
+      if (isDirichletBieDofKey(p_col, f_col)) {
         // Unknown is phi_n (u_j).
         const bool robin = point_is_robin[p_col];
         if (robin) {
@@ -420,7 +426,7 @@ inline Solution solve_linear_bvp(const std::vector<Network *> &nets, const Linea
   // Reconstruct (phi, phin) on each ID.
   for (std::size_t j = 0; j < n; ++j) {
     auto [p_col, f_col] = sol.id_by_index[j];
-    if (isDirichletID_BEM(p_col, f_col)) {
+    if (isDirichletBieDofKey(p_col, f_col)) {
       sol.phin[j] = sol.u[j];
       const bool robin = point_is_robin[p_col];
       if (robin) {

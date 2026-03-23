@@ -2,24 +2,24 @@
 #include "Network.hpp"
 #include "pch.hpp"
 
-V_netFp networkLine::getBoundaryFaces(networkFace *const f_excluded) const {
+V_netFp networkLine::getBoundaryFaces(networkFace* const f_excluded) const {
   V_netFp surfaces;
   surfaces.reserve(this->Faces.size());
-  for (const auto &f : this->Faces)
+  for (const auto& f : this->Faces)
     if (f != f_excluded && f->BoundaryQ())
       surfaces.emplace_back(f);
   return surfaces;
 };
 
 bool networkLine::BoundaryQ() const {
-  return std::any_of(this->Faces.begin(), this->Faces.end(), [](const auto &f) { return f->BoundaryQ(); });
+  return std::any_of(this->Faces.begin(), this->Faces.end(), [](const auto& f) { return f->BoundaryQ(); });
 };
 
 T2Tddd networkLine::getLocationsTuple() const { return {this->Point_A->getXtuple(), this->Point_B->getXtuple()}; };
 
 void networkLine::setBoundsSingle() { CoordinateBounds::setBounds(getLocationsTuple()); };
 
-bool networkLine::Replace(netP *oldP, netP *newP) {
+bool networkLine::Replace(netP* oldP, netP* newP) {
   auto bool1 = this->replace(oldP, newP); // 1
   auto bool2 = oldP->erase(this);         // 2
   auto bool3 = newP->add(this);           // 3
@@ -31,7 +31,7 @@ bool networkLine::Replace(netP *oldP, netP *newP) {
     return false;
 };
 
-networkLine::networkLine(Network *network_IN, netP *sPoint_IN, netP *ePoint_IN) : target4FMM(), CoordinateBounds(Tddd{{0., 0., 0.}}), Faces(0), network(network_IN), Point_A(nullptr), Point_B(nullptr), Neumann(false), Dirichlet(false), CORNER(false) {
+networkLine::networkLine(Network* network_IN, netP* sPoint_IN, netP* ePoint_IN) : target4FMM(), CoordinateBounds(Tddd{{0., 0., 0.}}), Faces(0), network(network_IN), Point_A(nullptr), Point_B(nullptr), Neumann(false), Dirichlet(false) {
 #ifdef DEM
   this->tension = 0.;
 #endif
@@ -61,7 +61,7 @@ double networkLine::length() const { return Norm(this->Point_A->X - this->Point_
 
 Tddd networkLine::getNormal() const {
   Tddd ret = {0, 0, 0};
-  for (const auto &f : this->Faces)
+  for (const auto& f : this->Faces)
     ret += f->normal;
   return ret / (double)(this->Faces.size());
 };
@@ -70,35 +70,37 @@ inline bool isLinkedDoubly(const netLp l, const netPp p) {
   try {
     auto [q0, q1] = l->getPoints();
     if (q0 && q0 == p) {
-      for (const auto &m : p->getLines())
+      for (const auto& m : p->getLines())
         if (m && m == l)
           return true;
     }
     if (q1 && q1 == p) {
-      for (const auto &m : p->getLines())
+      for (const auto& m : p->getLines())
         if (m && m == l)
           return true;
     }
     return false;
-  } catch (std::exception &e) {
-    std::cerr << e.what() << colorReset << std::endl;
-    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "");
-  };
+  } catch (const error_message&) {
+    throw;
+  } catch (const std::exception& e) {
+    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, e.what());
+  }
 };
 
 inline bool isLinkedDoubly(const netLp l, const netFp f) {
   try {
-    for (const auto &q : l->getFaces())
+    for (const auto& q : l->getFaces())
       if (q && q == f) {
         auto [l0, l1, l2] = f->getLines();
         if ((l0 && l0 == l) || (l1 && l1 == l) || (l2 && l2 == l))
           return true;
       }
     return false;
-  } catch (std::exception &e) {
-    std::cerr << e.what() << colorReset << std::endl;
-    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "");
-  };
+  } catch (const error_message&) {
+    throw;
+  } catch (const std::exception& e) {
+    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, e.what());
+  }
 };
 
 inline bool isLinkedDoubly(const netPp p, const netLp l) { return isLinkedDoubly(l, p); };
@@ -108,7 +110,7 @@ inline bool isLinkedDoubly(const netFp f, const netLp l) { return isLinkedDoubly
 //%                          辺の分割                      */
 //% ------------------------------------------------------ */
 
-netPp networkLine::Split(const Tddd &midX) {
+netPp networkLine::Split(const Tddd& midX) {
 
   /*
               p2
@@ -248,36 +250,34 @@ p0, q1--this---(P)---(LC)---- p1, q0
         double dA = Norm(nearA - X_mid_candidate);
         double dB = Norm(nearB - X_mid_candidate);
         if (dA <= dB) {
-          edge->X_mid = nearA;
+          edge->setXSingle(nearA);
           auto N = TriShape<6>(wa, wb);
-          edge->phiphin[0] = N[0]*fA_phi6[0] + N[1]*fA_phi6[1] + N[2]*fA_phi6[2]
-                        + N[3]*fA_phi6[3] + N[4]*fA_phi6[4] + N[5]*fA_phi6[5];
+          edge->phiphin[0] = N[0] * fA_phi6[0] + N[1] * fA_phi6[1] + N[2] * fA_phi6[2] + N[3] * fA_phi6[3] + N[4] * fA_phi6[4] + N[5] * fA_phi6[5];
         } else {
-          edge->X_mid = nearB;
+          edge->setXSingle(nearB);
           auto N = TriShape<6>(wc, wd);
-          edge->phiphin[0] = N[0]*fB_phi6[0] + N[1]*fB_phi6[1] + N[2]*fB_phi6[2]
-                        + N[3]*fB_phi6[3] + N[4]*fB_phi6[4] + N[5]*fB_phi6[5];
+          edge->phiphin[0] = N[0] * fB_phi6[0] + N[1] * fB_phi6[1] + N[2] * fB_phi6[2] + N[3] * fB_phi6[3] + N[4] * fB_phi6[4] + N[5] * fB_phi6[5];
         }
-        edge->Xtarget = edge->X_mid;
       };
       // Old face A: {p0, p1, p2}, lines: {this(p0-p1), l1(p1-p2), l2(p2-p0)}
       std::array<double, 6> fA_phi6 = {std::get<0>(p0->phiphin), std::get<0>(p1->phiphin), std::get<0>(p2->phiphin),
-                                        old_this_phi_mid, old_l1_phi_mid, old_l2_phi_mid};
+                                       old_this_phi_mid, old_l1_phi_mid, old_l2_phi_mid};
       // Old face B: {p0, p1, q2}, lines: {this(p0-p1), e2(p1-q2), e1(q2-p0)}
       std::array<double, 6> fB_phi6 = {std::get<0>(p0->phiphin), std::get<0>(p1->phiphin), std::get<0>(q2->phiphin),
-                                        old_this_phi_mid, old_e2_phi_mid, old_e1_phi_mid};
+                                       old_this_phi_mid, old_e2_phi_mid, old_e1_phi_mid};
       project_edge(this, old_fA_tri, old_fB_tri, fA_phi6, fB_phi6);
-      project_edge(LC,   old_fA_tri, old_fB_tri, fA_phi6, fB_phi6);
-      project_edge(LA,   old_fA_tri, old_fB_tri, fA_phi6, fB_phi6);
-      project_edge(LB,   old_fA_tri, old_fB_tri, fA_phi6, fB_phi6);
+      project_edge(LC, old_fA_tri, old_fB_tri, fA_phi6, fB_phi6);
+      project_edge(LA, old_fA_tri, old_fB_tri, fA_phi6, fB_phi6);
+      project_edge(LB, old_fA_tri, old_fB_tri, fA_phi6, fB_phi6);
     }
 #endif
 
     return P;
-  } catch (std::exception &e) {
-    std::cerr << e.what() << colorReset << std::endl;
-    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "");
-  };
+  } catch (const error_message&) {
+    throw;
+  } catch (const std::exception& e) {
+    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, e.what());
+  }
 };
 
 //@ ------------------------------------------------------ */
@@ -305,7 +305,7 @@ bool networkLine::isMergeable() const {
   auto Bps = B->getPoints(this);
   //* ------------------------------------------------------ */
   int c = 0;
-  std::ranges::for_each(Join(Bps, Aps), [&](const auto &p) {
+  std::ranges::for_each(Join(Bps, Aps), [&](const auto& p) {
     if (p->getLines().empty())
       throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "p->getLines().empty()");
   });
@@ -412,16 +412,16 @@ netPp networkLine::Collapse() {
   std::vector<OldFaceData> old_faces;
   {
     std::unordered_set<networkFace*> face_set;
-    for (auto* f : p0->getBoundaryFaces()) face_set.insert(f);
-    for (auto* f : p1->getBoundaryFaces()) face_set.insert(f);
+    for (auto* f : p0->getBoundaryFaces())
+      face_set.insert(f);
+    for (auto* f : p1->getBoundaryFaces())
+      face_set.insert(f);
     for (auto* f : face_set) {
       auto [fp0, fp1, fp2] = f->getPoints();
       auto [fl0, fl1, fl2] = f->getLines();
-      old_faces.push_back({
-        {fp0->X, fp1->X, fp2->X},
-        {std::get<0>(fp0->phiphin), std::get<0>(fp1->phiphin), std::get<0>(fp2->phiphin),
-         fl0->phiphin[0], fl1->phiphin[0], fl2->phiphin[0]}
-      });
+      old_faces.push_back({{fp0->X, fp1->X, fp2->X},
+                           {std::get<0>(fp0->phiphin), std::get<0>(fp1->phiphin), std::get<0>(fp2->phiphin),
+                            fl0->phiphin[0], fl1->phiphin[0], fl2->phiphin[0]}});
     }
   }
 #endif
@@ -473,7 +473,7 @@ netPp networkLine::Collapse() {
   p2->erase(f0);
   q2->erase(f1);
 
-  for (const auto &f : p0->getBoundaryFaces())
+  for (const auto& f : p0->getBoundaryFaces())
     f->syncPLPLPL();
 
   // Interpolate phiphin for surviving vertex before moving it.
@@ -484,7 +484,6 @@ netPp networkLine::Collapse() {
     if (preserve_p1) {
       p0->phiphin = p1->phiphin;
       p0->phiphin_t = p1->phiphin_t;
-      p0->phi_Dirichlet = p1->phi_Dirichlet;
       p0->CORNER = p1->CORNER;
       p0->Dirichlet = p1->Dirichlet;
       p0->Neumann = p1->Neumann;
@@ -500,7 +499,6 @@ netPp networkLine::Collapse() {
       auto phin1 = std::get<1>(p1->phiphin);
       std::get<0>(p0->phiphin) = 0.5 * (phi0 + phi1);
       std::get<1>(p0->phiphin) = 0.5 * (phin0 + phin1);
-      p0->phi_Dirichlet = std::get<0>(p0->phiphin);
       // Also average time derivatives if present
       auto phit0 = std::get<0>(p0->phiphin_t);
       auto phint0 = std::get<1>(p0->phiphin_t);
@@ -559,12 +557,10 @@ netPp networkLine::Collapse() {
       }
     }
     if (best_idx >= 0) {
-      edge->X_mid = best_near;
-      edge->Xtarget = edge->X_mid;
+      edge->setXSingle(best_near);
       auto N = TriShape<6>(best_t0, best_t1);
       const auto& phi6 = old_faces[best_idx].phi6;
-      edge->phiphin[0] = N[0]*phi6[0] + N[1]*phi6[1] + N[2]*phi6[2]
-                    + N[3]*phi6[3] + N[4]*phi6[4] + N[5]*phi6[5];
+      edge->phiphin[0] = N[0] * phi6[0] + N[1] * phi6[1] + N[2] * phi6[2] + N[3] * phi6[3] + N[4] * phi6[4] + N[5] * phi6[5];
     }
   }
 #endif
@@ -793,27 +789,24 @@ bool networkLine::Flip(bool force = false) {
       double dA = Norm(nearA - X_mid_candidate);
       double dB = Norm(nearB - X_mid_candidate);
       if (dA <= dB) {
-        this->X_mid = nearA;
+        this->setXSingle(nearA);
         auto N = TriShape<6>(wa, wb);
-        this->phiphin[0] = N[0]*old_fA_phi6[0] + N[1]*old_fA_phi6[1] + N[2]*old_fA_phi6[2]
-                      + N[3]*old_fA_phi6[3] + N[4]*old_fA_phi6[4] + N[5]*old_fA_phi6[5];
+        this->phiphin[0] = N[0] * old_fA_phi6[0] + N[1] * old_fA_phi6[1] + N[2] * old_fA_phi6[2] + N[3] * old_fA_phi6[3] + N[4] * old_fA_phi6[4] + N[5] * old_fA_phi6[5];
       } else {
-        this->X_mid = nearB;
+        this->setXSingle(nearB);
         auto N = TriShape<6>(wc, wd);
-        this->phiphin[0] = N[0]*old_fB_phi6[0] + N[1]*old_fB_phi6[1] + N[2]*old_fB_phi6[2]
-                      + N[3]*old_fB_phi6[3] + N[4]*old_fB_phi6[4] + N[5]*old_fB_phi6[5];
+        this->phiphin[0] = N[0] * old_fB_phi6[0] + N[1] * old_fB_phi6[1] + N[2] * old_fB_phi6[2] + N[3] * old_fB_phi6[3] + N[4] * old_fB_phi6[4] + N[5] * old_fB_phi6[5];
       }
-      this->Xtarget = this->X_mid;
     }
 #endif
 
     return true;
 
-  } catch (std::exception &e) {
-    std::cerr << e.what() << colorReset << std::endl;
-    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "");
-    return false;
-  };
+  } catch (const error_message&) {
+    throw;
+  } catch (const std::exception& e) {
+    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, e.what());
+  }
 };
 
 /* -------------------------------------------------------------------------- */
@@ -830,10 +823,11 @@ bool networkLine::islegal() const {
       return true /*正*/;
     else
       return false /*不正*/;
-  } catch (std::exception &e) {
-    std::cerr << e.what() << colorReset << std::endl;
-    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "");
-  };
+  } catch (const error_message&) {
+    throw;
+  } catch (const std::exception& e) {
+    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, e.what());
+  }
 };
 bool networkLine::flipIfIllegal() {
   if (!islegal() && !isIntxn())
@@ -909,10 +903,11 @@ bool networkLine::canFlip(const double acceptable_n_diff_before_after = 1E-3 * M
     //$ area conservation
     return true; // TriangleArea(tri0) + TriangleArea(tri1) == TriangleArea(tri0_now) + TriangleArea(tri1_now);
 
-  } catch (const std::exception &e) {
-    std::cerr << e.what() << std::endl;
-    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "");
-  };
+  } catch (const error_message&) {
+    throw;
+  } catch (const std::exception& e) {
+    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, e.what());
+  }
 }
 
 bool networkLine::flipIfBetter(const double n_diff_tagert_face, const double acceptable_n_diff_before_after, const int min_n) {
@@ -977,10 +972,11 @@ bool networkLine::flipIfBetter(const double n_diff_tagert_face, const double acc
         return false;
     } else
       return false;
-  } catch (std::exception &e) {
-    std::cerr << e.what() << colorReset << std::endl;
-    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "");
-  };
+  } catch (const error_message&) {
+    throw;
+  } catch (const std::exception& e) {
+    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, e.what());
+  }
 };
 
 bool networkLine::flipIfTopologicallyBetter(const double n_diff_tagert_face, const double acceptable_n_diff_before_after, const int s_meanIN) {
@@ -1011,9 +1007,10 @@ bool networkLine::flipIfTopologicallyBetter(const double n_diff_tagert_face, con
         return false;
     } else
       return false;
-  } catch (std::exception &e) {
-    std::cerr << e.what() << std::endl;
-    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "");
+  } catch (const error_message&) {
+    throw;
+  } catch (const std::exception& e) {
+    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, e.what());
   }
 };
 
@@ -1025,8 +1022,7 @@ void networkLine::divideIfIllegal() {
 /* -------------------------------------------------------------------------- */
 
 void networkLine::setContactRange() {
-  auto [pA, pB] = this->getPoints();
-  this->contact_range = 0.5 * (pA->contact_range + pB->contact_range);
+  this->contact_range = 0.4 * localEdgeLength(this);
 }
 
 // CORNER lines at triple points only have 2 faces (1 Dirichlet + 1 Neumann).

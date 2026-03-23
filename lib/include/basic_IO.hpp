@@ -377,6 +377,22 @@ template <typename... Args> void Print(Args... args) {
 
 /* ------------------------------------------------------ */
 
+// BEM_VERBOSE 環境変数: 未設定=quiet, "1"=verbose
+inline bool bem_verbose() {
+    static const bool v = []() {
+        const char* env = std::getenv("BEM_VERBOSE");
+        return env && std::string(env) != "0";
+    }();
+    return v;
+}
+
+template <typename... Args> void VerbosePrint(Args&&... args) {
+    if (!bem_verbose()) return;
+    Print(std::forward<Args>(args)...);
+}
+
+/* ------------------------------------------------------ */
+
 template <typename T> void DebugPrint(const T &v_IN) {
 #if defined(DEBUGGING)
   std::cout << v_IN << std::endl;
@@ -551,6 +567,16 @@ inline std::string getMachineName() {
 
   return std::string(hostname);
 }
+/* -------------------------------------------------------------------------- */
+
+#include "lib_measurement.hpp"
+
+inline void PrintLap(TimeWatch &watch, const std::string &label, const std::string &color = Green) {
+  auto elapsed = watch();
+  std::cout << color << label << Blue
+            << "\nElapsed time: " << Red << elapsed[0] << ", " << elapsed[1] << colorReset << " s\n";
+}
+
 /* -------------------------------------------------------------------------- */
 
 #endif

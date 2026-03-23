@@ -1,9 +1,9 @@
 #ifndef BEM_utilities_H
 #define BEM_utilities_H
 
+#include "BEM_node_face_state.hpp"
 #include "BEM_WaveGenerator.hpp"
 #include "Hadzic2005.hpp"
-#include "Network.hpp"
 
 using V_i = std::vector<int>;
 using V_d = std::vector<double>;
@@ -86,10 +86,22 @@ inline std::vector<networkFace*> getEffectiveContactFaces(const Node* p) {
 template <typename Node>
 inline std::tuple<networkFace*, Tddd, double> getEffectiveNearestContactFace(const Node* p) {
   // 1. 既存の接触面リストから最近傍のものを取得
-  auto [f, X, dist] = p->getNearestContactFace();
-  if (f) {
-    return {f, X, dist};
+  networkFace* best_f = nullptr;
+  Tddd best_X = {0., 0., 0.};
+  double best_dist = 1E+20;
+  for (const auto& [bf, d] : p->dofs) {
+    if (auto* cf = d.nearestContactFace()) {
+      Tddd X = Nearest(p->getPosition(), ToX(cf));
+      double dist = Norm(p->getPosition() - X);
+      if (dist < best_dist) {
+        best_f = cf;
+        best_X = X;
+        best_dist = dist;
+      }
+    }
   }
+  if (best_f)
+    return {best_f, best_X, best_dist};
 
   // 2. 接触面がないが、物体内部に貫入している場合は、その物体の最近傍面を返す
   if (p->penetratedBody) {
@@ -140,14 +152,14 @@ inline Tddd propertyNeumann(const networkPoint* const p, std::function<Tddd(cons
   std::vector<double> Vsample;
   Tddd Vinit = {0., 0., 0.}, V;
 
-  for (const auto& [f, contact_face_of_body_X] : p->getNearestContactFaces()) {
-    auto [contact_face_of_body, X, _] = contact_face_of_body_X;
-    if (contact_face_of_body) {
-      V = propertyFunc(contact_face_of_body, X);
-      Vsample.emplace_back(Dot(V, f->normal));
-      Vinit += V;
-      Directions.emplace_back(f->normal);
-    }
+  for (const auto& [f, d] : p->dofs) {
+    if (!f || d.contact_opponent_faces.empty()) continue;
+    auto* contact_face_of_body = d.nearestContactFace();
+    auto X = Nearest(p->getPosition(), ToX(contact_face_of_body));
+    V = propertyFunc(contact_face_of_body, X);
+    Vsample.emplace_back(Dot(V, f->normal));
+    Vinit += V;
+    Directions.emplace_back(f->normal);
   }
   if (!Vsample.empty()) {
     Vinit /= Vsample.size();
@@ -165,8 +177,11 @@ inline Tddd propertyNeumann(const networkPoint* const p, const networkFace* cons
   if (!adjacent_f) {
     return propertyNeumann(p, propertyFunc);
   }
-  auto [contact_face_of_body, X_contact, dist] = p->getNearestContactFace_(adjacent_f);
-  return contact_face_of_body ? propertyFunc(contact_face_of_body, X_contact) : Tddd{0., 0., 0.};
+  const auto* d = p->findContactState(adjacent_f);
+  if (!d || d->contact_opponent_faces.empty()) return Tddd{0., 0., 0.};
+  auto* contact_face_of_body = d->nearestContactFace();
+  auto X_contact = Nearest(p->getPosition(), ToX(contact_face_of_body));
+  return propertyFunc(contact_face_of_body, X_contact);
 };
 
 inline Tddd contactNormalVelocity(const networkPoint* const p, const networkFace* const adjacent_f) { return propertyNeumann(p, adjacent_f, velocity_of_Body); };
@@ -178,14 +193,14 @@ inline Tddd propertyNeumann(const networkLine* const l, std::function<Tddd(const
   std::vector<Tddd> Directions;
   std::vector<double> Vsample;
   Tddd Vinit = {0., 0., 0.}, V;
-  for (const auto& [f, contact_face_of_body_X] : l->getNearestContactFaces()) {
-    auto [contact_face_of_body, X, _] = contact_face_of_body_X;
-    if (contact_face_of_body) {
-      V = propertyFunc(contact_face_of_body, X);
-      Vsample.emplace_back(Dot(V, f->normal));
-      Vinit += V;
-      Directions.emplace_back(f->normal);
-    }
+  for (const auto& [f, d] : l->dofs) {
+    if (!f || d.contact_opponent_faces.empty()) continue;
+    auto* contact_face_of_body = d.nearestContactFace();
+    auto X = Nearest(l->getPosition(), ToX(contact_face_of_body));
+    V = propertyFunc(contact_face_of_body, X);
+    Vsample.emplace_back(Dot(V, f->normal));
+    Vinit += V;
+    Directions.emplace_back(f->normal);
   }
   if (!Vsample.empty()) {
     Vinit /= Vsample.size();
@@ -199,7 +214,10 @@ inline Tddd propertyNeumann(const networkLine* const l, std::function<Tddd(const
 inline Tddd propertyNeumann(const networkLine* const l, const networkFace* const adjacent_f, std::function<Tddd(const networkFace*, const Tddd&)> propertyFunc) {
   if (!adjacent_f)
     return propertyNeumann(l, propertyFunc);
-  auto [contact_face_of_body, X_contact, dist] = l->getNearestContactFace_(adjacent_f);
+  const auto* d = l->findContactState(adjacent_f);
+  if (!d || d->contact_opponent_faces.empty()) return Tddd{0., 0., 0.};
+  auto* contact_face_of_body = d->nearestContactFace();
+  auto X_contact = Nearest(l->getPosition(), ToX(contact_face_of_body));
   return contact_face_of_body ? propertyFunc(contact_face_of_body, X_contact) : Tddd{0., 0., 0.};
 };
 
@@ -209,7 +227,7 @@ inline Tddd contactNormalVelocity(const networkLine* const l, const networkFace*
 inline Tddd getNormalNeumann_mid(const networkLine* const l) {
   Tddd normal = {0., 0., 0.};
   for (auto* f : l->getBoundaryFaces())
-    if (f && f->Neumann)
+    if (f && isNeumannBoundaryState(l, f))
       normal += f->area * f->normal;
   return Normalize(normal);
 };
@@ -219,19 +237,18 @@ inline Tddd contactPureProperty(const networkPoint* const p, BodyFunc bodyFunc) 
   V_d Vsample;
   std::vector<Tddd> Directions;
   Tddd Vinit = {0., 0., 0.}, u, ex = {1., 0., 0.}, ey = {0., 1., 0.}, ez = {0., 0., 1.};
-  auto nearestFaces = p->getNearestContactFaces();
 
-  if (!nearestFaces.empty()) {
-    for (const auto& [f, contact_face_of_body_X] : nearestFaces) {
-      auto [contact_face_of_body, X, _] = contact_face_of_body_X;
-      if (contact_face_of_body) {
-        u = bodyFunc(contact_face_of_body, X);
-        Vsample.insert(Vsample.end(), {Dot(u, ex), Dot(u, ey), Dot(u, ez)});
-        Directions.insert(Directions.end(), {ex, ey, ez});
-      }
-    }
-  } else {
-    // 変更箇所: ヘルパーを利用
+  bool found_any = false;
+  for (const auto& [f, d] : p->dofs) {
+    if (!f || d.contact_opponent_faces.empty()) continue;
+    auto* contact_face_of_body = d.nearestContactFace();
+    auto X = Nearest(p->getPosition(), ToX(contact_face_of_body));
+    u = bodyFunc(contact_face_of_body, X);
+    Vsample.insert(Vsample.end(), {Dot(u, ex), Dot(u, ey), Dot(u, ez)});
+    Directions.insert(Directions.end(), {ex, ey, ez});
+    found_any = true;
+  }
+  if (!found_any) {
     auto [near_f, near_X, _] = getEffectiveNearestContactFace(p);
     if (near_f) {
       u = bodyFunc(near_f, near_X);
@@ -252,9 +269,12 @@ template <typename BodyFunc, typename PureFunc>
 inline Tddd contactPureProperty(const networkPoint* const p, const networkFace* const adjacent_f, BodyFunc bodyFunc, PureFunc pureFunc) {
   if (!adjacent_f)
     return pureFunc(p); // fallback
-  auto [contact_face_of_body, X_contact, _] = p->getNearestContactFace_(adjacent_f);
-  if (contact_face_of_body)
+  const auto* dd = p->findContactState(adjacent_f);
+  if (dd && !dd->contact_opponent_faces.empty()) {
+    auto* contact_face_of_body = dd->nearestContactFace();
+    auto X_contact = Nearest(p->getPosition(), ToX(contact_face_of_body));
     return bodyFunc(contact_face_of_body, X_contact);
+  }
   if (adjacent_f->penetratedBody) {
     auto [near_f, near_X] = adjacent_f->penetratedBody->Nearest(getPosition(p));
     if (near_f)
@@ -317,21 +337,15 @@ inline T3Tddd OrthogonalBasis(const Tddd& n_IN) {
 // Unified getPhi/getPhin: works for both networkPoint* and networkLine*
 template <typename Node>
 inline double getPhi(const Node* n, const networkFace* f) {
-  auto iter = n->phiOnFace.find(const_cast<networkFace*>(f));
-  if (iter != n->phiOnFace.end())
-    return iter->second;
-  if (n->phiOnFace.find(nullptr) != n->phiOnFace.end())
-    return n->phiOnFace.at(nullptr);
+  if (const auto* d = n->findActiveBieDofOrDefault(f))
+    return d->phi;
   return std::get<0>(n->phiphin);
 }
 
 template <typename Node>
 inline double getPhin(const Node* n, const networkFace* f) {
-  auto iter = n->phinOnFace.find(const_cast<networkFace*>(f));
-  if (iter != n->phinOnFace.end())
-    return iter->second;
-  if (n->phinOnFace.find(nullptr) != n->phinOnFace.end())
-    return n->phinOnFace.at(nullptr);
+  if (const auto* d = n->findActiveBieDofOrDefault(f))
+    return d->phin;
   return std::get<1>(n->phiphin);
 }
 
@@ -376,9 +390,10 @@ inline Tddd gradPhiQuadElement(const networkPoint* p, networkFace* f) {
     ```
 
     */
-  } catch (std::exception& e) {
-    std::cerr << e.what() << std::endl;
-    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "error in gradPhiQuadElement");
+  } catch (const error_message&) {
+    throw;
+  } catch (const std::exception& e) {
+    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "error in gradPhiQuadElement: " + std::string(e.what()));
   }
 };
 
@@ -548,7 +563,7 @@ inline Tddd gradPhi(const networkPoint* const p, std::array<double, 3>& converge
 
   if (p->CORNER) {
     for (const auto& f : faces) {
-      if (!f || !f->Neumann)
+      if (!f || !isNeumannBoundaryState(p, f))
         continue;
       const Tddd n = f->normal;
       if (!isFinite(n) || !(Norm(n) > 0.))
@@ -604,7 +619,7 @@ inline Tddd gradPhi(const networkLine* const l) {
   double meanW = std::accumulate(W.begin(), W.end(), 0.) / W.size();
   if (l->CORNER) {
     for (const auto& f : faces) {
-      if (!f || !f->Neumann)
+      if (!f || !isNeumannBoundaryState(l, f))
         continue;
       const Tddd n = f->normal;
       if (!isFinite(n) || !(Norm(n) > 0.))
@@ -701,8 +716,9 @@ $\phi_{nn}$は，直接計算できないが，ラプラス方程式から$\phi_
 inline double phint_Neumann(const networkPoint* const p, networkFace* F) {
   try {
     //$ faceがNeumannである条件は，faceの持つpointがすべて，外部の面と接触している場合である．
-    //$ なので，{p,f}は，かならずp->getNearestContactFace(F)を持つ．
-    auto structure_f = p->getNearestContactFace(F);
+    //$ なので，{p,f}は，かならずdof(F)にcontact_opponent_facesを持つ．
+    const auto* dd = p->findContactState(F);
+    auto* structure_f = dd ? dd->nearestContactFace() : nullptr;
     Network* net_ref = nullptr;
     if (!structure_f)
       net_ref = F->penetratedBody;
@@ -727,49 +743,10 @@ inline double phint_Neumann(const networkPoint* const p, networkFace* F) {
   }
 };
 
-// double phint_Neumann(const networkPoint *const p, networkFace *F) {
-//    //$ faceがNeumannである条件は，faceの持つpointがすべて，外部の面と接触している場合である．
-//    //$ なので，{p,f}は，かならずp->getNearestContactFace(F)を持つ．
-//    auto f = p->getNearestContactFace(F);
-//    if (f) {
-//       Tddd Omega = (f->getNetwork())->velocityRotational();
-//       auto grad_phi = gradPhi(F);
-//       // auto grad_phi = gradPhi(p, F);
-//       auto U_body = contactPureVelocity(p, F);
-//       auto dndt = Cross(Omega, F->normal);
-//       auto ret = Dot(dndt, U_body - grad_phi);
-//       ret += Dot(F->normal, accelNeumann(p, F));
-//       auto basis = OrthogonalBasis(F->normal);
-//       // ret -= Dot(Dot(basis, F->normal) /*=(1,0,0)*/, Dot(Dot(basis, U_body), HessianOfPhi(F, basis)));
-//       ret -= Dot(Dot(basis, U_body), HessianOfPhi(F, basis))[0];
-//       // ret -= Dot(Dot(basis, F->normal) /*=(1,0,0)*/, Dot(Dot(basis, grad_phi), HessianOfPhi(F, basis)));
-//       return ret;
-//    } else
-//       throw std::runtime_error("p is not in contact with F");
-// };
-
 inline double phint_Neumann(const networkPoint* const p) {
-  // V_d Phin, W;
-  // std::vector<Tddd> Direcctions;
-  // double total = 0;
-  // Tddd normal = {0., 0., 0.};
-  // Phin.reserve(10);
-  // W.reserve(10);
-  // Direcctions.reserve(10);
-  // for (const auto &f : p->getBoundaryFaces())
-  //    if (f->Neumann) {
-  //       Phin.emplace_back(phint_Neumann(p, f));
-  //       Direcctions.emplace_back(f->normal);
-  //       W.emplace_back(f->area);
-  //       normal += f->normal * f->area;
-  //       total += f->area;
-  //    }
-
-  // return Dot(optimalVector(Phin, Direcctions, {0., 0., 0.}, W), normal / total);
-
   double total = 0, phin = 0;
   for (const auto& f : p->getBoundaryFaces())
-    if (f->Neumann) {
+    if (isNeumannBoundaryState(p, f)) {
       phin += phint_Neumann(p, f) * f->area;
       total += f->area;
     }
@@ -780,7 +757,8 @@ inline double phint_Neumann(const networkPoint* const p) {
 
 inline double phint_Neumann(const networkLine* const l, networkFace* F) {
   try {
-    auto structure_f = l->getNearestContactFace(F);
+    const auto* dd = l->findContactState(F);
+    auto* structure_f = dd ? dd->nearestContactFace() : nullptr;
     Network* net_ref = nullptr;
     if (!structure_f)
       net_ref = F->penetratedBody;
@@ -807,7 +785,7 @@ inline double phint_Neumann(const networkLine* const l, networkFace* F) {
 inline double phint_Neumann(const networkLine* const l) {
   double total = 0, phint_val = 0;
   for (auto* f : l->getBoundaryFaces())
-    if (f && f->Neumann) {
+    if (f && isNeumannBoundaryState(l, f)) {
       phint_val += phint_Neumann(l, f) * f->area;
       total += f->area;
     }

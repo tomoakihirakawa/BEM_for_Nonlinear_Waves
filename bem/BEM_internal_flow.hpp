@@ -39,17 +39,13 @@ inline Tddd getBEMVelocityAt_cached(const Tddd &a, const std::vector<Network *> 
   };
 
   auto get_phi = [&](const networkPoint *p, networkFace *f) -> double {
-    if (p->phiOnFace.count(f))
-      return p->phiOnFace.at(f);
-    if (p->phiOnFace.count(nullptr))
-      return p->phiOnFace.at(nullptr);
+    if (auto* d = p->findActiveBieDofOrDefault(f))
+      return d->phi;
     return std::get<0>(p->phiphin);
   };
   auto get_phin = [&](const networkPoint *p, networkFace *f) -> double {
-    if (p->phinOnFace.count(f))
-      return p->phinOnFace.at(f);
-    if (p->phinOnFace.count(nullptr))
-      return p->phinOnFace.at(nullptr);
+    if (auto* d = p->findActiveBieDofOrDefault(f))
+      return d->phin;
     return std::get<1>(p->phiphin);
   };
 

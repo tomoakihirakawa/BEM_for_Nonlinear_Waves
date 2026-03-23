@@ -1241,7 +1241,7 @@ inline void initializeFMM(auto& B_poles, const auto& targets, bool reuse_static_
                           const std::string& nearfield_mode = "scalar") {
 
   TimeWatch log_stage_watch;
-  auto log_stage = [&](const std::string& label) { std::cout << Magenta << " [FMM:init] " << Cyan << label << Green << " elapsed=" << log_stage_watch() << colorReset << std::endl; };
+  auto log_stage = [&](const std::string& label) { if (!bem_verbose()) return; std::cout << Magenta << " [FMM:init] " << Cyan << label << Green << " elapsed=" << log_stage_watch() << colorReset << std::endl; };
 
 // M2Lの方法を表示
 #if defined(SimpleM2L)
