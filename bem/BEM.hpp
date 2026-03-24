@@ -120,6 +120,17 @@ std::unordered_map<BEM_DOF_Base*, V> init_dof_map(const Network* network, const 
   return m;
 }
 
+// boundary condition value for ParaView output (point/line 共通)
+// 0=CORNER, 1=multiple Neumann, 2=Neumann, 3=multiple Dirichlet, 4=Dirichlet
+inline double boundaryConditionValue(const auto* entity) {
+  if (entity->CORNER) return 0.;
+  if (entity->isMultipleNode && entity->Neumann) return 1.;
+  if (entity->Neumann) return 2.;
+  if (entity->isMultipleNode && entity->Dirichlet) return 3.;
+  if (entity->Dirichlet) return 4.;
+  return -1.; // undefined
+}
+
 VV_VarForOutput dataForOutput(const Network* water, const double dt) {
   try {
 
@@ -406,7 +417,8 @@ VV_VarForOutput dataForOutput(const Network* water, const double dt) {
             P_pf_pressure_detachment_eligible_count[p] = pf_pressure_detachment_eligible_count;
             P_pf_detached_by_pressure_count[p] = pf_detached_by_pressure_count;
           }
-          P_BC[p] = p->CORNER ? 0 : ((p->isMultipleNode && p->Neumann) ? 1. : (p->Neumann ? 2. : ((p->isMultipleNode && p->Dirichlet) ? 3. : (p->Dirichlet ? 4. : 1. / 0.))));
+          // boundary condition: 0=CORNER, 1=multiple Neumann, 2=Neumann, 3=multiple Dirichlet, 4=Dirichlet
+          P_BC[p] = boundaryConditionValue(p);
           P_diag[p] = p->diag_coeff_BEM;
           P_direction_info_count[p] = p->debug_direction_info_count;
           P_contact_faces_count[p] = p->debug_contact_faces_count;
@@ -438,7 +450,7 @@ VV_VarForOutput dataForOutput(const Network* water, const double dt) {
           P_phi[p] = std::get<0>(p->phiphin);
           P_phin[p] = std::get<1>(p->phiphin);
           P_velocity_convergence[p] = {1E+30, 1E+30, 1E+30};
-          P_BC[p] = p->CORNER ? 0 : ((p->isMultipleNode && p->Neumann) ? 1. : (p->Neumann ? 2. : ((p->isMultipleNode && p->Dirichlet) ? 3. : 4.)));
+          P_BC[p] = boundaryConditionValue(p);
           if (fail_idx <= 5) {
 #pragma omp critical
             {
@@ -508,7 +520,7 @@ VV_VarForOutput dataForOutput(const Network* water, const double dt) {
           P_pressure[l] = (itA != P_pressure.end() && itB != P_pressure.end()) ? 0.5 * (itA->second + itB->second) : 0.;
         }
         P_DphiDt[l] = l->DphiDt(l->u_reloc, 0.);
-        P_BC[l] = l->CORNER ? 0 : (l->Neumann ? 2. : (l->Dirichlet ? 4. : 0.));
+        P_BC[l] = boundaryConditionValue(l);
 
         // lf_* fields: computed from line's boundary faces
         {

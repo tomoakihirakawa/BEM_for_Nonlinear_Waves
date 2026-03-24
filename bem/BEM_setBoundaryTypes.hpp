@@ -320,20 +320,6 @@ inline std::size_t setNodeFaceIndices(const std::vector<Network*>& objects) {
     return faces;
   };
 
-  // isMultipleNode: CORNER or non-planar normals (> 20°)
-  auto detectMultipleNode = [](auto* entity) {
-    if (entity->CORNER) {
-      entity->isMultipleNode = true;
-      return;
-    }
-    Tddd n = {0., 0., 0.};
-    auto faces = entity->getBoundaryFaces();
-    for (auto* f : faces)
-      n += f->area * f->normal;
-    n = Normalize(n);
-    entity->isMultipleNode = std::ranges::any_of(faces, [&](const auto* f) { return !isFlat(n, f->normal, 20 * M_PI / 180.); });
-  };
-
   // Prune stale dof entries (faces deleted by remesh)
   auto pruneStaleDofs = [](auto* entity, const auto& alive) {
     for (auto it = entity->dofs.begin(); it != entity->dofs.end();)
@@ -357,7 +343,7 @@ inline std::size_t setNodeFaceIndices(const std::vector<Network*>& objects) {
   for (auto* p : points)
     pruneStaleDofs(p, alive_faces);
   for (auto* p : points)
-    detectMultipleNode(p);
+    setMultipleNode(p);
 
   // ---- assign DOF indices (common for point and line) ----
   auto assignDofIndices = [&](auto* entity, std::size_t& idx) {
@@ -392,7 +378,7 @@ inline std::size_t setNodeFaceIndices(const std::vector<Network*>& objects) {
     for (auto* l : lines)
       pruneStaleDofs(l, alive_faces);
     for (auto* l : lines)
-      detectMultipleNode(l);
+      setMultipleNode(l);
 
     for (auto* l : lines) {
       // hybrid: skip lines not touching any quadratic face

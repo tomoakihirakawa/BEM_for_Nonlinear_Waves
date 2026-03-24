@@ -274,3 +274,50 @@ inline bool isNeumannBoundaryState(const auto* entity, const networkFace* f) {
 inline bool isDirichletBoundaryState(const auto* entity, const networkFace* f) {
   return getNodeFaceBoundaryType(entity, f) == NodeFaceBoundaryType::Dirichlet;
 }
+
+/* ---------------------------------------------------------------------------
+   Multiple node detection and assignment
+
+   isMultipleNode = true の節点には per-face DOF が割り当てられる。
+   判定基準は**隣接面の法線角度のみ**:
+
+     隣接面の法線が平均法線から閾値角度以上ずれている → multiple
+
+   CORNER (D-N接合) であるかどうかは判定に使わない。
+   CORNER は必然的に鋭角（壁面と自由表面の接合）なので、
+   法線角度の判定だけで自然に multiple になる。
+
+   ただし、Dirichlet のみの節点は現在の実装では multiple にできない。
+   Neumann の multiple node では BIE の式を面ごとに書き換えて
+   per-face phin を独立な未知数として解くが、Dirichlet 側では
+   対応する式の書き換え（per-face phin を未知数化）が未実装。
+   書き換えなしで per-face Dirichlet DOF を振ると、同一点の phi が
+   一意であるため BIE の行が線形従属になり行列が特異になる
+  （実験で確認済み）。そのため、Neumann 面を持たない節点は棄却する。
+--------------------------------------------------------------------------- */
+
+inline bool hasSharpEdge(const auto* entity, double threshold = 20.0 * M_PI / 180.0) {
+  auto faces = entity->getBoundaryFaces();
+  Tddd n_avg = {0., 0., 0.};
+  for (auto* f : faces)
+    n_avg += f->area * f->normal;
+  n_avg = Normalize(n_avg);
+  return std::ranges::any_of(faces, [&](const auto* f) {
+    return !isFlat(n_avg, f->normal, threshold);
+  });
+}
+
+inline bool detectMultipleNode(const auto* entity) {
+  return hasSharpEdge(entity);
+}
+
+inline void setMultipleNode(auto* entity) {
+  entity->isMultipleNode = detectMultipleNode(entity);
+
+  // 棄却: Dirichlet のみの multiple node は現在の BIE 式では特異になる。
+  // Neumann multiple node では式を書き換えて per-face phin を解くが、
+  // Dirichlet 側の式書き換え（per-face phin 未知数化）は未実装。
+  // 書き換えなしでは同一点の phi が一意なため行列が特異になる（実験確認済み）。
+  if (entity->isMultipleNode && !hasAnyNeumannBoundaryState(entity))
+    entity->isMultipleNode = false;
+}

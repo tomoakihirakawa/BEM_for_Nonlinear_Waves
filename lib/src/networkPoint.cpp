@@ -269,7 +269,7 @@ bool isInContact(const networkPoint* p, const networkFace* f_normal, const std::
 };
 
 void networkPoint::setContactRange(const std::vector<Network*>& objects) {
-  this->contact_range = 0.4 * localEdgeLength(this);
+  this->contact_range = 0.5 * localEdgeLength(this);
 };
 
 // \label{addContactFaces}

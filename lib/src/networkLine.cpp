@@ -1022,7 +1022,7 @@ void networkLine::divideIfIllegal() {
 /* -------------------------------------------------------------------------- */
 
 void networkLine::setContactRange() {
-  this->contact_range = 0.4 * localEdgeLength(this);
+  this->contact_range = 0.5 * localEdgeLength(this);
 }
 
 // CORNER lines at triple points only have 2 faces (1 Dirichlet + 1 Neumann).

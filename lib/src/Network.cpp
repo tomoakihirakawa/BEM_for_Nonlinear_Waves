@@ -22,9 +22,9 @@ double contactAngleThreshold(const double distance, const double contact_range) 
 }
 
 std::vector<ContactFaceCandidate> collectBroadPhaseCandidates(const ContactDetectable& detectable,
-                                                             const std::vector<Network*>& objects,
-                                                             const bool include_self_network,
-                                                             const std::vector<networkFace*>& check_faces) {
+                                                              const std::vector<Network*>& objects,
+                                                              const bool include_self_network,
+                                                              const std::vector<networkFace*>& check_faces) {
   const auto& pos = detectable.getPosition();
   std::vector<ContactFaceCandidate> candidates;
   for (const auto& object : objects) {
@@ -102,7 +102,7 @@ void mapBoundaryFacesToNearestContactFaces(ContactDetectable& detectable,
   }
 }
 
-}  // namespace
+} // namespace
 
 /* -------------------------------------------------------------------------- */
 /*                  ContactDetectable::addContactFaces                        */

@@ -615,12 +615,14 @@ inline Tddd vectorToNextSurface(Entity entity, Tddd X_shifted) {
       auto Vec_CurrentX012_NextX012 = nextBodyVertices(bfs(getEffectiveContactFaces(entity), 2));
       entity->debug_body_vertices_count = static_cast<int>(Vec_CurrentX012_NextX012.size());
 
-      auto contactAngle = [entity](double distance) {
-        auto max_deg = 80., min_deg = 60.;
+      // 近い面は広い角度で受け入れ、遠い面は厳しく絞る
+      auto contactAcceptanceAngle = [entity](double distance) {
+        constexpr double near_angle_deg = 60.;   // distance ≈ 0 のとき
+        constexpr double far_angle_deg = 30.;    // distance ≈ contact_range のとき
         if (!(entity->contact_range > 0) || !std::isfinite(entity->contact_range) || !std::isfinite(distance))
-          return M_PI * max_deg / 180.;
+          return M_PI * near_angle_deg / 180.;
         double r = std::clamp(distance / entity->contact_range, 0.0, 1.0);
-        double deg = std::clamp(max_deg - (max_deg - min_deg) * r, min_deg, max_deg);
+        double deg = std::clamp(near_angle_deg - (near_angle_deg - far_angle_deg) * r, far_angle_deg, near_angle_deg);
         return M_PI * deg / 180.;
       };
 
@@ -635,7 +637,7 @@ inline Tddd vectorToNextSurface(Entity entity, Tddd X_shifted) {
               auto [t0, t1, X_nearest, n] = Nearest_(X_shifted, next_struct_vertex);
               Tddd To_nearest = X_nearest - X_shifted;
               double distance = Norm(To_nearest);
-              if ((isFlat(n, To_nearest, contactAngle(distance)) || isFlat(n, -To_nearest, contactAngle(distance))) && (entity->contact_range >= distance))
+              if ((isFlat(n, To_nearest, contactAcceptanceAngle(distance)) || isFlat(n, -To_nearest, contactAcceptanceAngle(distance))) && (entity->contact_range >= distance))
                 add_vector(To_nearest, n);
               else if ((short_range * entity->contact_range >= distance))
                 add_vector(To_nearest, n);
