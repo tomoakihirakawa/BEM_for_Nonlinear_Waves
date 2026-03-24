@@ -12,14 +12,7 @@ using ContactFaceCandidate = std::tuple<networkFace*, Tddd, double>;
 constexpr int max_contact_faces = 10;
 constexpr double normal_angle_diff_detection_range = 60 * M_PI / 180;
 
-double contactAngleThreshold(const double distance, const double contact_range) {
-  const auto max_deg = 90.;
-  const auto min_deg = 30.;
-  const auto r = std::abs(distance) / contact_range;
-  auto deg = max_deg - (max_deg - min_deg) * r;
-  deg = std::clamp(deg, min_deg, max_deg);
-  return M_PI * deg / 180.;
-}
+// contactAcceptanceAngle is defined in Network.hpp (inline)
 
 std::vector<ContactFaceCandidate> collectBroadPhaseCandidates(const ContactDetectable& detectable,
                                                               const std::vector<Network*>& objects,
@@ -59,7 +52,7 @@ std::vector<ContactFaceCandidate> selectNarrowPhaseCandidates(const ContactDetec
       continue;
 
     const auto [fi, _, distance] = candidates[i];
-    const auto angle = contactAngleThreshold(distance, detectable.contact_range);
+    const auto angle = contactAcceptanceAngle(distance, detectable.contact_range, 60., 30.);
     if (std::ranges::none_of(check_faces, [&](const auto& f) { return isFlat(fi->normal, -f->normal, angle); })) {
       keep[i] = false;
       continue;

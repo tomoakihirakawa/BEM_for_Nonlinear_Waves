@@ -152,6 +152,21 @@ struct NodeFaceState {
 };
 
 /* ------------------------------------------------------ */
+/*                  contactAcceptanceAngle                */
+/* ------------------------------------------------------ */
+
+// 近い面は広い角度で受け入れ、遠い面は厳しく絞る
+// distance ≈ 0 → near_angle_deg、distance ≈ contact_range → far_angle_deg
+inline double contactAcceptanceAngle(const double distance, const double contact_range,
+                                      const double near_angle_deg = 60., const double far_angle_deg = 30.) {
+  if (!(contact_range > 0) || !std::isfinite(contact_range) || !std::isfinite(distance))
+    return M_PI * near_angle_deg / 180.;
+  const auto r = std::clamp(std::abs(distance) / contact_range, 0.0, 1.0);
+  auto deg = std::clamp(near_angle_deg - (near_angle_deg - far_angle_deg) * r, far_angle_deg, near_angle_deg);
+  return M_PI * deg / 180.;
+}
+
+/* ------------------------------------------------------ */
 /*                  ContactDetectable                     */
 /* ------------------------------------------------------ */
 
