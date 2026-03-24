@@ -6,6 +6,16 @@
 *
 
 # =========================
+# Allow: subdirectories for organized source
+# =========================
+!core/
+!core/**
+!time_domain/
+!time_domain/**
+!frequency_domain/
+!frequency_domain/**
+
+# =========================
 # Allow: source code
 # =========================
 !*.hpp
@@ -57,10 +67,9 @@ metal_m2l/build/
 test_*.cpp
 vec_check_clang.cpp
 
-# Frequency domain (separate build target, not main source)
+# Legacy test files
 frequency_domain_main.cpp
 frequency_domain_test.cpp
-main_freq_domain.cpp
 network_integrity_check.cpp
 
 # Test input directories
