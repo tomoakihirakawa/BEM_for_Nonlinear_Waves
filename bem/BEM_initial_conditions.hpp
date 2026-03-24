@@ -66,7 +66,7 @@ void applyInitialConditions(const std::vector<Network*>& FluidObject,
         node_relocation_surface_ref = NodeRelocationSurface::pseudo_quadratic;
       constexpr double relax_dt = 1.0;
       for (const auto& p : water->getPoints()) {
-        p->u_node.fill(0.0);
+        p->u_reloc.fill(0.0);
         p->RK_X.initialize(relax_dt, 0.0, ToX(p), 1);
       }
       calculateVecToSurface(*water, 30, 0.05);

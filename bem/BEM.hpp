@@ -140,7 +140,7 @@ VV_VarForOutput dataForOutput(const Network* water, const double dt) {
     uomap_DOF_Tddd P_normal_BEM = dof_tdd0;
     uomap_DOF_Tddd P_gradPhi = dof_tdd0;
     uomap_DOF_Tddd P_u_total = dof_tdd0;
-    uomap_DOF_Tddd P_u_node = dof_tdd0;
+    uomap_DOF_Tddd P_u_reloc = dof_tdd0;
     uomap_DOF_Tddd P_u_potential_BEM = dof_tdd0;
     uomap_DOF_Tddd P_u_omega_VPM = dof_tdd0;
     uomap_DOF_Tddd P_velocity_convergence = dof_tdd0;
@@ -414,10 +414,10 @@ VV_VarForOutput dataForOutput(const Network* water, const double dt) {
           P_isInContact_pass_count[p] = p->debug_isInContact_pass_count;
           P_position[p] = ToX(p);
           P_pressure[p] = p->pressure_BEM;
-          P_DphiDt[p] = p->DphiDt(p->u_node, 0.);
+          P_DphiDt[p] = p->DphiDt(p->u_reloc, 0.);
           P_gradPhi[p] = p->u_potential_BEM;
           P_u_total[p] = p->u_total;
-          P_u_node[p] = p->u_node;
+          P_u_reloc[p] = p->u_reloc;
           P_u_potential_BEM[p] = p->u_potential_BEM;
           P_u_omega_VPM[p] = p->u_omega_VPM;
           Tddd convergence_info = {0., 0., 0.};
@@ -494,7 +494,7 @@ VV_VarForOutput dataForOutput(const Network* water, const double dt) {
         P_position[l] = l->getPosition();
         P_vecToSurface[l] = l->vecToSurface;
         P_clungSurface[l] = l->clungSurface;
-        P_u_node[l] = l->u_node;
+        P_u_reloc[l] = l->u_reloc;
         P_u_potential_BEM[l] = l->u_potential_BEM;
         P_u_total[l] = l->u_total;
         P_u_omega_VPM[l] = l->u_omega_VPM;
@@ -507,7 +507,7 @@ VV_VarForOutput dataForOutput(const Network* water, const double dt) {
           auto itB = P_pressure.find(pB);
           P_pressure[l] = (itA != P_pressure.end() && itB != P_pressure.end()) ? 0.5 * (itA->second + itB->second) : 0.;
         }
-        P_DphiDt[l] = l->DphiDt(l->u_node, 0.);
+        P_DphiDt[l] = l->DphiDt(l->u_reloc, 0.);
         P_BC[l] = l->CORNER ? 0 : (l->Neumann ? 2. : (l->Dirichlet ? 4. : 0.));
 
         // lf_* fields: computed from line's boundary faces
@@ -602,7 +602,7 @@ VV_VarForOutput dataForOutput(const Network* water, const double dt) {
           {"isAbsorbed", P_isAbsorbed},
           {"isAbsorbed_SDF", P_isAbsorbed_SDF},
           {"u_total", P_u_total},
-          {"u_node", P_u_node},
+          {"u_reloc", P_u_reloc},
           {"u_potential_BEM", P_u_potential_BEM},
           {"u_omega_VPM", P_u_omega_VPM},
           //  {"u_potential_BEM", P_U_BEM},

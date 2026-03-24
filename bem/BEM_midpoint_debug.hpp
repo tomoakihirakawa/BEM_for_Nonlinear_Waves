@@ -111,7 +111,7 @@ inline void dumpDebugMidpointLineState(const Network* water, const char* stage, 
   }
   const double face_phin_jump = (face_phin_count > 0) ? (max_face_phin - min_face_phin) : 0.;
   const double rep_minus_null = d0 ? (l->phiphin[1] - d0->phin) : 0.;
-  const Tddd rk_base = (l->RK_X.steps == 0) ? l->X_mid : l->RK_X.getX(l->u_node);
+  const Tddd rk_base = (l->RK_X.steps == 0) ? l->X_mid : l->RK_X.getX(l->u_reloc);
 
   std::cout << Magenta << "[midpoint_debug] stage=" << stage
             << " water=" << water->getName()
@@ -134,7 +134,7 @@ inline void dumpDebugMidpointLineState(const Network* water, const char* stage, 
             << " rk_steps=" << l->RK_X.steps
             << " rk_base=" << rk_base
             << " vecToSurface=" << l->vecToSurface
-            << " u_node=" << l->u_node
+            << " u_reloc=" << l->u_reloc
             << " dist=" << nearest_dist
             << colorReset << std::endl;
 

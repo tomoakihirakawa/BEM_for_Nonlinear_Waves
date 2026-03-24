@@ -206,7 +206,7 @@ inline void setNodeRelocationStageBuffer(
 }
 
 inline Tddd RK_without_Ubuff(const networkPoint* p) {
-  return p->RK_X.getX(p->u_node);
+  return p->RK_X.getX(p->u_reloc);
 };
 inline T3Tddd RK_without_Ubuff(const networkPoint* p0, const networkPoint* p1, const networkPoint* p2) { return {RK_without_Ubuff(p0), RK_without_Ubuff(p1), RK_without_Ubuff(p2)}; };
 inline T3Tddd RK_without_Ubuff(const T_PPP& p012) { return RK_without_Ubuff(std::get<0>(p012), std::get<1>(p012), std::get<2>(p012)); };
@@ -252,14 +252,14 @@ inline Tddd getNextNormalNeumann_BEM(const networkPoint* p) {
   return Normalize(normal / total);
 };
 
-// Tddd RK_with_Ubuff(const networkPoint *p) { return p->RK_X.getX(p->u_node + p->vecToSurface / p->RK_X.getdt()); };
+// Tddd RK_with_Ubuff(const networkPoint *p) { return p->RK_X.getX(p->u_reloc + p->vecToSurface / p->RK_X.getdt()); };
 inline Tddd RK_with_Ubuff(const networkPoint* p) {
-  // return p->RK_X.toReachAtNextTimeQ(p->RK_X.getX(p->u_node) + p->vecToSurface);
+  // return p->RK_X.toReachAtNextTimeQ(p->RK_X.getX(p->u_reloc) + p->vecToSurface);
   const auto U = p->RK_X.getVectorToReachAtNextTimeQ(RK_without_Ubuff(p) + p->vecToSurface);
   return p->RK_X.getX(U);
 };
 inline Tddd RK_with_Ubuff(const networkPoint* p, const Tddd& vecToSurface) {
-  // return p->RK_X.getX(p->u_node + vecToSurface / p->RK_X.getdt());
+  // return p->RK_X.getX(p->u_reloc + vecToSurface / p->RK_X.getdt());
   const auto U = p->RK_X.getVectorToReachAtNextTimeQ(RK_without_Ubuff(p) + vecToSurface);
   return p->RK_X.getX(U);
 };
@@ -284,7 +284,7 @@ inline void add_vecToSurface_BUFFER_to_vecToSurface(const auto& p, const double 
 inline Tddd RK_without_Ubuff(const networkLine* l) {
   if (l->RK_X.steps == 0)
     return l->X_mid;
-  return l->RK_X.getX(l->u_node);
+  return l->RK_X.getX(l->u_reloc);
 }
 inline Tddd RK_with_Ubuff(const networkLine* l) {
   if (l->RK_X.steps == 0)
@@ -292,7 +292,6 @@ inline Tddd RK_with_Ubuff(const networkLine* l) {
   const auto U = l->RK_X.getVectorToReachAtNextTimeQ(RK_without_Ubuff(l) + l->vecToSurface);
   return l->RK_X.getX(U);
 }
-
 
 // mooringで利用
 inline std::array<double, 3> nextPositionOnBody(Network* net, networkPoint* p) {
@@ -444,9 +443,8 @@ inline Tdd refineNearestParam(const Tddd& P, Tdd param,
 // dodecaPoints[0] の補間で曲面を構成し、均一格子点でサンプルして最近点を探す
 // 均一分布なので頂点インデックスは0固定で面全体をカバーできる
 // out_param: 非nullなら最近点の(t0, t1)パラメタを書き出す
-inline Tddd NearestOnDirichletFace_pseudo(const Tddd& X_shifted, const networkFace* f,
-                                          const auto& t0t1_param, Tdd* out_param = nullptr) {
-  auto points = f->dodecaPoints[0]->interpolate(t0t1_param, [](networkPoint* q) -> Tddd { return RK_without_Ubuff(q); });
+inline Tddd NearestOnDirichletFace_pseudo(const Tddd& X_shifted, const networkFace* f, const auto& t0t1_param, Tdd* out_param, auto getPos) {
+  auto points = f->dodecaPoints[0]->interpolate(t0t1_param, [&](networkPoint* q) -> Tddd { return getPos(q); });
   double nearest_dist = 1E+20, dist = 0.;
   Tddd X_nearest = {1E+20, 1E+20, 1E+20};
   std::size_t best_idx = 0;
@@ -460,14 +458,13 @@ inline Tddd NearestOnDirichletFace_pseudo(const Tddd& X_shifted, const networkFa
   Tdd best_param = t0t1_param[best_idx];
   // Newton精緻化
   auto& dode = f->dodecaPoints[0];
-  auto rk_conv = [](networkPoint* q) -> Tddd { return RK_without_Ubuff(q); };
-  best_param = refineNearestParam(X_shifted, best_param, [&](double t0, double t1) -> Tddd { return dode->interpolate(t0, t1, rk_conv); }, [&](double t0, double t1, int i, int j) -> Tddd {
-        if (i == 1 && j == 0) return dode->template D_interpolate<1, 0>(t0, t1, rk_conv);
-        if (i == 0 && j == 1) return dode->template D_interpolate<0, 1>(t0, t1, rk_conv);
-        if (i == 2 && j == 0) return dode->template D_interpolate<2, 0>(t0, t1, rk_conv);
-        if (i == 0 && j == 2) return dode->template D_interpolate<0, 2>(t0, t1, rk_conv);
-        return dode->template D_interpolate<1, 1>(t0, t1, rk_conv); });
-  X_nearest = dode->interpolate(best_param[0], best_param[1], rk_conv);
+  best_param = refineNearestParam(X_shifted, best_param, [&](double t0, double t1) -> Tddd { return dode->interpolate(t0, t1, getPos); }, [&](double t0, double t1, int i, int j) -> Tddd {
+        if (i == 1 && j == 0) return dode->template D_interpolate<1, 0>(t0, t1, getPos);
+        if (i == 0 && j == 1) return dode->template D_interpolate<0, 1>(t0, t1, getPos);
+        if (i == 2 && j == 0) return dode->template D_interpolate<2, 0>(t0, t1, getPos);
+        if (i == 0 && j == 2) return dode->template D_interpolate<0, 2>(t0, t1, getPos);
+        return dode->template D_interpolate<1, 1>(t0, t1, getPos); });
+  X_nearest = dode->interpolate(best_param[0], best_param[1], getPos);
   if (out_param)
     *out_param = best_param;
   return X_nearest;
@@ -476,10 +473,9 @@ inline Tddd NearestOnDirichletFace_pseudo(const Tddd& X_shifted, const networkFa
 // true-quadratic補間によるDirichlet面上の最近点
 // TriShape<6>で6節点（頂点3+midpoint3）の二次補間した曲面上でX_shiftedに最も近い点を返す
 // out_param: 非nullなら最近点の(t0, t1)パラメタを書き出す
-inline Tddd NearestOnDirichletFace_true_quad(const Tddd& X_shifted, const networkFace* f,
-                                             const auto& t0t1_param, Tdd* out_param = nullptr) {
+inline Tddd NearestOnDirichletFace_true_quad(const Tddd& X_shifted, const networkFace* f, const auto& t0t1_param, Tdd* out_param, auto getPos) {
   auto [p0, l0, p1, l1, p2, l2] = f->PLPLPL;
-  T6Tddd X123456 = {RK_without_Ubuff(p0), RK_without_Ubuff(p1), RK_without_Ubuff(p2), RK_without_Ubuff(l0), RK_without_Ubuff(l1), RK_without_Ubuff(l2)};
+  T6Tddd X123456 = {getPos(p0), getPos(p1), getPos(p2), getPos(l0), getPos(l1), getPos(l2)};
   double nearest_dist = 1E+20, dist = 0.;
   Tddd X_nearest = {1E+20, 1E+20, 1E+20}, X_interp;
   Tdd best_param = {0., 0.};
@@ -506,21 +502,25 @@ inline Tddd NearestOnDirichletFace_true_quad(const Tddd& X_shifted, const networ
 
 // Dirichlet面上の最近点探索（モード自動選択）
 // out_param: 非nullなら最近点の(t0, t1)パラメタを書き出す
-inline Tddd NearestOnDirichletFace(const Tddd& X_shifted, const networkFace* f,
-                                   Tdd* out_param = nullptr) {
+inline Tddd NearestOnDirichletFace(const Tddd& X_shifted, const networkFace* f, Tdd* out_param, auto getPos) {
   switch (node_relocation_surface) {
   case NodeRelocationSurface::linear: {
     auto [q0, q1, q2] = f->getPoints();
-    auto [wa, wb, X_near, normal] = Nearest_(X_shifted, T3Tddd{RK_without_Ubuff(q0), RK_without_Ubuff(q1), RK_without_Ubuff(q2)});
+    auto [wa, wb, X_near, normal] = Nearest_(X_shifted, T3Tddd{getPos(q0), getPos(q1), getPos(q2)});
     if (out_param)
       *out_param = {wa, wb};
     return X_near;
   }
   case NodeRelocationSurface::true_quadratic:
-    return NearestOnDirichletFace_true_quad(X_shifted, f, t0t1, out_param);
+    return NearestOnDirichletFace_true_quad(X_shifted, f, t0t1, out_param, getPos);
   default:
-    return NearestOnDirichletFace_pseudo(X_shifted, f, t0t1, out_param);
+    return NearestOnDirichletFace_pseudo(X_shifted, f, t0t1, out_param, getPos);
   }
+}
+
+// Default overload: uses RK_without_Ubuff for node positions (for use during RK4)
+inline Tddd NearestOnDirichletFace(const Tddd& X_shifted, const networkFace* f, Tdd* out_param = nullptr) {
+  return NearestOnDirichletFace(X_shifted, f, out_param, [](const auto* q) -> Tddd { return RK_without_Ubuff(q); });
 }
 
 /* -------------------------------------------------------------------------- */
@@ -663,12 +663,8 @@ inline Tddd vectorToNextSurface(Entity entity, Tddd X_shifted) {
       auto X_projected = Nearest(X_target, next_triangles);
       V_opt = X_projected - X_shifted;
     }
-    // CORNER: Neumann補正後の最終位置でDirichlet面上の(t0,t1)を再計算
-    if (/*entity->CORNER && */ closest_face != nullptr) {
-      Tdd updated_param;
-      NearestOnDirichletFace(X_shifted + V_opt, closest_face, &updated_param);
-      entity->relocation_param = updated_param;
-    }
+    // relocation_face / relocation_param は calculateVecToSurface 後に
+    // setRelocationParam で最終位置から再計算されるため、ここでは更新しない。
     return V_opt + (is_mixed_state ? vecToDirichlet : Tddd{0., 0., 0.});
   } catch (const error_message&) {
     throw;
@@ -1166,7 +1162,7 @@ inline void set_u_potential_BEM(const std::vector<Network*>& nets) {
 
 inline double DphiDt_at_midpoint(const networkLine* l) {
   double aphiat = -0.5 * Dot(l->u_potential_BEM, l->u_potential_BEM) - _GRAVITY_ * l->X_mid[2];
-  return aphiat + Dot(l->u_node, l->u_potential_BEM);
+  return aphiat + Dot(l->u_reloc, l->u_potential_BEM);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -1197,34 +1193,34 @@ inline void setNodeVelocity(const Network& net,
                             const double coef = 0.,
                             const std::filesystem::path* debug_output_directory = nullptr) {
   for (const auto& p : ToVector(net.getPoints())) {
-    p->u_node = p->u_total;
+    p->u_reloc = p->u_total;
     // CAUTIION : 以下のようにNeuamnnだけことなる時間発展の方法を使うのはよくないようだ．
     // 基本的にラグランジュ的に時間発展させ，修正も同じ状態に対して行うのが安全だ．
     // CORNERで見られた，内部との若干のズレもこのあたりが原因の可能性がある．
     // if (p->Neumann)
-    //   p->u_node = velocity_of_Body(std::get<0>(getEffectiveNearestContactFace(p)), getPosition(p));
+    //   p->u_reloc = velocity_of_Body(std::get<0>(getEffectiveNearestContactFace(p)), getPosition(p));
     p->vecToSurface.fill(0.);
     p->vecToSurface_BUFFER.fill(0.);
     p->vecToSurface_BUFFER_BUFFER.fill(0.);
   }
 
   for (const auto& l : net.getBoundaryLines()) {
-    // もし，lineがtrue_quadratic_elementを持っていなるなら，意味がある．linear elementの場合は，そもそもu_nodeは使わない．
+    // もし，lineがtrue_quadratic_elementを持っていなるなら，意味がある．linear elementの場合は，そもそもu_relocは使わない．
     // true quadraticの場合，ラグランジュ的時間発展で予測される曲面は，２次補間で予測される曲面でなくては，２次補間を利用する意味がない．
-    l->u_node = l->u_total;
+    l->u_reloc = l->u_total;
     // if (l->Neumann) {
     //   auto [f, X, dist] = getEffectiveNearestContactFace(l);
     //   if (f)
-    //     l->u_node = velocity_of_Body(f, getPosition(l));
+    //     l->u_reloc = velocity_of_Body(f, getPosition(l));
     // }
     l->vecToSurface.fill(0.);
   }
 
   for (const auto& p : net.getPoints()) {
-    if (!isFinite(p->u_node)) {
+    if (!isFinite(p->u_reloc)) {
       std::cout << "p->X = " << p->X << std::endl;
       std::cout << "p->u_potential_BEM = " << p->u_potential_BEM << ", gradPhi(p) = " << gradPhi(p) << std::endl;
-      std::cout << "p->u_node = " << p->u_node << std::endl;
+      std::cout << "p->u_reloc = " << p->u_reloc << std::endl;
       std::cout << "p->vecToSurface = " << p->vecToSurface << std::endl;
       std::cout << "p->Dirichlet = " << p->Dirichlet << std::endl;
       std::cout << "p->Neumann = " << p->Neumann << std::endl;
@@ -1238,70 +1234,33 @@ inline void setNodeVelocity(const Network& net,
 
   calculateVecToSurface(net, loop, coef, debug_output_directory);
 
-  // relocation_face / relocation_param を最終位置（Anderson加速後）で再計算
-  // calculateVecToSurface 内では Anderson 加速が relocation_param 設定後に
-  // vecToSurface を変更するため、ここで正しい最終位置から再投影する。
-  // relocation_face も最近面が変わっている可能性があるため再選択する。
-  auto reproject_relocation = [](auto* entity) {
-    const bool has_dirichlet_state = std::ranges::any_of(entity->getBoundaryFaces(), [&](const auto* f) {
-      return getNodeFaceBoundaryType(entity, f) == NodeFaceBoundaryType::Dirichlet;
-    });
-    if (!has_dirichlet_state) {
-      entity->relocation_face = nullptr;
-      entity->relocation_param = {0., 0.};
-      return;
-    }
-    const Tddd target = entity->vecToSurface + RK_without_Ubuff(entity);
-    double best_dist = 1E+20;
-    networkFace* best_face = nullptr;
-    Tdd best_param = {0., 0.};
-    for (auto* f : entity->getBoundaryFaces()) {
-      // Dirichlet-side faces only. Mixed nodes/edges may touch both Dirichlet and
-      // Neumann faces; interpolation parameters must stay on the Dirichlet side.
-      if (f->penetratedBody || getNodeFaceBoundaryType(entity, f) != NodeFaceBoundaryType::Dirichlet)
-        continue;
-      Tdd param;
-      Tddd X_near = NearestOnDirichletFace(target, f, &param);
-      double dist = Norm(X_near - target);
-      if (dist < best_dist) {
-        best_dist = dist;
-        best_face = f;
-        best_param = param;
-      }
-    }
-    if (best_face) {
-      entity->relocation_face = best_face;
-      entity->relocation_param = best_param;
+  // Compute relocation velocity/target from vecToSurface.
+  // ALE:
+  //   use u_reloc during RK4 push so position and phi are advanced with the
+  //   same modified velocity.
+  // interpolation:
+  //   keep RK4 evolution on u_total, and use X_reloc only after RK4 to move
+  //   nodes and re-interpolate phi.
+  // This block does not modify the RK push choice; it only updates u_reloc and
+  // X_reloc from the current relocation target.
+  auto setRelocFromVecToSurface = [](auto* entity) {
+    const Tddd X_target = entity->vecToSurface + RK_without_Ubuff(entity);
+    const Tddd u_target = entity->RK_X.getVectorToReachAtNextTimeQ(X_target);
+    if (isFinite(u_target)) {
+      entity->u_reloc = u_target;
+      entity->X_reloc = entity->RK_X.getX(u_target);
     } else {
-      entity->relocation_face = nullptr;
-      entity->relocation_param = {0., 0.};
+      entity->u_reloc = isFinite(entity->u_total) ? entity->u_total : Tddd{0., 0., 0.};
+      entity->X_reloc = RK_without_Ubuff(entity);
     }
   };
+
   for (const auto& p : net.getPoints())
-    reproject_relocation(p);
+    setRelocFromVecToSurface(p);
+
   for (auto* l : net.getBoundaryLines())
-    reproject_relocation(l);
-
-  for (const auto& p : net.getPoints()) {
-    const Tddd target = p->vecToSurface + RK_without_Ubuff(p);
-    const Tddd u_new = p->RK_X.getVectorToReachAtNextTimeQ(target);
-    if (isFinite(u_new))
-      p->u_node = u_new;
-    else
-      p->u_node = isFinite(p->u_total) ? p->u_total : Tddd{0., 0., 0.};
-  }
-
-  // midpoint relocation correction: vecToSurface を反映
-  for (auto* l : net.getBoundaryLines()) {
-    if (!l->hasActiveBieDof())
-      continue;
-    const Tddd target = l->vecToSurface + RK_without_Ubuff(l);
-    const Tddd u_new = l->RK_X.getVectorToReachAtNextTimeQ(target);
-    if (isFinite(u_new))
-      l->u_node = u_new;
-    else
-      l->u_node = isFinite(l->u_total) ? l->u_total : Tddd{0., 0., 0.};
-  }
+    if (l->hasActiveBieDof())
+      setRelocFromVecToSurface(l);
 
   dumpDebugMidpointLineState(&net, "post-ale-relocation", -1, -1);
 }

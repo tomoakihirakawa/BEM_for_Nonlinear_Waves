@@ -122,6 +122,7 @@ void throwIfStructurePenetrated(const std::vector<Network*>&, const std::vector<
 // --- End separate TU forward declarations ---
 
 #include "BEM_remesh_main.hpp"        // Remeshing (split/collapse/flip)
+#include "BEM_mesh_relaxation.hpp"    // Pre-relaxation (flip + smoothing at t=0)
 #include "BEM_debug_helpers.hpp"      // Debug corner-point inspection, crash backtrace
 #include "BEM_rk_update.hpp"          // Absorption, RK push, interpolation relocation, mean-phi
 #include "BEM_initial_conditions.hpp" // Initial condition (IC) application at t=0
@@ -393,14 +394,9 @@ int main(int argc, char** argv) {
 
       //@ --- 3b. Initial mesh pre-relaxation (t=0 only) ---
       if (time_step == 0 && start_time_step == 0 && initial_mesh_pre_relax && initial_mesh_pre_relax_loop > 0 && initial_mesh_pre_relax_coef > 0.0) {
-        TimeWatch pre_watch;
-        constexpr int pre_relax_cycles = 1; // flip -> smoothing -> flip -> ... (at t=0 only)
-        std::cout << Green << "[initial_mesh_pre_relax] begin (loop=" << initial_mesh_pre_relax_loop << ", coef=" << initial_mesh_pre_relax_coef << ", cycles=" << pre_relax_cycles << ")" << colorReset << std::endl;
-
+        const auto contact_objects = Join(RigidBodyObject, SoftBodyObject);
         auto write_pre_relax_mesh = [&](Network* net, const std::string& tag) {
           const std::string suffix = tag.empty() ? "" : ("_" + tag);
-
-          // VTU
           if (auto it = NetOutputInfo.find(net->getName()); it != NetOutputInfo.end()) {
             const auto& info = it->second;
             std::filesystem::path filename = info.vtu_file_name + std::string("pre_relax") + suffix + ".vtu";
@@ -413,8 +409,6 @@ int main(int argc, char** argv) {
             std::filesystem::path filename = net->getName() + std::string("_pre_relax") + suffix + ".vtu";
             OutputParaView::mk_vtu_quadratic((output_directory / filename).string(), net->getBoundaryFaces(), dataForOutput(net, /*dt=*/0.0));
           }
-
-          // OBJ (debug)
           {
             std::filesystem::path filename = net->getName() + std::string("_pre_relax") + suffix + ".obj";
             std::ofstream ofs(output_directory / filename);
@@ -422,71 +416,10 @@ int main(int argc, char** argv) {
               createOBJ(ofs, *net);
           }
         };
-
-        // Prepare spatial acceleration for contact queries used by setBoundaryTypes / getNearestContactFace.
-        _Pragma("omp parallel for") for (const auto& net : AllObjects) net->makeBuckets(net->getScale() / 10.);
-
-        const std::vector<Network*> contact_objects = Join(RigidBodyObject, SoftBodyObject);
-
-        for (auto& water : FluidObject) {
-          // Use a dummy RK state (Heun/RK not needed): we just want RK_with_Ubuff/RK_without_Ubuff helpers.
-          // Keep steps=1 so getX() corresponds to a full-step update (not dt/2).
-          constexpr double relax_dt = 1.0;
-          const double rad = std::acos(-1.0) / 180.0;
-          const Tdd flip_limitD = {20.0 * rad /*target n diff*/, 20.0 * rad /*acceptable normal change*/};
-          const Tdd flip_limitN = {5.0 * rad /*target n diff*/, 5.0 * rad /*acceptable normal change*/}; // Stricter for Neumann to prevent large deformations
-
-          auto init_relax_rk = [&]() {
-            for (const auto& p : water->getPoints()) {
-              p->u_node.fill(0.0);
-              p->RK_X.initialize(relax_dt, simulation_time, ToX(p), 1);
-            }
-            if (use_true_quadratic_element) {
-              for (auto* l : water->getBoundaryLines()) {
-                l->u_node.fill(0.0);
-                l->RK_X.initialize(relax_dt, simulation_time, l->X_mid, 1);
-              }
-            }
-          };
-
-          // Initialize X_mid for all boundary lines to straight-edge midpoints.
-          // OBJ loading leaves X_mid at {0,0,0}; it must be set before any code
-          // that depends on midpoint geometry (remesh fold detection, BEM integration).
-          if (use_true_quadratic_element) {
-            for (auto* l : water->getBoundaryLines()) {
-              auto [pA, pB] = l->getPoints();
-              l->setXSingle(0.5 * (pA->X + pB->X));
-            }
-          }
-
-          // Alternate: flip -> smoothing -> flip -> ... to improve mesh quality before the first collapse.
-          refreshBoundaryStatesAndTypes(water, contact_objects);
-          if (use_true_quadratic_element)
-            computeAllCornerMidpointOffsets(water);
-          // Pre-relaxation always uses pseudo_quadratic surface regardless of element type.
-          // At this point, X_mid values are at straight-edge midpoints (no curvature info),
-          // so true_quadratic surface would produce flat surfaces. pseudo_quadratic uses
-          // neighbor reconstruction for better curvature approximation.
-          auto saved_surface = node_relocation_surface;
-          if (node_relocation_surface == NodeRelocationSurface::true_quadratic)
-            node_relocation_surface = NodeRelocationSurface::pseudo_quadratic;
-          for (int c = 0; c < pre_relax_cycles; ++c) {
-            init_relax_rk();
-            water->setGeometricPropertiesForce();
-            flipIfBatched(*water, flip_limitD, flip_limitN, "pre-relax");
-            calculateVecToSurface(*water, initial_mesh_pre_relax_loop, initial_mesh_pre_relax_coef);
-            for (const auto& p : water->getPoints())
-              p->setXSingle(RK_with_Ubuff(p));
-
-            std::string cycle_tag = "cycle" + std::to_string(c + 1);
-          }
-          node_relocation_surface = saved_surface;
-          water->setGeometricPropertiesForce();
-          write_pre_relax_mesh(water, "after_relax");
-        }
-
-        if (bem_verbose())
-          PrintLap(pre_watch, "[initial_mesh_pre_relax] done");
+        preRelaxMesh(FluidObject, AllObjects, contact_objects,
+                     use_true_quadratic_element, node_relocation_surface, simulation_time,
+                     {.loop = initial_mesh_pre_relax_loop, .coef = initial_mesh_pre_relax_coef, .output_tag = "after_relax"},
+                     write_pre_relax_mesh);
       }
 
       if (time_step == 0 && start_time_step == 0 && shell_visualization) {
@@ -685,8 +618,24 @@ int main(int argc, char** argv) {
           save_post_remesh_state();
 
           //@ --- 3c-2b. Initial conditions (t=0 only) ---
-          if (time_step == 0 && start_time_step == 0)
+          if (time_step == 0 && start_time_step == 0) {
             applyInitialConditions(FluidObject, RigidBodyObject, SoftBodyObject, AllObjects, use_true_quadratic_element, node_relocation_surface);
+
+            // Post-IC mesh quality recovery: IC projects X_mid to wave surface,
+            // which can create tiny/collapsed subfaces with true_quadratic elements.
+            // Re-run pre-relax (with flip + smoothing) to recover mesh quality,
+            // then re-apply IC to correct any eta/phi drift from smoothing.
+            if (initial_mesh_pre_relax && initial_mesh_pre_relax_loop > 0 && initial_mesh_pre_relax_coef > 0.0) {
+              bool has_ic = std::ranges::any_of(FluidObject, [](const Network* w) { return w->ic_eta && w->ic_phi; });
+              if (has_ic) {
+                const auto contact_objects = Join(RigidBodyObject, SoftBodyObject);
+                preRelaxMesh(FluidObject, AllObjects, contact_objects,
+                             use_true_quadratic_element, node_relocation_surface, simulation_time,
+                             {.loop = initial_mesh_pre_relax_loop, .coef = initial_mesh_pre_relax_coef, .output_tag = ""});
+                applyInitialConditions(FluidObject, RigidBodyObject, SoftBodyObject, AllObjects, use_true_quadratic_element, node_relocation_surface);
+              }
+            }
+          }
 
           CoordinateBounds bounds_org(FluidObject[0]->bounds);
           for (auto& water : FluidObject)
@@ -1097,7 +1046,8 @@ int main(int argc, char** argv) {
             //& --- Absorption + RK push ---
             computeSignedDistances(fluid_nodes);
             const double mean_phi = computeMeanPhi(Buckets_Fluid_Faces.data1D);
-            applyAbsorptionAndPush(fluid_nodes, mean_phi);
+            applyAbsorptionAndPush(fluid_nodes, mean_phi,
+                                   node_relocation_method == NodeRelocationMethod::ALE);
 
             //& --- Inactive line: 頂点の線形補間で値を維持 ---
             for (auto* water : FluidObject)
@@ -1139,10 +1089,11 @@ int main(int argc, char** argv) {
             net->setGeometricPropertiesForce();
           BEM_Penetration::throwIfStructurePenetrated(FluidObject, Join(RigidBodyObject, SoftBodyObject), time_step, "post-RK", use_true_quadratic_element);
 
-          // POST-RK4 interpolation: use cached (face, t0, t1) from calculateVecToSurface
+          // POST-RK4 interpolation relocation:
+          // use X_reloc computed by setNodeVelocity(), project it onto the
+          // current RK-updated mesh, interpolate phi there, then move nodes.
           if (node_relocation_method == NodeRelocationMethod::interpolation && time_step % node_relocation_period == 0) {
-            applyInterpolationRelocation(FluidObject, use_true_quadratic_element,
-                                         node_relocation_surface, interpolation_midpoint_mode);
+            applyInterpolationRelocation(FluidObject, use_true_quadratic_element, node_relocation_surface, interpolation_midpoint_mode);
             if (bem_verbose())
               PrintLap(watch, "Interpolation relocation completed");
           }

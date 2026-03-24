@@ -270,7 +270,8 @@ struct BEM_DOF_Base : public ContactDetectable {
   Tddd u_potential_BEM = {0., 0., 0.};
   Tddd u_omega_VPM = {0., 0., 0.};
   Tddd u_total = {0., 0., 0.};
-  Tddd u_node = {0., 0., 0.};
+  Tddd u_reloc = {0., 0., 0.};   // velocity including smoothing correction (set by setNodeVelocity)
+  Tddd X_reloc = {0., 0., 0.};   // predicted position after relocation (= RK_X target with u_reloc)
 
   // --- node relocation / surface ---
   Tddd vecToSurface = {0., 0., 0.};
