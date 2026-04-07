@@ -2,6 +2,25 @@
 #include "Network.hpp"
 #include "pch.hpp"
 
+bool networkLine::replace(const netP* oldP, netP* newP) {
+  if (this->Point_A == oldP) {
+    this->Point_A = newP;
+    if (oldP)
+      const_cast<netP*>(oldP)->geom_curvature.valid = false;
+    if (newP)
+      newP->geom_curvature.valid = false;
+    return true;
+  } else if (this->Point_B == oldP) {
+    this->Point_B = newP;
+    if (oldP)
+      const_cast<netP*>(oldP)->geom_curvature.valid = false;
+    if (newP)
+      newP->geom_curvature.valid = false;
+    return true;
+  } else
+    return false;
+};
+
 V_netFp networkLine::getBoundaryFaces(networkFace* const f_excluded) const {
   V_netFp surfaces;
   surfaces.reserve(this->Faces.size());
@@ -569,6 +588,16 @@ netPp networkLine::Collapse() {
 }
 
 /* -------------------------------------------------------------------------- */
+
+netPp networkLine::Collapse(const Tddd& externalTargetX) {
+  // Collapse() に委譲し、生存点を externalTargetX に移動。
+  // 注意: Collapse() 内の CORNER 保存や X_mid 投影は内部 targetX で実行される。
+  // externalTargetX が CORNER 保存と矛盾する場合は呼び出し側の責任。
+  auto* result = this->Collapse();
+  if (result)
+    result->setXSingle(externalTargetX);
+  return result;
+}
 
 netPp networkLine::mergeIfMergeable() {
   if (isMergeable())

@@ -457,6 +457,10 @@ V_d networkPoint::getAngles(networkLine* const base_line) const {
 void networkPoint::setX(const Tddd& xyz_IN) {
   try {
     // this->pre_X = xyz_IN;
+    this->geom_curvature.valid = false;
+    // Invalidate neighbors' curvature (their quadric fitting uses this point's position)
+    for (auto* q : this->getNeighbors())
+      if (q) q->geom_curvature.valid = false;
     this->CoordinateBounds::setBounds(xyz_IN);
     this->target4FMM::Xtarget = xyz_IN;
     for (const auto& l : this->getLines()) {

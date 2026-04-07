@@ -116,10 +116,27 @@ void write_step(const OutputContext &ctx,
   for (const auto *net : RigidBodyObject) {
     if (!net)
       continue;
-    const auto wrench = integratePressureOnBodyFaces(allFaces, net);
-    jsonout.push(net->getName() + "_hydro_force", wrench.force);
-    jsonout.push(net->getName() + "_hydro_torque", wrench.torque);
-    jsonout.push(net->getName() + "_hydro_area", wrench.area);
+    auto interaction = calculateFluidInteraction(allFaces, net);
+    const auto [total_F, total_T] = interaction.surfaceIntegralOfPressure();
+    jsonout.push(net->getName() + "_hydro_force", total_F);
+    jsonout.push(net->getName() + "_hydro_torque", total_T);
+    jsonout.push(net->getName() + "_hydro_area", interaction.area);
+
+    // Component-wise hydro force output for multi-part rigid bodies
+    if (!net->component_names.empty()) {
+      std::unordered_map<int, std::vector<networkFace*>> comp_faces;
+      for (auto* f : interaction.actingFaces)
+        if (f->component_id >= 0)
+          comp_faces[f->component_id].push_back(f);
+
+      for (const auto& [cid, faces] : comp_faces) {
+        auto [F, T] = interaction.surfaceIntegralOfPressureOnSubset(faces, net->COM);
+        const auto& label = (cid < static_cast<int>(net->component_names.size()))
+            ? net->component_names[cid] : std::to_string(cid);
+        jsonout.push(net->getName() + "_" + label + "_hydro_force", F);
+        jsonout.push(net->getName() + "_" + label + "_hydro_torque", T);
+      }
+    }
   }
 
   // write result.json

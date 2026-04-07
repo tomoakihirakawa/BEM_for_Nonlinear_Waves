@@ -522,10 +522,16 @@ readCheckpoint(const std::filesystem::path& filepath,
       Network* new_net = new Network(); // empty constructor
 
       // Set vertices
-      std::vector<Tddd> vertices(num_points);
+      // NOTE:
+      // Checkpoint restore must preserve point IDs one-to-one.
+      // `Network::setPoints(std::vector<Tddd>)` may merge near-coincident points
+      // (within ~1e-10), which can collapse a valid face (i,j,k) into
+      // a degenerate one (i,i,k) and later fail in `link(p,p,...)`.
+      // So we reconstruct points explicitly without deduplication.
+      V_netPp points;
+      points.reserve(num_points);
       for (uint32_t i = 0; i < num_points; ++i)
-         vertices[i] = point_records[i].X;
-      V_netPp points = new_net->setPoints(vertices);
+         points.emplace_back(new networkPoint(new_net, point_records[i].X));
       std::map<networkPoint*, checkpoint_point_id_t> checkpoint_point_id_of_restored_point;
       for (checkpoint_point_id_t i = 0; i < points.size(); ++i)
          checkpoint_point_id_of_restored_point[points[i]] = i;

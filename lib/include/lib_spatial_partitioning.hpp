@@ -528,11 +528,67 @@ struct Buckets : public CoordinateBounds {
 
   //% ----------------------------------------------- */
 
+  //! 既存subtreeの構造的整合を回復する。
+  //! hasChildren()==true の bucket で、非空セルに child がない場合に child を補完する。
+  //! grow_condition とは無関係に、既にsplitされたsubtreeを再帰的に閉じる。
+  bool repairPartialSubtree() {
+    if (!this->hasChildren())
+      return false;
+
+    bool changed = false;
+
+    for (int i = 0; i < this->xsize; ++i)
+      for (int j = 0; j < this->ysize; ++j)
+        for (int k = 0; k < this->zsize; ++k) {
+          if (this->data[i][j][k].empty()) {
+            // 空セルの子は不要 — shrink で消すべきだが念のため
+            if (this->children[i][j][k] != nullptr) {
+              delete this->children[i][j][k];
+              this->children[i][j][k] = nullptr;
+              changed = true;
+            }
+          } else if (this->children[i][j][k] == nullptr) {
+            // 非空セルなのに child がない → 補完
+            auto* child = new Buckets<T, N>(getBounds({i, j, k}), this->dL * (0.5 + 1e-13));
+            child->setGrowCondition(this->grow_condition);
+            child->setLevel(this->level + 1, this->max_level);
+            child->parent = this;
+            for (auto& p : this->data[i][j][k]) {
+              if (!child->add(p->X, p))
+                child->add_bypass_insideQ(p->X, p);
+            }
+            this->children[i][j][k] = child;
+            changed = true;
+          }
+        }
+
+    // 再帰: 子が既にsubtreeを持っている場合、またはgrow_conditionを満たす場合に修復を続行
+    for (auto& vi : this->children)
+      for (auto& vj : vi)
+        for (auto& vk : vj)
+          if (vk != nullptr) {
+            if (vk->hasChildren() || (vk->grow_condition(vk) && vk->level < vk->max_level))
+              changed = vk->repairPartialSubtree() || changed;
+          }
+
+    return changed;
+  }
+
+  //% ----------------------------------------------- */
+
   bool grow(bool recursive = true) {
     bool changed = false;
 
-    if (!this->grow_condition(this) || this->level >= this->max_level)
-      return false;
+    // Phase 1: 既存subtreeの穴埋め（grow_conditionとは無関係）
+    if (this->hasChildren())
+      changed = this->repairPartialSubtree();
+
+    // Phase 2: 新規split（grow_conditionに基づく）
+    if (!this->grow_condition(this) || this->level >= this->max_level) {
+      if (changed && this->level == 0)
+        this->rebuildHierarchyLists();
+      return changed;
+    }
 
     // 子配列確保 (一度だけ)
     if (!this->hasChildren())
@@ -545,13 +601,15 @@ struct Buckets : public CoordinateBounds {
         for (int k = 0; k < this->zsize; ++k)
           ijk_list.emplace_back(std::array<int, 3>{i, j, k});
 
-    // 1) 未生成セルに対して child を生成
-#pragma omp parallel for
+    // 未生成セルに対して child を生成
+    bool local_changed = false;
+#pragma omp parallel for reduction(|| : local_changed)
     for (const auto& [i, j, k] : ijk_list) {
       if (this->data[i][j][k].empty()) {
         if (this->children[i][j][k] != nullptr) {
           delete this->children[i][j][k]; // 既存の子は削除
           this->children[i][j][k] = nullptr;
+          local_changed = true;
         }
       } else if (children[i][j][k] == nullptr) {
         auto* child = new Buckets<T, N>(getBounds({i, j, k}), this->dL * (0.5 + 1e-13));
@@ -564,22 +622,18 @@ struct Buckets : public CoordinateBounds {
             child->add_bypass_insideQ(p->X, p);
         }
         children[i][j][k] = child;
-        changed = true; // 少なくとも1つの子が生成された
+        local_changed = true;
       }
     }
+    changed = changed || local_changed;
 
-    // 2) 再帰 (必要なら)
+    // 再帰: 直接の子のみ走査（各子の grow(true) が更に深く再帰する）
+    // traverseTree だと全 descendant を回し、各 child->grow(true) も再帰するため重複訪問になる
     if (recursive) {
-      if (this->level <= 2)
-        traverseTreeParallel([&](Buckets<T, N>* child) {
-          if (child->grow_condition(child) && child->level < child->max_level)
-            changed = child->grow(true) || changed; // 再帰的に成長
-        });
-      else
-        traverseTree([&](Buckets<T, N>* child) {
-          if (child->grow_condition(child) && child->level < child->max_level)
-            changed = child->grow(true) || changed; // 再帰的に成長
-        });
+      traverseChildren([&](Buckets<T, N>*& child) {
+        if (child != nullptr && (child->hasChildren() || (child->grow_condition(child) && child->level < child->max_level)))
+          changed = child->grow(true) || changed;
+      });
     }
 
     // ルートなら階層リストを再構築
@@ -1049,14 +1103,27 @@ struct Buckets : public CoordinateBounds {
         this->rebuildHierarchyLists();
       std::cout << "After grow: " << this->deepest_level_buckets.size() << " deepest level buckets." << std::endl;
     }
-    // rebin後のリーフソース数検証
+    // rebin後のリーフソース数検証 — mismatch時はfull rebuildにfallback
     {
       std::size_t total_leaf_sources = 0;
       for (auto* b : this->deepest_level_buckets)
         total_leaf_sources += b->data1D.size();
-      if (total_leaf_sources != this->data1D.size())
+      if (total_leaf_sources != this->data1D.size()) {
         std::cerr << Red << "[rebin] WARNING: leaf sources (" << total_leaf_sources
-                  << ") != total sources (" << this->data1D.size() << ")" << colorReset << std::endl;
+                  << ") != total sources (" << this->data1D.size()
+                  << "). Falling back to full rebuild." << colorReset << std::endl;
+        // 子ツリーを全削除（rootのdata/data1Dは保持）
+        for (auto& vi : this->children)
+          for (auto& vj : vi)
+            for (auto& vk : vj)
+              if (vk != nullptr) {
+                delete vk;
+                vk = nullptr;
+              }
+        this->children.clear();
+        // rootのdata1Dから木を再構築
+        this->generateTree();
+      }
     }
     return escaped;
   }

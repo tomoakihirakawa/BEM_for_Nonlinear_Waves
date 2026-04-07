@@ -122,14 +122,15 @@ struct SimulationSettings {
 
   /* ---------------------------- remeshing settings -------------------------- */
   struct RemeshingSettings {
-    // Used by remesh_for_main_loop
-    double min_edge_length = 0.0;
+    // min_edge_length removed — limit_len is now always global_mean_len * 0.1
+    double min_edge_length = 0.0;  // kept for backward compatibility but unused
 
     // Meshing options
     bool tetrahedralize = false;
     bool surface_flip = false;
     bool surface_split = false;
     bool surface_collapse = false;
+    bool surface_smoothing = false;
     bool improve_tetrahedra = false;
 
     // Optional simulation-time windows for remeshing logic (currently consumed in main.cpp).
@@ -154,6 +155,9 @@ struct SimulationSettings {
 
     bool shell_visualization = false;
     bool front_advancing_debug = false;
+
+    // Curvature-based mesh density control
+    double max_edge_length = 0.0;  // 0 なら無効。曲率ベース h_target の上限に使う。
   } remeshing;
 
   /* ------------------------------- VPM settings ----------------------------- */
@@ -356,6 +360,8 @@ struct SimulationSettings {
             remeshing.surface_split = true;
           if (STR_VEC == "surface_collapse")
             remeshing.surface_collapse = true;
+          if (STR_VEC == "surface_smoothing")
+            remeshing.surface_smoothing = true;
           if (STR_VEC == "improve_tetrahedra")
             remeshing.improve_tetrahedra = true;
         }
@@ -632,6 +638,7 @@ struct SimulationSettings {
       settingJSON.find("force_remesh_time", [&](auto STR_VEC) { remeshing.force_remesh_time = stod(STR_VEC[0]); });
       settingJSON.find("grid_refinement", [&](auto STR_VEC) { remeshing.grid_refinement = stoi(STR_VEC[0]); });
       settingJSON.find("min_edge_length", [&](const auto& v) { remeshing.min_edge_length = std::stod(v[0]); });
+      settingJSON.find("max_edge_length", [&](const auto& v) { remeshing.max_edge_length = std::stod(v[0]); });
 
       // Initial mesh pre-relaxation (ALE-style), before the first remesh/collapse.
       // settings.json spec: "initial_mesh_pre_relax": ["true", "<loop:int>", "<coef:double>"]
@@ -727,9 +734,17 @@ struct SimulationSettings {
         if (!injson.find("type"))
           throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, (input_directory / input_file_name).string() + " does not have \"type\" key");
         auto type = injson.at("type")[0];
-        if ((type.contains("Fluid") || type.contains("Body")) && !injson.find("objfile"))
-          throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, (input_directory / input_file_name).string() + " does not have \"objfile\" key");
-        else if (type.contains("Measurement") || type.contains("gauge")) {
+        {
+          bool has_objfile = injson.find("objfile");
+          bool has_objfiles = injson.find("objfiles");
+          if (has_objfile && has_objfiles)
+            throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, (input_directory / input_file_name).string() + ": cannot specify both 'objfile' and 'objfiles'");
+          if (has_objfiles && !type.contains("RigidBody"))
+            throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, (input_directory / input_file_name).string() + ": 'objfiles' is only supported for RigidBody type");
+          if ((type.contains("Fluid") || type.contains("Body")) && !has_objfile && !has_objfiles)
+            throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, (input_directory / input_file_name).string() + " does not have \"objfile\" or \"objfiles\" key");
+        }
+        if (type.contains("Measurement") || type.contains("gauge")) {
           MeasurementJSONs.emplace_back(injson);
           std::cout << "type = " << type << std::endl;
           std::cout << "skipped" << std::endl;
@@ -740,11 +755,52 @@ struct SimulationSettings {
 
         if (!injson.find("ignore") || !stob(injson["ignore"])[0]) {
 
-          std::string objfile_str = injson.at("objfile")[0];
-          std::filesystem::path objpath(objfile_str);
-          if (objpath.is_relative())
-            objpath = common.input_directory / objpath;
-          auto net = new Network(objpath.string(), object_name);
+          Network* net;
+          if (injson.find("objfiles")) {
+            // Multi-part rigid body: merge multiple obj files into one Network
+            const auto& obj_paths = injson.at("objfiles");
+            if (obj_paths.empty())
+              throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "'objfiles' is empty");
+
+            // Component names: use component_names if given, otherwise derive from filename stems
+            std::vector<std::string> comp_names;
+            if (injson.find("component_names")) {
+              comp_names = injson.at("component_names");
+              if (comp_names.size() != obj_paths.size())
+                throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__,
+                                    "'component_names' size (" + std::to_string(comp_names.size()) +
+                                        ") must match 'objfiles' size (" + std::to_string(obj_paths.size()) + ")");
+            } else {
+              for (const auto& p : obj_paths)
+                comp_names.push_back(std::filesystem::path(p).stem().string());
+            }
+
+            // Validate: no duplicate names
+            std::unordered_set<std::string> seen_names;
+            for (const auto& n : comp_names) {
+              if (seen_names.contains(n))
+                throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "duplicate component name: " + n);
+              seen_names.insert(n);
+            }
+
+            net = new Network("file_name_is_not_given", object_name);
+            net->component_names = comp_names;
+            for (std::size_t i = 0; i < obj_paths.size(); i++) {
+              std::filesystem::path objpath(obj_paths[i]);
+              if (objpath.is_relative())
+                objpath = common.input_directory / objpath;
+              if (!std::filesystem::exists(objpath))
+                throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "obj file not found: " + objpath.string());
+              net->mergeObjFile(objpath.string(), static_cast<int>(i));
+            }
+          } else {
+            // Single obj file (existing behavior)
+            std::string objfile_str = injson.at("objfile")[0];
+            std::filesystem::path objpath(objfile_str);
+            if (objpath.is_relative())
+              objpath = common.input_directory / objpath;
+            net = new Network(objpath.string(), object_name);
+          }
           net->inputJSON = injson;
           net->applyTransformations(injson);
           setOutputInfo(injson.at("name")[0], common.output_directory);            //* for boundary surface */
@@ -950,18 +1006,20 @@ struct SimulationSettings {
         std::string tmp = STR_VEC[0];
         std::transform(tmp.begin(), tmp.end(), tmp.begin(), [](char c) { return std::tolower(c); });
         if (tmp == "jonswap") {
-          std::cout << "Using JONSWAP" << std::endl;
-          H13 = std::stod(STR_VEC[1]);
-          T13 = std::stod(STR_VEC[2]);
+          double height = std::stod(STR_VEC[1]);
+          double period = std::stod(STR_VEC[2]);
           h = std::stod(STR_VEC[3]);
           bottom_z = std::stod(STR_VEC[4]);
-          net->random_water_wave_theory = RandomWaterWaveTheory(H13, T13, h, bottom_z);
-          if (STR_VEC.size() == 6)
-            net->random_water_wave_theory.gamma = std::stod(STR_VEC[5]);
-          else
-            net->random_water_wave_theory.gamma = 3.3;
-
-          net->random_water_wave_theory.setSpectrumType(SpectrumType::JONSWAP);
+          double gamma = (STR_VEC.size() >= 6) ? std::stod(STR_VEC[5]) : 3.3;
+          // Check for parameter mode (7th element from GUI): default is Hm0_Tp for JONSWAP
+          std::string param_mode_str = (STR_VEC.size() >= 7) ? STR_VEC[6] : "Hm0_Tp";
+          WaveParamMode param_mode = WaveParamMode::HM0_TP;
+          if (param_mode_str == "H13_T13")
+            param_mode = WaveParamMode::H13_T13;
+          std::cout << "Using JONSWAP (" << param_mode << ")" << std::endl;
+          net->random_water_wave_theory =
+              RandomWaterWaveTheory::create(SpectrumType::JONSWAP, param_mode,
+                                            height, period, gamma, h, bottom_z);
         } else {
 
           if (STR_VEC.size() < 4)
@@ -972,7 +1030,8 @@ struct SimulationSettings {
           T13 = vec[1];
           h = vec[2];
           bottom_z = vec[3];
-          net->random_water_wave_theory = RandomWaterWaveTheory(H13, T13, h, bottom_z);
+          net->random_water_wave_theory =
+              RandomWaterWaveTheory::Bretschneider(H13, T13, h, bottom_z);
         }
 
         std::cout << net->random_water_wave_theory;
@@ -981,7 +1040,7 @@ struct SimulationSettings {
         net->absorb_gradPhi_t = [net](const Tddd& X, double t) { return net->random_water_wave_theory.gradPhi_t(X, t); };
         net->absorb_phi = [net](const Tddd& X, const double t) { return net->random_water_wave_theory.phi(X, t); };
         net->absorb_eta = [net](const Tddd& X, const double t) { return net->random_water_wave_theory.eta(X, t); };
-        net->absorb_gamma = [net](double sd) { return std::clamp(sd / (3. * net->random_water_wave_theory.L13), 0., 1.); };
+        net->absorb_gamma = [net](double sd) { return std::clamp(sd / (3. * net->random_water_wave_theory.reference_wavelength), 0., 1.); };
       });
       net->inputJSON.find("solitary_wave_theory", [&](auto STR_VEC) {
         // Format: [H/h, depth, bottom_z, x_crest]

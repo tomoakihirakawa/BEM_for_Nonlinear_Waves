@@ -10,6 +10,11 @@
 #include "BEM_step_failure.hpp"
 #include "BEM_collision_settings.hpp"
 
+struct networkPoint;
+struct networkLine;
+struct networkFace;
+class Network;
+
 // ============================================================================
 // Surface collision detection and resolution
 //
@@ -18,19 +23,19 @@
 // ============================================================================
 
 struct CollisionZone {
-   std::unordered_set<networkFace*> problem_faces;
-   std::unordered_set<networkFace*> boundary_faces;
-   std::unordered_set<networkPoint*> interior_points;
-   std::unordered_set<networkPoint*> boundary_points;
-   std::unordered_set<networkPoint*> all_points;
-   std::unordered_set<networkLine*> all_lines;
-   std::unordered_map<networkPoint*, Tdd> saved_phiphin;
-   std::unordered_map<networkPoint*, Tdd> saved_phiphin_t;
+  std::unordered_set<networkFace*> problem_faces;
+  std::unordered_set<networkFace*> boundary_faces;
+  std::unordered_set<networkPoint*> interior_points;
+  std::unordered_set<networkPoint*> boundary_points;
+  std::unordered_set<networkPoint*> all_points;
+  std::unordered_set<networkLine*> all_lines;
+  std::unordered_map<networkPoint*, Tdd> saved_phiphin;
+  std::unordered_map<networkPoint*, Tdd> saved_phiphin_t;
 };
 
 struct CollisionDetectionResult {
-   std::unordered_set<networkFace*> faces;
-   std::vector<std::pair<networkFace*, networkFace*>> pairs;
+  std::unordered_set<networkFace*> faces;
+  std::vector<std::pair<networkFace*, networkFace*>> pairs;
 };
 
 // --- Function declarations ---

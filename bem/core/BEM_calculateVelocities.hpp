@@ -40,18 +40,14 @@ inline void writeNodeRelocationQuadraticDebugVTU(
       const auto pos = point_position_of(p);
       const auto it_corr = point_correction.find(p);
       const auto it_near = point_nearest.find(p);
-      all_points.push_back({pos,
-                            (it_corr != point_correction.end()) ? it_corr->second : Tddd{0., 0., 0.},
-                            (it_near != point_nearest.end()) ? it_near->second : Tddd{0., 0., 0.}});
+      all_points.push_back({pos, (it_corr != point_correction.end()) ? it_corr->second : Tddd{0., 0., 0.}, (it_near != point_nearest.end()) ? it_near->second : Tddd{0., 0., 0.}});
     };
     auto push_midpoint = [&](networkLine* l) {
       auto [pa, pb] = l->getPoints();
       const auto pos = 0.5 * (point_position_of(pa) + point_position_of(pb));
       const auto it_corr = line_correction.find(l);
       const auto it_near = line_nearest.find(l);
-      all_points.push_back({pos,
-                            (it_corr != line_correction.end()) ? it_corr->second : Tddd{0., 0., 0.},
-                            (it_near != line_nearest.end()) ? it_near->second : Tddd{0., 0., 0.}});
+      all_points.push_back({pos, (it_corr != line_correction.end()) ? it_corr->second : Tddd{0., 0., 0.}, (it_near != line_nearest.end()) ? it_near->second : Tddd{0., 0., 0.}});
     };
 
     push_vertex(p0);
@@ -70,10 +66,7 @@ inline void writeNodeRelocationQuadraticDebugVTU(
   fprintf(fp, "<Points>\n");
   fprintf(fp, "<DataArray NumberOfComponents='3' type='Float32' Name='Position' format='ascii'>\n");
   for (const auto& p : all_points)
-    fprintf(fp, "%s %s %s ",
-            NumtoString(std::get<0>(p.position)).c_str(),
-            NumtoString(std::get<1>(p.position)).c_str(),
-            NumtoString(std::get<2>(p.position)).c_str());
+    fprintf(fp, "%s %s %s ", NumtoString(std::get<0>(p.position)).c_str(), NumtoString(std::get<1>(p.position)).c_str(), NumtoString(std::get<2>(p.position)).c_str());
   fprintf(fp, "\n</DataArray>\n");
   fprintf(fp, "</Points>\n");
 
@@ -88,10 +81,7 @@ inline void writeNodeRelocationQuadraticDebugVTU(
     fprintf(fp, "<DataArray NumberOfComponents='3' type='Float32' Name='%s' format='ascii'>\n", name);
     for (const auto& p : all_points) {
       const auto v = getter(p);
-      fprintf(fp, "%s %s %s ",
-              NumtoString(std::get<0>(v)).c_str(),
-              NumtoString(std::get<1>(v)).c_str(),
-              NumtoString(std::get<2>(v)).c_str());
+      fprintf(fp, "%s %s %s ", NumtoString(std::get<0>(v)).c_str(), NumtoString(std::get<1>(v)).c_str(), NumtoString(std::get<2>(v)).c_str());
     }
     fprintf(fp, "\n</DataArray>\n");
   };
@@ -1088,10 +1078,9 @@ void calculateVecToSurface(const Network& net,
 
   /* -------------------------------------------------------------------------- */
   /*  midpoint relocation: 頂点の品質改善後、midpointを面上にスナッピング         */
+  /*  linear 辺も含む: 端点平均が凸壁を貫入するのを防止                          */
   /* -------------------------------------------------------------------------- */
   for (auto* l : net.getBoundaryLines()) {
-    if (!l->hasActiveBieDof())
-      continue;
     l->vecToSurface.fill(0.);
     l->clungSurface.fill(0.);
   }
@@ -1099,8 +1088,6 @@ void calculateVecToSurface(const Network& net,
   // midpointの面スナッピング: 頂点の補正に追従 + Neumann面制約
   int corner_mid_count = 0, dirichlet_mid_count = 0;
   for (auto* l : net.getBoundaryLines()) {
-    if (!l->hasActiveBieDof())
-      continue;
     auto [pA, pB] = l->getPoints();
     auto X_shidted = 0.5 * (RK_with_Ubuff(pA) + RK_with_Ubuff(pB));
 

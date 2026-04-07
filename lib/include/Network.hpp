@@ -4,6 +4,7 @@
 #include "NetworkCommon.hpp"
 #include "RigidBodyDynamics.hpp"
 #include "basic.hpp"
+#include "basic_surface_geometry.hpp"
 #include "interpolations.hpp"
 #include "rootFinding.hpp"
 #ifdef USE_TETGEN
@@ -66,11 +67,13 @@ using T_TT = std::array<networkTetra*, 2>;
 enum class TetraState {
   Air = 0,
   Water = 1,
+  Inside = 2,
+  Outside = 3,
 };
 
 enum class FaceBadQualityType : std::uint8_t {
   TinyFace = 0,
-  SubsurfaceAltitude = 1,
+  SubsurfaceAltitude = 1
 };
 
 struct FaceBadQualityEvent {
@@ -158,7 +161,7 @@ struct NodeFaceState {
 // 近い面は広い角度で受け入れ、遠い面は厳しく絞る
 // distance ≈ 0 → near_angle_deg、distance ≈ contact_range → far_angle_deg
 inline double contactAcceptanceAngle(const double distance, const double contact_range,
-                                      const double near_angle_deg = 60., const double far_angle_deg = 30.) {
+                                     const double near_angle_deg = 60., const double far_angle_deg = 30.) {
   if (!(contact_range > 0) || !std::isfinite(contact_range) || !std::isfinite(distance))
     return M_PI * near_angle_deg / 180.;
   const auto r = std::clamp(std::abs(distance) / contact_range, 0.0, 1.0);
@@ -285,8 +288,8 @@ struct BEM_DOF_Base : public ContactDetectable {
   Tddd u_potential_BEM = {0., 0., 0.};
   Tddd u_omega_VPM = {0., 0., 0.};
   Tddd u_total = {0., 0., 0.};
-  Tddd u_reloc = {0., 0., 0.};   // velocity including smoothing correction (set by setNodeVelocity)
-  Tddd X_reloc = {0., 0., 0.};   // predicted position after relocation (= RK_X target with u_reloc)
+  Tddd u_reloc = {0., 0., 0.}; // velocity including smoothing correction (set by setNodeVelocity)
+  Tddd X_reloc = {0., 0., 0.}; // predicted position after relocation (= RK_X target with u_reloc)
 
   // --- node relocation / surface ---
   Tddd vecToSurface = {0., 0., 0.};
@@ -304,6 +307,11 @@ struct BEM_DOF_Base : public ContactDetectable {
   // --- RK4 integrators (shared by vertex and midpoint DOFs) ---
   RungeKutta<double> RK_phi;
   RungeKutta<Tddd> RK_X;
+
+  // --- curvature (mesh density control) ---
+  surface_geometry::LocalFrame local_frame;                   // 局所座標系
+  surface_geometry::PrincipalCurvatureResult geom_curvature;  // 主曲率・主方向
+  virtual void buildLocalFrame() = 0;
 
   // --- debug counters ---
   int debug_direction_info_count = 0;
@@ -380,6 +388,8 @@ public:
     this->Xtarget = xyz_IN;
   }
 #endif
+
+  void buildLocalFrame() override;  // 実装は Network.cpp（networkPoint の定義が必要）
 public:
   //---------------------------------
   Network* network;
@@ -402,6 +412,7 @@ public:
 
 protected:
   bool BoundaryQ() const;
+  bool ComputationalBoundaryQ() const;
 
   //---------------------------------
 public:
@@ -462,7 +473,8 @@ public:
     return true;
   };
   bool isMergeable() const;
-  netPp Collapse();         // deleteしていない方のpointを返す
+  netPp Collapse();                              // targetX を内部で決定（中点）
+  netPp Collapse(const Tddd& externalTargetX);   // targetX を外部から指定
   netPp mergeIfMergeable(); // deleteしていない方のpointを返す
   //---------------------------------
   //  netP* operator()(netP* a){return this->Point2Point[a];};
@@ -530,16 +542,7 @@ public:
   // 派生クラスのクラス名で，選ばれる関数
   // int Find(netP *p_IN) const { return network::find(this->getPoints(), p_IN);
   // };
-  bool replace(const netP* oldP, netP* newP) {
-    if (this->Point_A == oldP) {
-      this->Point_A = newP;
-      return true;
-    } else if (this->Point_B == oldP) {
-      this->Point_B = newP;
-      return true;
-    } else
-      return false;
-  };
+  bool replace(const netP* oldP, netP* newP);  // implemented in networkLine.cpp
   bool erase(const netP* p_IN) { return replace(p_IN, nullptr); };
   bool Replace(netP* oldP, netP* newP);
   //------------------
@@ -665,10 +668,10 @@ public:
 
   int Find(netL* l_IN) { return network::find(this->Lines, l_IN); };
 
-  bool erase(networkLine* l) { return ::erase_element(this->Lines, l); };
-  bool add(networkLine* l) { return ::add_element(this->Lines, l); };
-  bool erase(networkFace* f) { return ::erase_element(this->Faces, f); };
-  bool add(networkFace* f) { return ::add_element(this->Faces, f); };
+  bool erase(networkLine* l) { geom_curvature.valid = false; return ::erase_element(this->Lines, l); };
+  bool add(networkLine* l) { geom_curvature.valid = false; return ::add_element(this->Lines, l); };
+  bool erase(networkFace* f) { geom_curvature.valid = false; return ::erase_element(this->Faces, f); };
+  bool add(networkFace* f) { geom_curvature.valid = false; return ::add_element(this->Faces, f); };
 
 public:
   // 今のところBEMのためのもの
@@ -788,6 +791,8 @@ public:
   /* ------------------------------------------------------ */
 
   Tddd signed_distance_vector;
+
+  // geom_curvature is now in BEM_DOF_Base (shared by networkPoint and networkLine)
 
   //! SPH
   std::vector<networkPoint*> points_in_SML;
@@ -1140,7 +1145,36 @@ public:
     // this->pre_X = this->X;
     this->CoordinateBounds::setBounds(xyz_IN);
     this->Xtarget = xyz_IN;
+    this->geom_curvature.valid = false;
+    for (auto* q : this->getNeighbors())
+      if (q) q->geom_curvature.valid = false;
   };
+
+  void buildLocalFrame() override {
+    this->local_frame = {};
+    Tddd normal = this->getNormalAreaAveraged();
+    double n_len = Norm(normal);
+    if (!(n_len > 1e-10))
+      return;
+    Tddd n_axis = normal / n_len;
+    double best_proj_len = -1.0;
+    Tddd best_u_dir = {0, 0, 0};
+    for (auto* q : this->getNeighbors()) {
+      if (!q) continue;
+      Tddd d = q->X - this->X;
+      Tddd proj = d - Dot(d, n_axis) * n_axis;
+      double pl = Norm(proj);
+      if (pl > best_proj_len) {
+        best_proj_len = pl;
+        best_u_dir = proj;
+      }
+    }
+    if (!(best_proj_len > 1e-10))
+      return;
+    Tddd u_axis = best_u_dir / best_proj_len;
+    Tddd v_axis = Cross(n_axis, u_axis);
+    this->local_frame = {u_axis, v_axis, n_axis, true};
+  }
   // bool setXcarefully(const V_d &xyz_IN);
   // void resetXinfo();
   // void setBounds();
@@ -1202,6 +1236,7 @@ public:
    */
 
   bool BoundaryQ() const noexcept;
+  bool ComputationalBoundaryQ() const noexcept;
 
   // getBoundaryFaces() is declared above as override of ContactDetectable
   std::vector<networkLine*> getBoundaryLines() const;
@@ -1618,6 +1653,7 @@ public:
 
 public:
   int index = -1;
+  int component_id = -1; // multi-part rigid body: index into Network::component_names. -1 = single part
 
   /* --------------------------------------------------------------------------
    */
@@ -2163,6 +2199,10 @@ public:
 
   bool BoundaryQ() const noexcept { return this->Tetras[0] == nullptr || this->Tetras[1] == nullptr; };
 
+  bool ComputationalBoundaryQ() const noexcept;
+  networkTetra* getInsideTetra() const noexcept;
+  networkTetra* getOutsideTetra() const noexcept;
+
   /* ------------------------------------------------------ */
   //% タプル
   /* memo
@@ -2218,31 +2258,28 @@ public:
   /* --------------------------------------------------------------------------
    */
   bool replace(netL* const oldL, netL* const newL) {
+    bool found = false;
     if (std::get<0>(this->Lines) == oldL) {
       std::get<0>(this->Lines) = newL;
-      return true;
+      found = true;
     } else if (std::get<1>(this->Lines) == oldL) {
       std::get<1>(this->Lines) = newL;
-      return true;
+      found = true;
     } else if (std::get<2>(this->Lines) == oldL) {
       std::get<2>(this->Lines) = newL;
-      return true;
-    } else
-      return false;
+      found = true;
+    }
+    if (found) {
+      if (std::get<1>(this->PLPLPL) == oldL)
+        std::get<1>(this->PLPLPL) = newL;
+      else if (std::get<3>(this->PLPLPL) == oldL)
+        std::get<3>(this->PLPLPL) = newL;
+      else if (std::get<5>(this->PLPLPL) == oldL)
+        std::get<5>(this->PLPLPL) = newL;
+    }
+    return found;
   };
-  bool replace(netP* const oldP, netP* const newP) {
-    if (std::get<0>(this->Points) == oldP) {
-      std::get<0>(this->Points) = newP;
-      return true;
-    } else if (std::get<1>(this->Points) == oldP) {
-      std::get<1>(this->Points) = newP;
-      return true;
-    } else if (std::get<2>(this->Points) == oldP) {
-      std::get<2>(this->Points) = newP;
-      return true;
-    } else
-      return false;
-  };
+  bool replace(netP* const oldP, netP* const newP);  // implemented in networkFace.cpp
   std::vector<networkFace*> getNeighbors(const networkFace* const obj) const noexcept { return {(*std::get<0>(this->Lines))(obj), (*std::get<1>(this->Lines))(obj), (*std::get<2>(this->Lines))(obj)}; };
   /* ------------------------------------------------------ */
   std::tuple<T_PPP, T_LLL> getPointsLinesTuple(const networkLine* const l) const { return {this->getPoints(l), getLines(l)}; };
@@ -2742,6 +2779,8 @@ std::tuple<Tddd, networkFace*> Nearest_(const Tddd& X, const double& r, const st
 Tddd Nearest(const Tddd& X, const std::vector<networkFace*>& faces);
 Tddd Nearest(const Tddd& X, const std::unordered_set<networkFace*>& faces);
 Tddd Nearest(const networkPoint* p, const std::unordered_set<networkFace*>& faces);
+double DirectedHausdorffDistance(const V_netFp& query_faces, const V_netFp& target_faces, int triangle_subdivision = 6);
+double DirectedHausdorffDistance(const V_netFp& query_faces, const V_Netp& target_networks, int triangle_subdivision = 6);
 
 /* -------------------------------------------------------------------------- */
 
@@ -3157,6 +3196,11 @@ public:
     return ret;
   }
 
+  // query_faces 上に一様サンプル点を置き，この Network の境界面への最近点距離の最大値を返す．
+  double DirectedHausdorffDistance(const V_netFp& query_faces, const int triangle_subdivision = 6) const {
+    return ::DirectedHausdorffDistance(query_faces, this->getBoundaryFaces(), triangle_subdivision);
+  }
+
   // @ ============================================================== */
   // @                 RigidBodyDynamicsを使ったメソッド                 */
   // @ ============================================================== */
@@ -3282,6 +3326,9 @@ public:
   bool isSoftBody;
   bool isFloatingBody;
   bool isAbsorber;
+
+  // Multi-part rigid body: component_id (on each face) indexes into this vector
+  std::vector<std::string> component_names;
 
   std::function<Tddd(const Tddd&, double)> absorb_velocity = [](const Tddd&, double) -> Tddd { return {0., 0., 0.}; };
   std::function<Tddd(const Tddd&, double)> absorb_gradPhi_t = [](const Tddd&, double) -> Tddd { return {0., 0., 0.}; };
@@ -3421,6 +3468,7 @@ public:
   bool MemberQ(networkPoint* const& p_IN) const;
   bool MemberQ(networkFace* const& f_IN) const;
   void add(netPp const p_IN);
+  void add(netLp const l_IN);
   void add(netFp const f_IN);
   void add(netTp const t_IN);
   void add(const V_netPp& ps_IN);
@@ -3429,6 +3477,10 @@ public:
   void erase(const V_netFp& fs);
   bool erase(networkPoint* p);
   bool erase(networkLine* l);
+
+  // パッチ貼り付け: patchA 領域を patchB で置き換える
+  // 外周点の対応は座標比較（coord_eps）で取る
+  bool replacePatch(Network& patchB, double coord_eps = 1e-10);
 
   //% ------------------------- obj ------------------------ */
   //%
@@ -3537,6 +3589,9 @@ public:
   }
   std::vector<networkFace*> getBoundaryFaces() const;
   std::vector<networkLine*> getBoundaryLines() const;
+  std::vector<networkFace*> getComputationalBoundaryFaces() const;
+  std::vector<networkLine*> getComputationalBoundaryLines() const;
+  std::vector<networkPoint*> getComputationalBoundaryPoints() const;
   std::vector<networkFace*> getInteriorFaces() const;
   std::vector<networkLine*> getInteriorLines() const;
   std::vector<networkPoint*> getInteriorPoints() const;
@@ -3572,8 +3627,13 @@ public:
   */
 
   void setGeometricPropertiesForce();
+  void computePrincipalCurvatures(bool force_all = true);
   std::size_t topologySignature() const;
   std::size_t geometrySignature(double inv_eps = 1e12) const;
+
+  // 局所パッチのコピー: 辺または点の近傍を別の Network にコピーする
+  networkLine* copyLocalPatch(Network& patch, networkLine* l, int ring_depth = 1) const;
+  networkPoint* copyLocalPatch(Network& patch, networkPoint* p, int ring_depth = 1) const;
 
 private:
   void assignPointFaceIndices();
@@ -3602,6 +3662,7 @@ public:
   void setFaces(const std::vector<T3Tddd>& v_IN, const double resolution = 1E-10);
   void setFaces(const VV_i& f_v, const V_netPp& points);
   void setLines(const VV_i& l_v, const V_netPp& points);
+  void mergeObjFile(const std::string& filename, int component_id);
   /* -------------------------------------------------------------------------- */
 
 public:
@@ -5209,6 +5270,63 @@ void dual_replace(netF* f, netP* point_before, netP* point_after, netF* f_point_
 
 inline bool networkPoint::BoundaryQ() const noexcept {
   return std::any_of(this->Faces.begin(), this->Faces.end(), [](const auto& f) { return f->BoundaryQ(); });
+}
+
+inline bool networkPoint::ComputationalBoundaryQ() const noexcept {
+  return std::any_of(this->Faces.begin(), this->Faces.end(), [](const auto& f) { return f->ComputationalBoundaryQ(); });
+}
+
+inline Tddd tetraCentroid(const networkTetra* t) {
+  auto [p0, p1, p2, p3] = t->Points;
+  return (p0->X + p1->X + p2->X + p3->X) * 0.25;
+}
+
+inline bool isInsideTetra(const networkFace* face, const networkTetra* tetra) {
+  if (!face || !tetra) return false;
+  return Dot(tetraCentroid(tetra) - face->X, face->normal) < 0.0;
+}
+
+inline bool isOutsideTetra(const networkFace* face, const networkTetra* tetra) {
+  if (!face || !tetra) return false;
+  return Dot(tetraCentroid(tetra) - face->X, face->normal) > 0.0;
+}
+
+inline bool networkFace::ComputationalBoundaryQ() const noexcept {
+  auto* t0 = this->Tetras[0];
+  auto* t1 = this->Tetras[1];
+  if (!t0 && !t1)
+    return false;  // 両面 nullptr → 孤立面
+  if (!t0 || !t1) {
+    // 片面のみ tetra あり
+    auto* t = t0 ? t0 : t1;
+    if (t->tetra_state == TetraState::Inside)
+      return true;   // Inside tetra に接する蓋面 → 計算境界
+    if (t->tetra_state == TetraState::Outside)
+      return false;  // Outside tetra の蓋面 → 計算境界ではない
+    return true;     // Water/Air 等（boundary tetra 未生成時）→ BoundaryQ() と同じ
+  }
+  // 両面に tetra あり → Inside/Outside が異なれば計算境界
+  bool t0_inside = Dot(tetraCentroid(t0) - this->X, this->normal) < 0.0;
+  bool t1_inside = Dot(tetraCentroid(t1) - this->X, this->normal) < 0.0;
+  return t0_inside != t1_inside;
+}
+
+inline networkTetra* networkFace::getInsideTetra() const noexcept {
+  for (auto* t : this->Tetras) {
+    if (!t) continue;
+    if (Dot(tetraCentroid(t) - this->X, this->normal) < 0.0)
+      return t;
+  }
+  return nullptr;
+}
+
+inline networkTetra* networkFace::getOutsideTetra() const noexcept {
+  for (auto* t : this->Tetras) {
+    if (!t) continue;
+    if (Dot(tetraCentroid(t) - this->X, this->normal) > 0.0)
+      return t;
+  }
+  return nullptr;
 }
 
 #include "MooringLine.hpp"

@@ -18,8 +18,12 @@
 bool use_linear_element = false;
 bool use_pseudo_quadratic_element = false;
 bool use_true_quadratic_element = false;
-enum class NodeRelocationMethod { none, ALE, interpolation };
-enum class NodeRelocationSurface { linear, pseudo_quadratic, true_quadratic };
+enum class NodeRelocationMethod { none,
+                                  ALE,
+                                  interpolation };
+enum class NodeRelocationSurface { linear,
+                                   pseudo_quadratic,
+                                   true_quadratic };
 NodeRelocationMethod node_relocation_method = NodeRelocationMethod::none;
 NodeRelocationSurface node_relocation_surface = NodeRelocationSurface::pseudo_quadratic;
 std::string solver_type = "GMRES";
@@ -55,35 +59,21 @@ double simulation_time = 0.0;
 #define BEM
 #include "Network.hpp"
 
-#include "BEM_freqency_domain.hpp"
+#include "BEM_frequency_domain.hpp"
 #include "BEM_inputfile_reader.hpp"
 #include "BEM_qtf.hpp"
 #include "BEM_setBoundaryTypes.hpp"
 #include "BEM_solveBVP.hpp"
 
+// Globals required by shared BEM infrastructure (defined in time_domain for that solver)
+double detachment_pressure_threshold = 0.0;
+int detachment_consecutive_steps = 3;
+bool use_quadratic_linear_hybrid = false;
+bool enable_pressure_detachment = false;
+
 namespace {
 
 using Complex = std::complex<double>;
-
-struct BBox {
-  Tddd min{{1e100, 1e100, 1e100}};
-  Tddd max{{-1e100, -1e100, -1e100}};
-};
-
-BBox compute_bbox(const Network& net) {
-  BBox b;
-  for (auto* p : net.getPoints()) {
-    b.min[0] = std::min(b.min[0], p->X[0]);
-    b.min[1] = std::min(b.min[1], p->X[1]);
-    b.min[2] = std::min(b.min[2], p->X[2]);
-    b.max[0] = std::max(b.max[0], p->X[0]);
-    b.max[1] = std::max(b.max[1], p->X[1]);
-    b.max[2] = std::max(b.max[2], p->X[2]);
-  }
-  return b;
-}
-
-bool is_close(double a, double b, double eps) { return std::abs(a - b) <= eps; }
 
 bool has_flag(int argc, char** argv, const std::string& flag) {
   for (int i = 2; i < argc; ++i) {
@@ -97,48 +87,6 @@ struct FaceSets {
   std::unordered_set<networkFace*> free_surface;  // Robin
   std::unordered_set<networkFace*> float_surface; // body boundary (radiation forcing)
 };
-
-FaceSets classify_faces_deepcwind(Network& water, const Network& float_body) {
-  FaceSets sets;
-
-  water.setGeometricPropertiesForce();
-
-  const auto water_bounds = water.bounds;
-  const double x_min = std::get<0>(water_bounds[0]);
-  const double x_max = std::get<1>(water_bounds[0]);
-  const double y_min = std::get<0>(water_bounds[1]);
-  const double y_max = std::get<1>(water_bounds[1]);
-  const double z_min = std::get<0>(water_bounds[2]);
-  const double z_max = std::get<1>(water_bounds[2]);
-
-  for (auto* f : water.getBoundaryFaces()) {
-    const auto& c = f->centroid;
-    const auto& n = f->normal;
-
-    const bool on_free_surface = is_close(c[2], z_max, 1e-6) && (n[2] > 0.9);
-    if (on_free_surface) {
-      sets.free_surface.emplace(f);
-      continue;
-    }
-
-    const bool on_outer_x = is_close(std::abs(c[0]), std::max(std::abs(x_min), std::abs(x_max)), 1e-6);
-    const bool on_outer_y = is_close(std::abs(c[1]), std::max(std::abs(y_min), std::abs(y_max)), 1e-6);
-    const bool on_bottom = is_close(c[2], z_min, 1e-5) && (n[2] < -0.9);
-    if (on_outer_x || on_outer_y || on_bottom) {
-      continue; // tank walls/bottom
-    }
-
-    // Any remaining face (not free surface, not tank wall/bottom) is float body surface.
-    sets.float_surface.emplace(f);
-  }
-
-  if (sets.free_surface.empty())
-    throw std::runtime_error("classify_faces_deepcwind: free_surface faces not found");
-  if (sets.float_surface.empty())
-    throw std::runtime_error("classify_faces_deepcwind: float_surface faces not found");
-
-  return sets;
-}
 
 std::vector<double> parse_omegas(int argc, char** argv, const std::vector<double>& settings_omegas) {
   // Default: a small sweep for a quick run.
@@ -212,10 +160,10 @@ Tddd velocity_unit_dof(int dof, const Tddd& x, const Tddd& com) {
 double get_phi_on_face(const networkPoint* p, const networkFace* f) {
   if (!p)
     return 0.0;
-  if (f && p->phiOnFace.contains(const_cast<networkFace*>(f)))
-    return p->phiOnFace.at(const_cast<networkFace*>(f));
-  if (p->phiOnFace.contains(nullptr))
-    return p->phiOnFace.at(nullptr);
+  if (f && p->phiOnFace_copy.contains(const_cast<networkFace*>(f)))
+    return p->phiOnFace_copy.at(const_cast<networkFace*>(f));
+  if (p->phiOnFace_copy.contains(nullptr))
+    return p->phiOnFace_copy.at(nullptr);
   return 0.0;
 }
 
@@ -286,7 +234,8 @@ int main(int argc, char** argv) {
 
   SimulationSettings setting(argv[1], SimulationSettings::DomainMode::Frequency);
   use_pseudo_quadratic_element = setting.bem.element.pseudo_quadratic;
-  use_true_quadratic_element = setting.bem.element.true_quadratic;
+  use_quadratic_linear_hybrid = setting.bem.element.quadratic_linear_hybrid;
+  use_true_quadratic_element = setting.bem.element.true_quadratic || use_quadratic_linear_hybrid;
 
   solver_type = "GMRES";
   preconditioner_type = setting.bem.solver.preconditioner_type;
@@ -367,7 +316,70 @@ int main(int argc, char** argv) {
   water->setGeometricPropertiesForce();
   float_body->setGeometricPropertiesForce();
 
-  const auto face_sets = classify_faces_deepcwind(*water, *float_body);
+  // 時間領域と同じ接触判定（初回1回のみ）
+  // contact_objects は water と接触しうる全 rigid/soft body を含むこと。
+  // 漏れた構造物の面は free surface 側に寄り、Robin 誤分類になる。
+  std::vector<Network*> contact_objects;
+  for (auto* rb : setting.RigidBodyObject)
+    if (rb)
+      contact_objects.push_back(rb);
+  for (auto* sb : setting.SoftBodyObject)
+    if (sb)
+      contact_objects.push_back(sb);
+
+  refreshBoundaryStatesAndTypes(water, contact_objects);
+
+  // 接触判定結果から FaceSets を直接導出
+  FaceSets face_sets;
+  for (auto* f : water->getBoundaryFaces()) {
+    auto [p0, p1, p2] = f->getPoints();
+    bool all_dirichlet = isDirichletBoundaryState(p0, f) && isDirichletBoundaryState(p1, f) && isDirichletBoundaryState(p2, f);
+    if (all_dirichlet && use_true_quadratic_element) {
+      const auto& [l0, l1, l2] = f->Lines;
+      all_dirichlet = isDirichletBoundaryState(l0, f) && isDirichletBoundaryState(l1, f) && isDirichletBoundaryState(l2, f);
+    }
+    if (all_dirichlet) {
+      face_sets.free_surface.emplace(f);
+    } else {
+      // float_body に接触している面 → 力積分対象
+      bool touches_float = false;
+      auto check_float = [&](auto* entity) {
+        auto it = entity->dofs.find(f);
+        if (it == entity->dofs.end())
+          return;
+        for (auto* cf : it->second.contact_opponent_faces)
+          if (cf && cf->getNetwork() == float_body)
+            touches_float = true;
+      };
+      check_float(p0);
+      check_float(p1);
+      check_float(p2);
+      if (use_true_quadratic_element) {
+        const auto& [l0, l1, l2] = f->Lines;
+        check_float(l0);
+        check_float(l1);
+        check_float(l2);
+      }
+      if (touches_float)
+        face_sets.float_surface.emplace(f);
+      // その他の Neumann 面: phin の値は後段の evaluator が決める
+    }
+  }
+
+  // sanity check
+  if (face_sets.free_surface.empty())
+    throw std::runtime_error("no free-surface (Robin) faces found after contact detection");
+  if (face_sets.float_surface.empty())
+    throw std::runtime_error("no float-body faces found after contact detection");
+  for (auto* f : face_sets.free_surface)
+    if (face_sets.float_surface.contains(f))
+      throw std::runtime_error("face classified as both free_surface and float_surface");
+
+  std::cout << "[freq BC] free_surface=" << face_sets.free_surface.size()
+            << " float_surface=" << face_sets.float_surface.size()
+            << " wall/other=" << (water->getBoundaryFaces().size() - face_sets.free_surface.size() - face_sets.float_surface.size())
+            << std::endl;
+
   std::unordered_set<const networkPoint*> float_points;
   float_points.reserve(face_sets.float_surface.size() * 3);
   for (auto* f : face_sets.float_surface) {
@@ -377,34 +389,29 @@ int main(int argc, char** argv) {
     float_points.emplace(p2);
   }
 
-  // Set all boundary faces as Neumann (unknown: phi).
-  for (auto* f : water->getBoundaryFaces()) {
-    f->Dirichlet = false;
-    f->Neumann = true;
-    if (use_true_quadratic_element) {
-      f->isTrueQuadraticElement = true;
-      f->isPseudoQuadraticElement = false;
-      f->isLinearElement = false;
-    } else if (use_pseudo_quadratic_element) {
-      f->isTrueQuadraticElement = false;
-      f->isPseudoQuadraticElement = true;
-      f->isLinearElement = false;
-    } else {
-      f->isTrueQuadraticElement = false;
-      f->isPseudoQuadraticElement = false;
-      f->isLinearElement = true;
+  // Build face BC map: all faces are Neumann for the GMRES radiation path.
+  {
+    std::unordered_map<const networkFace*, bem_frequency_domain::FaceBC> face_bc_map;
+    for (auto* f : water->getBoundaryFaces())
+      face_bc_map[f] = bem_frequency_domain::FaceBC::Neumann;
+    bem_frequency_domain::apply_frequency_domain_bc(setting.FluidObject, face_bc_map);
+    // Element type override (adapter sets all faces per use_true_quadratic_element,
+    // but we need pseudo_quadratic support too)
+    for (auto* f : water->getBoundaryFaces()) {
+      if (use_true_quadratic_element) {
+        f->isTrueQuadraticElement = true;
+        f->isPseudoQuadraticElement = false;
+        f->isLinearElement = false;
+      } else if (use_pseudo_quadratic_element) {
+        f->isTrueQuadraticElement = false;
+        f->isPseudoQuadraticElement = true;
+        f->isLinearElement = false;
+      } else {
+        f->isTrueQuadraticElement = false;
+        f->isPseudoQuadraticElement = false;
+        f->isLinearElement = true;
+      }
     }
-  }
-  for (auto* l : water->getLines()) {
-    l->Dirichlet = false;
-    l->Neumann = true;
-    l->CORNER = false;
-  }
-  for (auto* p : water->getPoints()) {
-    p->Dirichlet = false;
-    p->Neumann = true;
-    p->CORNER = false;
-    setIsMultipleNode(p);
   }
 
   const std::size_t n = setNodeFaceIndices(setting.FluidObject);
@@ -413,14 +420,17 @@ int main(int argc, char** argv) {
   std::vector<unsigned char> is_robin(static_cast<std::size_t>(n), 0);
   const double z_free = std::get<1>(water->bounds[2]);
   for (auto* p : water->getBoundaryPoints()) {
-    for (const auto& [f, i] : p->f2Index) {
+    for (const auto& [f, dof_state] : p->dofs) {
+      const int i = dof_state.index;
       if (i < 0 || static_cast<std::size_t>(i) >= n)
         continue;
       bool robin = false;
       if (f) {
         robin = face_sets.free_surface.contains(f);
       } else {
-        robin = is_close(p->X[2], z_free, 1e-6);
+        robin = std::ranges::any_of(p->getBoundaryFaces(), [&](auto* bf) {
+          return face_sets.free_surface.contains(bf);
+        });
       }
       is_robin[static_cast<std::size_t>(i)] = robin ? 1 : 0;
     }
@@ -465,18 +475,20 @@ int main(int argc, char** argv) {
     for (int dof_col : dofs) {
       // Set boundary values.
       for (auto* p : water->getPoints()) {
-        p->phiOnFace.clear();
-        p->phinOnFace.clear();
-        p->phitOnFace.clear();
-        p->phintOnFace.clear();
+        p->phiOnFace_copy.clear();
+        p->phinOnFace_copy.clear();
+        p->phitOnFace_copy.clear();
+        p->phintOnFace_copy.clear();
       }
 
       const Tddd com = float_body->COM;
       for (auto* p : water->getBoundaryPoints()) {
-        for (const auto& [f, i] : p->f2Index) {
+        for (const auto& [f, dof_state] : p->dofs) {
+          if (dof_state.index < 0)
+            continue;
           // Unknown phi (initial guess).
-          p->phiOnFace[f] = 0.0;
-          p->phitOnFace[f] = 0.0;
+          p->phiOnFace_copy[f] = 0.0;
+          p->phitOnFace_copy[f] = 0.0;
 
           // Known phin.
           double phin = 0.0;
@@ -484,9 +496,10 @@ int main(int argc, char** argv) {
           if (f) {
             on_float = face_sets.float_surface.contains(f);
           } else {
-            // smooth patch point: treat as float if it is below free surface and within float bbox
-            const auto bbox = compute_bbox(*float_body);
-            on_float = (p->X[2] < z_free - 1e-8) && (bbox.min[0] - 1e-6 <= p->X[0] && p->X[0] <= bbox.max[0] + 1e-6) && (bbox.min[1] - 1e-6 <= p->X[1] && p->X[1] <= bbox.max[1] + 1e-6) && (bbox.min[2] - 1e-6 <= p->X[2] && p->X[2] <= bbox.max[2] + 1e-6);
+            // smooth patch point: 隣接 face の contact 情報から判定
+            on_float = std::ranges::any_of(p->getBoundaryFaces(), [&](auto* bf) {
+              return face_sets.float_surface.contains(bf);
+            });
           }
 
           if (on_float) {
@@ -498,8 +511,8 @@ int main(int argc, char** argv) {
             phin = 0.0;
           }
 
-          p->phinOnFace[f] = phin;
-          p->phintOnFace[f] = 0.0;
+          p->phinOnFace_copy[f] = phin;
+          p->phintOnFace_copy[f] = 0.0;
         }
       }
 

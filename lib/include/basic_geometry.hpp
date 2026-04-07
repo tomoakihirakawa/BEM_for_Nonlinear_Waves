@@ -19,7 +19,7 @@
 // using T3Tdd = std::tuple<Tdd, Tdd, Tdd>;
 
 /* -------------------------------------------------------------------------- */
-inline double SolidAngle_VanOosteromAandStrackeeJ1983(const Tddd &p, Tddd A, Tddd B, Tddd C) {
+inline double SolidAngle_VanOosteromAandStrackeeJ1983(const Tddd& p, Tddd A, Tddd B, Tddd C) {
   // A -= p;
   // B -= p;
   // C -= p;
@@ -54,8 +54,8 @@ inline double SolidAngle_VanOosteromAandStrackeeJ1983(const Tddd &p, Tddd A, Tdd
   return 2. * std::atan2(-(a2 * b1 * c0) + a1 * b2 * c0 + a2 * b0 * c1 - a0 * b2 * c1 - a1 * b0 * c2 + a0 * b1 * c2, b0 * c0 * nA + b1 * c1 * nA + b2 * c2 * nA + a0 * c0 * nB + a1 * c1 * nB + a2 * c2 * nB + (a0 * b0 + a1 * b1 + a2 * b2 + nA * nB) * Norm(C));
 };
 
-inline double SolidAngle_VanOosteromAandStrackeeJ1983(const Tddd &p, const T3Tddd &ABC) { return SolidAngle_VanOosteromAandStrackeeJ1983(p, std::get<0>(ABC), std::get<1>(ABC), std::get<2>(ABC)); };
-inline double SolidAngle_VanOosteromAandStrackeeJ1983(const Tddd &p, const Tddd &A) { return 0.; };
+inline double SolidAngle_VanOosteromAandStrackeeJ1983(const Tddd& p, const T3Tddd& ABC) { return SolidAngle_VanOosteromAandStrackeeJ1983(p, std::get<0>(ABC), std::get<1>(ABC), std::get<2>(ABC)); };
+inline double SolidAngle_VanOosteromAandStrackeeJ1983(const Tddd& p, const Tddd& A) { return 0.; };
 //
 // double SolidAngle(const Tddd &o, const Tddd &A, const Tddd &B, const Tddd &C) {
 //    double c = VectorAngle(A - o, B - o), a = VectorAngle(B - o, C - o), b = VectorAngle(C - o, A - o);
@@ -67,7 +67,7 @@ inline double SolidAngle_VanOosteromAandStrackeeJ1983(const Tddd &p, const Tddd 
 //    // return SolidAngle_VanOosteromAandStrackeeJ1983(o, A, B, C);
 // };
 
-inline double SolidAngle_UsingVectorAngle(const Tddd &p0, const Tddd &p1, const Tddd &p2, const Tddd &p3) {
+inline double SolidAngle_UsingVectorAngle(const Tddd& p0, const Tddd& p1, const Tddd& p2, const Tddd& p3) {
   double c = VectorAngle(p1 - p0, p2 - p0), a = VectorAngle(p2 - p0, p3 - p0), b = VectorAngle(p3 - p0, p1 - p0);
   double s = (a + b + c) * 0.5;
   if (Between(s, {M_PI - 1E-10, M_PI + 1E-10}))
@@ -76,7 +76,7 @@ inline double SolidAngle_UsingVectorAngle(const Tddd &p0, const Tddd &p1, const 
     return 4. * std::atan(std::sqrt(tan(s * 0.5) * std::tan((s - a) * 0.5) * std::tan((s - b) * 0.5) * std::tan((s - c) * 0.5)));
 };
 
-inline double SolidAngle_(const Tddd &p0, const Tddd &p1, const Tddd &p2, const Tddd &p3) {
+inline double SolidAngle_(const Tddd& p0, const Tddd& p1, const Tddd& p2, const Tddd& p3) {
 
   //     1,2,3 (outward rotation)
   //          3
@@ -98,7 +98,7 @@ inline double SolidAngle_(const Tddd &p0, const Tddd &p1, const Tddd &p2, const 
   return 2. * std::atan2(Det(T3Tddd{A, B, C}) /*Dot(A, Cross(B, C))*/, Norm(A) * Norm(B) * Norm(C) + Dot(A, B) * Norm(C) + Dot(A, C) * Norm(B) + Dot(B, C) * Norm(A));
 };
 
-inline double SolidAngle(const Tddd &o, const Tddd &A, const Tddd &B, const Tddd &C) {
+inline double SolidAngle(const Tddd& o, const Tddd& A, const Tddd& B, const Tddd& C) {
   // return SolidAngle_(o, a, b, c);
   //
   // return std::abs(SolidAngle_VanOosteromAandStrackeeJ1983(o, a, b, c));
@@ -121,13 +121,13 @@ inline double SolidAngle(const Tddd &o, const Tddd &A, const Tddd &B, const Tddd
   // return SolidAngle_VanOosteromAandStrackeeJ1983(o, A, B, C);
 };
 
-inline double SolidAngle(const Tddd &p, const T3Tddd &ABC) {
+inline double SolidAngle(const Tddd& p, const T3Tddd& ABC) {
   return SolidAngle(p, std::get<0>(ABC), std::get<1>(ABC), std::get<2>(ABC));
   // return SolidAngle_VanOosteromAandStrackeeJ1983(p, std::get<0>(ABC),
   // std::get<1>(ABC), std::get<2>(ABC));
 };
 
-inline T4d SolidAngles(const Tddd &o, const Tddd &a, const Tddd &b, const Tddd &c) {
+inline T4d SolidAngles(const Tddd& o, const Tddd& a, const Tddd& b, const Tddd& c) {
   return {(SolidAngle_VanOosteromAandStrackeeJ1983(o, a, b, c)), (SolidAngle_VanOosteromAandStrackeeJ1983(a, b, c, o)), (SolidAngle_VanOosteromAandStrackeeJ1983(b, c, o, a)), (SolidAngle_VanOosteromAandStrackeeJ1983(c, o, a, b))};
   //
   // return {std::abs(SolidAngle_VanOosteromAandStrackeeJ1983(o, a, b, c)),
@@ -136,12 +136,12 @@ inline T4d SolidAngles(const Tddd &o, const Tddd &a, const Tddd &b, const Tddd &
   //         std::abs(SolidAngle_VanOosteromAandStrackeeJ1983(c, o, a, b))};
 };
 
-inline T4d SolidAngles(const T4Tddd &oabc) {
+inline T4d SolidAngles(const T4Tddd& oabc) {
   auto [o, a, b, c] = oabc;
   return SolidAngles(o, a, b, c);
 };
 
-inline double SolidAngle(const Tddd &o, const std::vector<Tddd> &xyz) {
+inline double SolidAngle(const Tddd& o, const std::vector<Tddd>& xyz) {
   double total = 0., tmp, angle;
   int sz = xyz.size();
   double local_mean_length = 0;
@@ -177,25 +177,25 @@ inline double SolidAngle(const Tddd &o, const std::vector<Tddd> &xyz) {
   return total;
 };
 
-inline T4d TetrahedronSolidAngle_UsingVectorAngle(const Tddd &X0, const Tddd &X1, Tddd X2, Tddd X3) {
+inline T4d TetrahedronSolidAngle_UsingVectorAngle(const Tddd& X0, const Tddd& X1, Tddd X2, Tddd X3) {
   if (Dot(TriangleNormal(X1, X2, X3), (X1 + X2 + X3) / 3. - X0) < 0)
     X2.swap(X3);
   return {(SolidAngle_UsingVectorAngle(X0, X1, X2, X3)), (SolidAngle_UsingVectorAngle(X1, X0, X3, X2)), (SolidAngle_UsingVectorAngle(X2, X0, X1, X3)), (SolidAngle_UsingVectorAngle(X3, X0, X2, X1))};
 };
 
-inline T4d TetrahedronSolidAngle(const Tddd &X0, const Tddd &X1, Tddd X2, Tddd X3) {
+inline T4d TetrahedronSolidAngle(const Tddd& X0, const Tddd& X1, Tddd X2, Tddd X3) {
   if (Dot(TriangleNormal(X1, X2, X3), (X1 + X2 + X3) / 3. - X0) < 0)
     X2.swap(X3);
   return {(SolidAngle_VanOosteromAandStrackeeJ1983(X0, X1, X2, X3)), (SolidAngle_VanOosteromAandStrackeeJ1983(X1, X0, X3, X2)), (SolidAngle_VanOosteromAandStrackeeJ1983(X2, X0, X1, X3)), (SolidAngle_VanOosteromAandStrackeeJ1983(X3, X0, X2, X1))};
 };
 
-inline T4d TetrahedronSolidAngle(const T4Tddd &abcd) { return TetrahedronSolidAngle(std::get<0>(abcd), std::get<1>(abcd), std::get<2>(abcd), std::get<3>(abcd)); };
+inline T4d TetrahedronSolidAngle(const T4Tddd& abcd) { return TetrahedronSolidAngle(std::get<0>(abcd), std::get<1>(abcd), std::get<2>(abcd), std::get<3>(abcd)); };
 
-inline T4d TetrahedronSolidAngle_UsingVectorAngle(const T4Tddd &abcd) { return TetrahedronSolidAngle_UsingVectorAngle(std::get<0>(abcd), std::get<1>(abcd), std::get<2>(abcd), std::get<3>(abcd)); };
+inline T4d TetrahedronSolidAngle_UsingVectorAngle(const T4Tddd& abcd) { return TetrahedronSolidAngle_UsingVectorAngle(std::get<0>(abcd), std::get<1>(abcd), std::get<2>(abcd), std::get<3>(abcd)); };
 // % -------------------------------------------------------------------------- */
 // %                                  外接球                                     */
 // % -------------------------------------------------------------------------- */
-inline Tddd Circumcenter(const Tddd &a, const Tddd &b_, const Tddd &c_) {
+inline Tddd Circumcenter(const Tddd& a, const Tddd& b_, const Tddd& c_) {
   Tddd b = b_ - a;
   Tddd c = c_ - a;
   const auto x = Normalize(b);
@@ -213,8 +213,8 @@ inline Tddd Circumcenter(const Tddd &a, const Tddd &b_, const Tddd &c_) {
   auto [Cx, Cy] = CxCy;
   return a + Cx * x + Cy * y;
 };
-inline Tddd Circumcenter(const T3Tddd &abcd) { return Circumcenter(std::get<0>(abcd), std::get<1>(abcd), std::get<2>(abcd)); };
-inline Tddd Circumcenter(const Tddd &a, const Tddd &b, const Tddd &c, const Tddd &d) {
+inline Tddd Circumcenter(const T3Tddd& abcd) { return Circumcenter(std::get<0>(abcd), std::get<1>(abcd), std::get<2>(abcd)); };
+inline Tddd Circumcenter(const Tddd& a, const Tddd& b, const Tddd& c, const Tddd& d) {
   // http://rodolphe-vaillant.fr/entry/127/find-a-tetrahedron-circumcenter#:~:text=For%20all%20tetrahedra%2C%20there%20exists,circumsphere%20is%20called%20the%20circumcentre.
   // double a2 = Dot(a, a);
   // return 0.5 * Dot(Inverse(T3Tddd{b - a, c - a, d - a}), Tddd{Dot(b, b) - a2, Dot(c, c) - a2, Dot(d, d) - a2});
@@ -226,9 +226,9 @@ inline Tddd Circumcenter(const Tddd &a, const Tddd &b, const Tddd &c, const Tddd
   // lapack_svd_solve(T3Tddd{b_, c_, d_}, CxCyCz, Tddd{Dot(b_, b_), Dot(c_, c_), Dot(d_, d_)});
   return a + 0.5 * CxCyCz;
 };
-inline Tddd Circumcenter(const T4Tddd &abcd) { return Circumcenter(std::get<0>(abcd), std::get<1>(abcd), std::get<2>(abcd), std::get<3>(abcd)); };
+inline Tddd Circumcenter(const T4Tddd& abcd) { return Circumcenter(std::get<0>(abcd), std::get<1>(abcd), std::get<2>(abcd), std::get<3>(abcd)); };
 /* -------------------------------------------------------------------------- */
-inline double Circumradius(const Tddd &a, const Tddd &b, const Tddd &c) {
+inline double Circumradius(const Tddd& a, const Tddd& b, const Tddd& c) {
   // auto X = Circumcenter(a, b, c);
   // return (Norm(a - X) + Norm(b - X) + Norm(c - X)) / 3.;
   const double ab = Norm(a - b);
@@ -237,13 +237,13 @@ inline double Circumradius(const Tddd &a, const Tddd &b, const Tddd &c) {
   const double s = (ab + bc + ca) * 0.5;
   return ab * bc * ca / (4. * std::sqrt(s * (s - ab) * (s - bc) * (s - ca)));
 };
-inline double Circumradius(const T3Tddd &abcd) { return Circumradius(std::get<0>(abcd), std::get<1>(abcd), std::get<2>(abcd)); };
-inline double CircumArea(const T3Tddd &abcd) { return std::pow(Circumradius(std::get<0>(abcd), std::get<1>(abcd), std::get<2>(abcd)), 2) * M_PI; };
-inline double Circumradius(const Tddd &a, const Tddd &b, const Tddd &c, const Tddd &d) {
+inline double Circumradius(const T3Tddd& abcd) { return Circumradius(std::get<0>(abcd), std::get<1>(abcd), std::get<2>(abcd)); };
+inline double CircumArea(const T3Tddd& abcd) { return std::pow(Circumradius(std::get<0>(abcd), std::get<1>(abcd), std::get<2>(abcd)), 2) * M_PI; };
+inline double Circumradius(const Tddd& a, const Tddd& b, const Tddd& c, const Tddd& d) {
   auto X = Circumcenter(a, b, c, d);
   return (Norm(a - X) + Norm(b - X) + Norm(c - X) + Norm(d - X)) / 4.;
 };
-inline double Circumradius(const T4Tddd &abcd) { return Circumradius(std::get<0>(abcd), std::get<1>(abcd), std::get<2>(abcd), std::get<3>(abcd)); };
+inline double Circumradius(const T4Tddd& abcd) { return Circumradius(std::get<0>(abcd), std::get<1>(abcd), std::get<2>(abcd), std::get<3>(abcd)); };
 // % -------------------------------------------------------------------------- */
 // %                                  内接球                                     */
 // % -------------------------------------------------------------------------- */
@@ -254,8 +254,8 @@ inline double Inradius(Tddd p0, Tddd p1, Tddd p2) {
   auto l2 = Norm(p2 - (-p1 * (Dot(p1 - p2, p1) / Dot(p1, p1)) + p1));
   return (Norm(p1) * l2) / (Norm(p1) + Norm(p2) + Norm(p1 - p2));
 };
-inline double Inradius(const T3Tddd &p0123) { return Inradius(std::get<0>(p0123), std::get<1>(p0123), std::get<2>(p0123)); };
-inline double InArea(const T3Tddd &p0123) { return std::pow(Inradius(std::get<0>(p0123), std::get<1>(p0123), std::get<2>(p0123)), 2) * M_PI; };
+inline double Inradius(const T3Tddd& p0123) { return Inradius(std::get<0>(p0123), std::get<1>(p0123), std::get<2>(p0123)); };
+inline double InArea(const T3Tddd& p0123) { return std::pow(Inradius(std::get<0>(p0123), std::get<1>(p0123), std::get<2>(p0123)), 2) * M_PI; };
 inline double Inradius(Tddd p0, Tddd p1, Tddd p2, Tddd p3) {
   // see /Users/tomoaki/Dropbox/markdown/mathematica/非構造格子/四面体の内接球外接球.nb
   p3 -= p0;
@@ -276,12 +276,12 @@ inline double Inradius(Tddd p0, Tddd p1, Tddd p2, Tddd p3) {
   // double A3 = TriangleArea(p0, p1, p2);
   // return (A3 * l3) / (A0 + A1 + A2 + A3);
 };
-inline double Inradius(const T4Tddd &p0123) { return Inradius(std::get<0>(p0123), std::get<1>(p0123), std::get<2>(p0123), std::get<3>(p0123)); };
+inline double Inradius(const T4Tddd& p0123) { return Inradius(std::get<0>(p0123), std::get<1>(p0123), std::get<2>(p0123), std::get<3>(p0123)); };
 /* -------------------------------------------------------------------------- */
-inline Tddd Incenter(const Tddd &p0, const Tddd &p1, const Tddd &p2) {
+inline Tddd Incenter(const Tddd& p0, const Tddd& p1, const Tddd& p2) {
   // see /Users/tomoaki/Dropbox/markdown/mathematica/非構造格子/四面体の内接球外接球.nb
   // https://en.wikipedia.org/wiki/Tetrahedron
-  auto len = [](const Tddd &a, const Tddd &b, const Tddd &c) {
+  auto len = [](const Tddd& a, const Tddd& b, const Tddd& c) {
     const auto a_b = a - b;
     return Norm(c - ((a_b)*Dot(c - b, a_b) / Dot(a_b, a_b) + b));
   };
@@ -290,8 +290,8 @@ inline Tddd Incenter(const Tddd &p0, const Tddd &p1, const Tddd &p2) {
   auto l2 = len(p0, p1, p2);
   return (p0 / l0 + p1 / l1 + p2 / l2) * Inradius(p0, p1, p2);
 };
-inline Tddd Incenter(const T3Tddd &p0123) { return Incenter(std::get<0>(p0123), std::get<1>(p0123), std::get<2>(p0123)); };
-inline Tddd Incenter(const Tddd &p0, const Tddd &p1, const Tddd &p2, const Tddd &p3) {
+inline Tddd Incenter(const T3Tddd& p0123) { return Incenter(std::get<0>(p0123), std::get<1>(p0123), std::get<2>(p0123)); };
+inline Tddd Incenter(const Tddd& p0, const Tddd& p1, const Tddd& p2, const Tddd& p3) {
   // see /Users/tomoaki/Dropbox/markdown/mathematica/非構造格子/四面体の内接球外接球.nb
   // https://en.wikipedia.org/wiki/Tetrahedron
   double l0 = Norm(Dot(p0 - p1, Normalize(Cross(p2 - p1, p3 - p1))));
@@ -300,14 +300,14 @@ inline Tddd Incenter(const Tddd &p0, const Tddd &p1, const Tddd &p2, const Tddd 
   double l3 = Norm(Dot(p3 - p0, Normalize(Cross(p1 - p0, p2 - p0))));
   return (p0 / l0 + p1 / l1 + p2 / l2 + p3 / l3) * Inradius(p0, p1, p2, p3);
 };
-inline Tddd Incenter(const T4Tddd &p0123) { return Incenter(std::get<0>(p0123), std::get<1>(p0123), std::get<2>(p0123), std::get<3>(p0123)); };
+inline Tddd Incenter(const T4Tddd& p0123) { return Incenter(std::get<0>(p0123), std::get<1>(p0123), std::get<2>(p0123), std::get<3>(p0123)); };
 // % -------------------------------------------------------------------------- */
-inline Tddd Centroid(const Tddd &a, const Tddd &b, const Tddd &c) { return (a + b + c) / 3.; };
-inline Tddd Centroid(const T3Tddd &abcd) { return Centroid(std::get<0>(abcd), std::get<1>(abcd), std::get<2>(abcd)); };
-inline Tddd Centroid(const Tddd &a, const Tddd &b, const Tddd &c, const Tddd &d) { return (a + b + c + d) / 4.; };
-inline Tddd Centroid(const T4Tddd &abcd) { return Centroid(std::get<0>(abcd), std::get<1>(abcd), std::get<2>(abcd), std::get<3>(abcd)); };
+inline Tddd Centroid(const Tddd& a, const Tddd& b, const Tddd& c) { return (a + b + c) / 3.; };
+inline Tddd Centroid(const T3Tddd& abcd) { return Centroid(std::get<0>(abcd), std::get<1>(abcd), std::get<2>(abcd)); };
+inline Tddd Centroid(const Tddd& a, const Tddd& b, const Tddd& c, const Tddd& d) { return (a + b + c + d) / 4.; };
+inline Tddd Centroid(const T4Tddd& abcd) { return Centroid(std::get<0>(abcd), std::get<1>(abcd), std::get<2>(abcd), std::get<3>(abcd)); };
 // % -------------------------------------------------------------------------- */
-inline bool InsideQ(const T3Tdd &bounds, const T3Tdd &bounds_) {
+inline bool InsideQ(const T3Tdd& bounds, const T3Tdd& bounds_) {
   //! bounds < bounds_ ?
   //! Is bounds inside bounds_ ?
   auto [X0, X1] = std::get<0>(bounds);
@@ -319,30 +319,30 @@ inline bool InsideQ(const T3Tdd &bounds, const T3Tdd &bounds_) {
   return {X0_ < X0 && X1 < X1_ && Y0_ < Y0 && Y1 < Y1_ && Z0_ < Z0 && Z1 < Z1_};
 };
 
-inline bool InsideQ(const Tddd &X, const Tddd &Xcenter, const double &r) {
+inline bool InsideQ(const Tddd& X, const Tddd& Xcenter, const double& r) {
   //! point v.s. sphere
   //! point < sphere ?
   //! Is point X inside the sphere with center Xcenter and radius r ?
   return Norm(X - Xcenter) < r;
 };
-inline bool InsideQ(const T3Tdd &bounds, const Tddd &Xcenter, const double &r) {
+inline bool InsideQ(const T3Tdd& bounds, const Tddd& Xcenter, const double& r) {
   //! cube v.s. sphere
   //! cube < sphere ?
   //! Is cube bounds inside the sphere with center Xcenter and radius r ?
   auto [X0, X1] = std::get<0>(bounds);
   auto [Y0, Y1] = std::get<1>(bounds);
   auto [Z0, Z1] = std::get<2>(bounds);
-  auto isInside = [&](const Tddd &X, const Tddd &Xcenter, const double &r) {
+  auto isInside = [&](const Tddd& X, const Tddd& Xcenter, const double& r) {
     // point v.s. sphere
     return Norm(X - Xcenter) < r;
   };
   return (isInside({X0, Y0, Z0}, Xcenter, r) && isInside({X1, Y0, Z0}, Xcenter, r) && isInside({X1, Y1, Z0}, Xcenter, r) && isInside({X0, Y1, Z0}, Xcenter, r) && isInside({X0, Y0, Z1}, Xcenter, r) && isInside({X1, Y0, Z1}, Xcenter, r) && isInside({X0, Y1, Z1}, Xcenter, r) && isInside({X1, Y1, Z1}, Xcenter, r));
 };
-inline bool InsideQ(const Tddd &Xcenter, const double &r, const T3Tdd &bounds) {
+inline bool InsideQ(const Tddd& Xcenter, const double& r, const T3Tdd& bounds) {
   auto [X0, X1] = std::get<0>(bounds);
   auto [Y0, Y1] = std::get<1>(bounds);
   auto [Z0, Z1] = std::get<2>(bounds);
-  auto isInside = [&](const Tddd &X, const Tddd &Xcenter, const double &r) {
+  auto isInside = [&](const Tddd& X, const Tddd& Xcenter, const double& r) {
     // point v.s. sphere
     return Norm(X - Xcenter) < r;
   };
@@ -351,8 +351,8 @@ inline bool InsideQ(const Tddd &Xcenter, const double &r, const T3Tdd &bounds) {
 
 /* -------------------------------------------------------------------------- */
 
-inline Tddd grad_CircumradiusToInradius(const Tddd &a, const Tddd &b, const Tddd &c) {
-  auto grad = [](const Tddd &a, const Tddd &b) { return (a - b) / Norm(a - b); };
+inline Tddd grad_CircumradiusToInradius(const Tddd& a, const Tddd& b, const Tddd& c) {
+  auto grad = [](const Tddd& a, const Tddd& b) { return (a - b) / Norm(a - b); };
   const double ab = Norm(a - b);
   const double bc = Norm(b - c);
   const double ac = Norm(a - c);
@@ -371,8 +371,8 @@ inline Tddd grad_CircumradiusToInradius(const Tddd &a, const Tddd &b, const Tddd
   return 2. * (grad_numerator_a * denominator - numerator * grad_denominator_a) / std::pow(denominator, 2);
 };
 
-inline double differenceFromEquilateralTriangle(const Tddd &a, const Tddd &b, const Tddd &c) {
-  auto weight = [&](const Tddd &a, const Tddd &b, const Tddd &c) -> double {
+inline double differenceFromEquilateralTriangle(const Tddd& a, const Tddd& b, const Tddd& c) {
+  auto weight = [&](const Tddd& a, const Tddd& b, const Tddd& c) -> double {
     Tddd Xmid = (c + b) * 0.5;
     double height = Norm(c - b) * std::sqrt(3.) * 0.5;
     Tddd vertical = Normalize(Chop(a - Xmid, c - b));
@@ -382,7 +382,7 @@ inline double differenceFromEquilateralTriangle(const Tddd &a, const Tddd &b, co
 };
 
 // 四面体の R/r を計算
-inline double CircumradiusToInradius(const std::array<double, 3> &A, const std::array<double, 3> &B, const std::array<double, 3> &C, const std::array<double, 3> &D) {
+inline double CircumradiusToInradius(const std::array<double, 3>& A, const std::array<double, 3>& B, const std::array<double, 3>& C, const std::array<double, 3>& D) {
   // 体積と表面積
   double V = TetVolume(A, B, C, D);
   double S = TriangleArea(B, C, D) + TriangleArea(A, C, D) + TriangleArea(A, B, D) + TriangleArea(A, B, C);
@@ -409,7 +409,7 @@ inline double CircumradiusToInradius(const std::array<double, 3> &A, const std::
 }
 
 // triangle distorsion measure
-inline double CircumradiusToInradius(const Tddd &a, const Tddd &b, const Tddd &c) {
+inline double CircumradiusToInradius(const Tddd& a, const Tddd& b, const Tddd& c) {
   const double ab = Norm(a - b);
   const double bc = Norm(b - c);
   const double ca = Norm(c - a);
@@ -434,10 +434,26 @@ inline double CircumradiusToInradius(const Tddd &a, const Tddd &b, const Tddd &c
   // return ((Norm(X0 - X) + Norm(X1 - X) + Norm(X2 - X))) * (Norm(X1) + Norm(X2) + Norm(X1 - X2)) / (3. * Norm(X1) * l2);
 };
 
-inline double CircumradiusToInradius(const T3Tddd &X012) {
+inline double CircumradiusToInradius(const T3Tddd& X012) {
   // return Circumradius(X012) / Inradius(X012);
   return CircumradiusToInradius(std::get<0>(X012), std::get<1>(X012), std::get<2>(X012));
 };
+
+// InradiusToCircumradius = 2 * r_in / r_out
+// 正三角形で 1.0、退化で 0.0。有界 [0, 1] で品質スコアとして安全。
+inline double InradiusToCircumradius(const Tddd& a, const Tddd& b, const Tddd& c) {
+  const double ab = Norm(a - b);
+  const double bc = Norm(b - c);
+  const double ca = Norm(c - a);
+  const double den1 = (-ab + bc + ca);
+  const double den2 = (ab - bc + ca);
+  const double den3 = (ab + bc - ca);
+  return (den1 * den2 * den3) / (2. * ab * bc * ca);
+}
+
+inline double InradiusToCircumradius(const T3Tddd& X012) {
+  return InradiusToCircumradius(std::get<0>(X012), std::get<1>(X012), std::get<2>(X012));
+}
 
 inline double log10_CircumradiusToInradius(Tddd X0, Tddd X1, Tddd X2) { return std::log10(Circumradius(X0, X1, X2)) - std::log10(Inradius(X0, X1, X2)); };
 
@@ -448,7 +464,7 @@ Differential-Geometry Operators for Triangulated 2-Manifolds BT  - Visualization
 and Mathematics III,” Vis. Math. III, pp. 35–57, 2003.
 */
 
-inline Tddd ToSphericalCoodrinates(const Tddd &xyz) {
+inline Tddd ToSphericalCoodrinates(const Tddd& xyz) {
   double r = Norm(xyz);
   return {r, std::atan(std::get<2>(xyz) / r), std::atan2(std::get<1>(xyz), std::get<0>(xyz))};
 };
@@ -457,18 +473,19 @@ inline Tddd ToSphericalCoodrinates(const Tddd &xyz) {
 
 struct Point {
   Tddd X;
-  Point(const Tddd &XIN) : X(XIN) {};
+  Point(const Tddd& XIN) : X(XIN) {};
 };
 
 /* -------------------------------------------------------------------------- */
 
-template <typename T> struct Edge {
+template <typename T>
+struct Edge {
   Edge(T a, T b);
 };
 
 /* -------------------------------------------------------------------------- */
 
-inline T3Tdd Distance(const T3Tdd &b, const Tddd &a) {
+inline T3Tdd Distance(const T3Tdd& b, const Tddd& a) {
   auto [mmX, mmY, mmZ] = b;
   T3Tdd ret = b;
   //
@@ -667,46 +684,46 @@ struct CoordinateBounds {
     return {{xrange, yrange, zrange}};
   };
   /* -------------------------------------------------------------------------- */
-  void setBounds(const std::vector<Tddd> &Vxyz) {
+  void setBounds(const std::vector<Tddd>& Vxyz) {
     this->bounds = MinMaxColumns(Vxyz);
     this->X = Mean(Transpose(this->bounds));
   };
-  void setBounds(const CoordinateBounds &bs) {
+  void setBounds(const CoordinateBounds& bs) {
     this->bounds = bs.bounds;
     this->X = bs.X;
   };
-  void setBounds(const T3Tddd &X012) {
+  void setBounds(const T3Tddd& X012) {
     this->bounds = MinMaxColumns(X012);
     this->X = Mean(X012);
   };
-  void setBounds(const Tddd &x) {
+  void setBounds(const Tddd& x) {
     this->bounds = {{{std::get<0>(x), std::get<0>(x)}, {std::get<1>(x), std::get<1>(x)}, {std::get<2>(x), std::get<2>(x)}}};
     this->X = x;
   };
-  const Tddd &getXtuple() const { return this->X; /*面のsetBoundsでは，T3Tdddの平均がXとなるようになっている．バウンディングボックスの中心ではない.*/ };
+  const Tddd& getXtuple() const { return this->X; /*面のsetBoundsでは，T3Tdddの平均がXとなるようになっている．バウンディングボックスの中心ではない.*/ };
   // const Tddd &getX() const { return this->X;
   // /*面のsetBoundsでは，T3Tdddの平均がXとなるようになっている．バウンディングボックスの中心ではない.*/
   // }; V_d getX() const { return {std::get<0>(this->X), std::get<1>(this->X),
   // std::get<2>(this->X)}; };
-  const T3Tdd &getBounds() const { return this->bounds; };
+  const T3Tdd& getBounds() const { return this->bounds; };
   /* ------------------------------------------------------ */
   CoordinateBounds() : bounds{{{1E+20, -1E+20}, {1E+20, -1E+20}, {1E+20, -1E+20}}} {};
-  CoordinateBounds(const CoordinateBounds &bs) : bounds(bs.bounds), X(bs.X) {};
-  CoordinateBounds(const Tdd &minmaxX, const Tdd &minmaxY, const Tdd &minmaxZ) : bounds({minmaxX, minmaxY, minmaxZ}), X(Mean(Transpose(bounds))) {};
-  CoordinateBounds(const Tddd &x) : bounds{{{std::get<0>(x), std::get<0>(x)}, {std::get<1>(x), std::get<1>(x)}, {std::get<2>(x), std::get<2>(x)}}}, X(x) {};
-  CoordinateBounds(const T3Tdd &minmax) : bounds(minmax), X(Mean(Transpose(bounds))) {};
+  CoordinateBounds(const CoordinateBounds& bs) : bounds(bs.bounds), X(bs.X) {};
+  CoordinateBounds(const Tdd& minmaxX, const Tdd& minmaxY, const Tdd& minmaxZ) : bounds({minmaxX, minmaxY, minmaxZ}), X(Mean(Transpose(bounds))) {};
+  CoordinateBounds(const Tddd& x) : bounds{{{std::get<0>(x), std::get<0>(x)}, {std::get<1>(x), std::get<1>(x)}, {std::get<2>(x), std::get<2>(x)}}}, X(x) {};
+  CoordinateBounds(const T3Tdd& minmax) : bounds(minmax), X(Mean(Transpose(bounds))) {};
   CoordinateBounds(const double minX, const double maxX, const double minY, const double maxY, const double minZ, const double maxZ) : bounds{{{minX, maxX}, {minY, maxY}, {minZ, maxZ}}}, X(Mean(Transpose(bounds))) {};
-  CoordinateBounds(const T2Tddd &x) : bounds(MinMaxColumns(x)), X(Mean(x)) {};
-  CoordinateBounds(const T3Tddd &x) : bounds(MinMaxColumns(x)), X(Mean(x)) {};
-  CoordinateBounds(const T4Tddd &x) : bounds(MinMaxColumns(x)), X(Mean(x)) {};
-  CoordinateBounds(const Tddd &x0, const Tddd &x1, const Tddd &x2) : bounds(MinMaxColumns(T3Tddd{x0, x1, x2})), X((x0 + x1 + x2) / 3.) {};
-  CoordinateBounds(const std::vector<T3Tddd> &V_X);
-  CoordinateBounds(const std::vector<Tddd> &X) : bounds(MinMaxColumns(X)), X(Mean(Transpose(bounds))) {};
+  CoordinateBounds(const T2Tddd& x) : bounds(MinMaxColumns(x)), X(Mean(x)) {};
+  CoordinateBounds(const T3Tddd& x) : bounds(MinMaxColumns(x)), X(Mean(x)) {};
+  CoordinateBounds(const T4Tddd& x) : bounds(MinMaxColumns(x)), X(Mean(x)) {};
+  CoordinateBounds(const Tddd& x0, const Tddd& x1, const Tddd& x2) : bounds(MinMaxColumns(T3Tddd{x0, x1, x2})), X((x0 + x1 + x2) / 3.) {};
+  CoordinateBounds(const std::vector<T3Tddd>& V_X);
+  CoordinateBounds(const std::vector<Tddd>& X) : bounds(MinMaxColumns(X)), X(Mean(Transpose(bounds))) {};
   // CoordinateBounds(const geometry::Line &L) : bounds(MinMaxColumns(L.X)){};
   // CoordinateBounds(const geometry::Sphere &S) : bounds{{{std::get<0>(S.X) - S.radius, std::get<0>(S.X) + S.radius}, {std::get<1>(S.X) - S.radius, std::get<1>(S.X) + S.radius}, {std::get<2>(S.X) - S.radius, std::get<2>(S.X) + S.radius}}} {};
   // CoordinateBounds(const geometry::Triangle &T) : bounds(MinMaxColumns(T.X)){};
   /* ------------------------------------------------------ */
-  Tdd Distance(const Tddd &a) const {
+  Tdd Distance(const Tddd& a) const {
     auto [mmX, mmY, mmZ] = this->bounds;
     T3Tdd ret = this->bounds;
     //
@@ -728,10 +745,10 @@ struct CoordinateBounds {
     return {Norm(min), Norm(max)};
   };
   /* ------------------------------------------------------ */
-  const T3Tdd &operator()() const { return this->bounds; };
-  const Tdd &getXMinMax() const { return std::get<0>(this->bounds); };
-  const Tdd &getYMinMax() const { return std::get<1>(this->bounds); };
-  const Tdd &getZMinMax() const { return std::get<2>(this->bounds); };
+  const T3Tdd& operator()() const { return this->bounds; };
+  const Tdd& getXMinMax() const { return std::get<0>(this->bounds); };
+  const Tdd& getYMinMax() const { return std::get<1>(this->bounds); };
+  const Tdd& getZMinMax() const { return std::get<2>(this->bounds); };
   double getVolume() const { return (std::get<1>(std::get<0>(this->bounds)) - std::get<0>(std::get<0>(this->bounds))) * (std::get<1>(std::get<1>(this->bounds)) - std::get<0>(std::get<1>(this->bounds))) * (std::get<1>(std::get<2>(this->bounds)) - std::get<0>(std::get<2>(this->bounds))); };
   double getScale() const {
     auto [min, max] = Transpose(this->bounds);
@@ -831,7 +848,7 @@ struct CoordinateBounds {
              CoordinateBounds, // 5
              CoordinateBounds, // 6
              CoordinateBounds> // 7
-  to8Bounds(const Tddd &center) const {
+  to8Bounds(const Tddd& center) const {
     /*
     +-----+-----+ Y1
     |     |     |
@@ -847,7 +864,7 @@ struct CoordinateBounds {
     return {CoordinateBounds(Tdd{{X0, Xc}}, Tdd{{Y0, Yc}}, Tdd{{Z0, Zc}}), CoordinateBounds(Tdd{{Xc, X1}}, Tdd{{Y0, Yc}}, Tdd{{Z0, Zc}}), CoordinateBounds(Tdd{{X0, Xc}}, Tdd{{Yc, Y1}}, Tdd{{Z0, Zc}}), CoordinateBounds(Tdd{{Xc, X1}}, Tdd{{Yc, Y1}}, Tdd{{Z0, Zc}}),
             CoordinateBounds(Tdd{{X0, Xc}}, Tdd{{Y0, Yc}}, Tdd{{Zc, Z1}}), CoordinateBounds(Tdd{{Xc, X1}}, Tdd{{Y0, Yc}}, Tdd{{Zc, Z1}}), CoordinateBounds(Tdd{{X0, Xc}}, Tdd{{Yc, Y1}}, Tdd{{Zc, Z1}}), CoordinateBounds(Tdd{{Xc, X1}}, Tdd{{Yc, Y1}}, Tdd{{Zc, Z1}})};
   };
-  inline bool InsideQ(const Tddd &X) const {
+  inline bool InsideQ(const Tddd& X) const {
     if ((std::get<0>(X) < std::get<0>(std::get<0>(this->bounds)) || std::get<1>(std::get<0>(this->bounds)) < std::get<0>(X)) || (std::get<1>(X) < std::get<0>(std::get<1>(this->bounds)) || std::get<1>(std::get<1>(this->bounds)) < std::get<1>(X)) || (std::get<2>(X) < std::get<0>(std::get<2>(this->bounds)) || std::get<1>(std::get<2>(this->bounds)) < std::get<2>(X)))
       return false;
     else
@@ -856,7 +873,7 @@ struct CoordinateBounds {
 };
 /* -------------------------------------------------------------------------- */
 
-inline bool InsideQ(const Tddd &X, const T3Tdd &bounds) {
+inline bool InsideQ(const Tddd& X, const T3Tdd& bounds) {
   // point v.s. cube
   CoordinateBounds b(bounds);
   return b.InsideQ(X);
@@ -864,12 +881,12 @@ inline bool InsideQ(const Tddd &X, const T3Tdd &bounds) {
 struct Sphere : public CoordinateBounds {
   Tddd center;
   double radius;
-  Sphere(const Tddd &XIN, const double radiusIN = 0.) : CoordinateBounds(T3Tdd{{{(std::get<0>(XIN) - radiusIN), (std::get<0>(XIN) + radiusIN)}, {(std::get<1>(XIN) - radiusIN), (std::get<1>(XIN) + radiusIN)}, {(std::get<2>(XIN) - radiusIN), (std::get<2>(XIN) + radiusIN)}}}), center(XIN), radius(radiusIN) {};
+  Sphere(const Tddd& XIN, const double radiusIN = 0.) : CoordinateBounds(T3Tdd{{{(std::get<0>(XIN) - radiusIN), (std::get<0>(XIN) + radiusIN)}, {(std::get<1>(XIN) - radiusIN), (std::get<1>(XIN) + radiusIN)}, {(std::get<2>(XIN) - radiusIN), (std::get<2>(XIN) + radiusIN)}}}), center(XIN), radius(radiusIN) {};
 };
 
-inline Sphere InSphere(const Tddd &p0, const Tddd &p1, const Tddd &p2, const Tddd &p3) { return Sphere(Incenter(p0, p1, p2, p3), Inradius(p0, p1, p2, p3)); };
+inline Sphere InSphere(const Tddd& p0, const Tddd& p1, const Tddd& p2, const Tddd& p3) { return Sphere(Incenter(p0, p1, p2, p3), Inradius(p0, p1, p2, p3)); };
 
-inline Sphere CircumSphere(const Tddd &p0, const Tddd &p1, const Tddd &p2, const Tddd &p3) { return Sphere(Circumcenter(p0, p1, p2, p3), Circumradius(p0, p1, p2, p3)); };
+inline Sphere CircumSphere(const Tddd& p0, const Tddd& p1, const Tddd& p2, const Tddd& p3) { return Sphere(Circumcenter(p0, p1, p2, p3), Circumradius(p0, p1, p2, p3)); };
 
 struct Triangle : public CoordinateBounds {
   std::array<std::array<double, 3>, 3> vertices;
@@ -878,7 +895,7 @@ struct Triangle : public CoordinateBounds {
   double area;
   // 中心点
   Tddd centroid;
-  Tddd &center = this->centroid;
+  Tddd& center = this->centroid;
   //
   Tddd circumcenter /*外心*/;
   double circumradius /*外半径*/;
@@ -886,10 +903,10 @@ struct Triangle : public CoordinateBounds {
   Tddd incenter /*内心*/;
   double inradius /*内接*/;
   //
-  Triangle(const std::array<std::array<double, 3>, 3> &XIN) : CoordinateBounds(XIN), vertices(XIN), normal(TriangleNormalHP(XIN)), area(TriangleArea(XIN)), angles(TriangleAngles(XIN)), centroid(Centroid(XIN)), circumcenter(Circumcenter(XIN)), circumradius(Circumradius(XIN)), incenter(Incenter(XIN)), inradius(Inradius(XIN)) {};
-  Triangle(const Tddd &X0IN, const Tddd &X1IN, const Tddd &X2IN) : CoordinateBounds(X0IN, X1IN, X2IN), vertices({X0IN, X1IN, X2IN}), normal(TriangleNormalHP(X0IN, X1IN, X2IN)), area(TriangleArea(X0IN, X1IN, X2IN)), angles(TriangleAngles(vertices)), centroid(Centroid(vertices)), circumcenter(Circumcenter(vertices)), circumradius(Circumradius(vertices)), incenter(Incenter(vertices)), inradius(Inradius(vertices)) {};
+  Triangle(const std::array<std::array<double, 3>, 3>& XIN) : CoordinateBounds(XIN), vertices(XIN), normal(TriangleNormalHP(XIN)), area(TriangleArea(XIN)), angles(TriangleAngles(XIN)), centroid(Centroid(XIN)), circumcenter(Circumcenter(XIN)), circumradius(Circumradius(XIN)), incenter(Incenter(XIN)), inradius(Inradius(XIN)) {};
+  Triangle(const Tddd& X0IN, const Tddd& X1IN, const Tddd& X2IN) : CoordinateBounds(X0IN, X1IN, X2IN), vertices({X0IN, X1IN, X2IN}), normal(TriangleNormalHP(X0IN, X1IN, X2IN)), area(TriangleArea(X0IN, X1IN, X2IN)), angles(TriangleAngles(vertices)), centroid(Centroid(vertices)), circumcenter(Circumcenter(vertices)), circumradius(Circumradius(vertices)), incenter(Incenter(vertices)), inradius(Inradius(vertices)) {};
 
-  void setProperties(const std::array<std::array<double, 3>, 3> &vertices_IN) {
+  void setProperties(const std::array<std::array<double, 3>, 3>& vertices_IN) {
     this->vertices = vertices_IN;
     this->normal = TriangleNormalHP(vertices_IN);
     this->area = TriangleArea(vertices_IN);
@@ -900,7 +917,7 @@ struct Triangle : public CoordinateBounds {
     this->incenter = Incenter(vertices_IN);
     this->inradius = Inradius(vertices_IN);
   };
-  operator const std::array<std::array<double, 3>, 3> &() const { return vertices; };
+  operator const std::array<std::array<double, 3>, 3>&() const { return vertices; };
   Tddd normal_to_be_preserved;
 };
 
@@ -927,11 +944,11 @@ struct Tetrahedron : public CoordinateBounds {
   //
   T4Tddd normals;
   T4d solidangles; // いつかチェック
-  Tetrahedron(const Tddd &X0IN, const Tddd &X1IN, const Tddd &X2IN, const Tddd &X3IN) : CoordinateBounds(T4Tddd{X0IN, X1IN, X2IN, X3IN}), vertices(T4Tddd{X0IN, X1IN, X2IN, X3IN}), volume(TetrahedronVolume(vertices)), centroid(Centroid(vertices)), circumcenter(Circumcenter(vertices)), circumradius(Circumradius(vertices)), incenter(Incenter(vertices)), inradius(Inradius(vertices)), normals(TetrahedronNormals(vertices)), solidangles(TetrahedronSolidAngle_UsingVectorAngle(vertices)) {};
+  Tetrahedron(const Tddd& X0IN, const Tddd& X1IN, const Tddd& X2IN, const Tddd& X3IN) : CoordinateBounds(T4Tddd{X0IN, X1IN, X2IN, X3IN}), vertices(T4Tddd{X0IN, X1IN, X2IN, X3IN}), volume(TetrahedronVolume(vertices)), centroid(Centroid(vertices)), circumcenter(Circumcenter(vertices)), circumradius(Circumradius(vertices)), incenter(Incenter(vertices)), inradius(Inradius(vertices)), normals(TetrahedronNormals(vertices)), solidangles(TetrahedronSolidAngle_UsingVectorAngle(vertices)) {};
 
-  Tetrahedron(const T4Tddd &XIN) : CoordinateBounds(XIN), vertices(XIN), volume(TetrahedronVolume(XIN)), centroid(Centroid(XIN)), circumcenter(Circumcenter(XIN)), circumradius(Circumradius(XIN)), incenter(Incenter(XIN)), inradius(Inradius(XIN)), normals(TetrahedronNormals(XIN)), solidangles(TetrahedronSolidAngle_UsingVectorAngle(XIN)) {};
+  Tetrahedron(const T4Tddd& XIN) : CoordinateBounds(XIN), vertices(XIN), volume(TetrahedronVolume(XIN)), centroid(Centroid(XIN)), circumcenter(Circumcenter(XIN)), circumradius(Circumradius(XIN)), incenter(Incenter(XIN)), inradius(Inradius(XIN)), normals(TetrahedronNormals(XIN)), solidangles(TetrahedronSolidAngle_UsingVectorAngle(XIN)) {};
 
-  void setProperties(const T4Tddd &vertices_IN) {
+  void setProperties(const T4Tddd& vertices_IN) {
     this->vertices = vertices_IN;
     CoordinateBounds::setBounds(this->vertices);
     this->volume = TetrahedronVolume(this->vertices);
@@ -944,9 +961,9 @@ struct Tetrahedron : public CoordinateBounds {
     this->solidangles = TetrahedronSolidAngle_UsingVectorAngle(this->vertices);
   };
 
-  Tetrahedron scaled(const auto &s = 0.9) { return Tetrahedron({(std::get<0>(this->vertices) - centroid) * s + centroid, (std::get<1>(this->vertices) - centroid) * s + centroid, (std::get<2>(this->vertices) - centroid) * s + centroid, (std::get<3>(this->vertices) - centroid) * s + centroid}); };
+  Tetrahedron scaled(const auto& s = 0.9) { return Tetrahedron({(std::get<0>(this->vertices) - centroid) * s + centroid, (std::get<1>(this->vertices) - centroid) * s + centroid, (std::get<2>(this->vertices) - centroid) * s + centroid, (std::get<3>(this->vertices) - centroid) * s + centroid}); };
 
-  inline bool InsideQ(const std::array<double, 3> &X) const {
+  inline bool InsideQ(const std::array<double, 3>& X) const {
     if (CoordinateBounds::InsideQ(X)) {
       const auto [x, y, z] = X;
       const auto [X0, X1, X2, X3] = this->vertices;
@@ -999,10 +1016,10 @@ struct Ellipsoid : public CoordinateBounds {
   double a, b, c; // Semi-axes lengths in the x, y, and z directions
 
   // Constructor
-  Ellipsoid(const double aIN, const double bIN, const double cIN, const Tddd &centerIN = {0., 0., 0.}, const Quaternion &QIN = Quaternion()) { this->setProperties(aIN, bIN, cIN, centerIN, QIN); }
+  Ellipsoid(const double aIN, const double bIN, const double cIN, const Tddd& centerIN = {0., 0., 0.}, const Quaternion& QIN = Quaternion()) { this->setProperties(aIN, bIN, cIN, centerIN, QIN); }
 
   // Method to check if a point is inside the ellipsoid
-  inline bool InsideQ(const Tddd &point) const {
+  inline bool InsideQ(const Tddd& point) const {
     const auto [x, y, z] = Dot(point - center, Q.Rv());
     return (std::pow(x / this->a, 2) + std::pow(y / this->b, 2) + std::pow(z / this->c, 2)) <= 1.0;
   }
@@ -1019,19 +1036,19 @@ struct Ellipsoid : public CoordinateBounds {
       max = c;
     this->setBounds(std::vector<Tddd>{this->center + max, this->center - max});
   }
-  void setProperties(const double aIN, const double bIN, const double cIN, const Tddd &centerIN) {
+  void setProperties(const double aIN, const double bIN, const double cIN, const Tddd& centerIN) {
     this->center = centerIN;
     setProperties(aIN, bIN, cIN);
   }
-  void setProperties(const double aIN, const double bIN, const double cIN, const Tddd &centerIN, const Quaternion &QIN) {
+  void setProperties(const double aIN, const double bIN, const double cIN, const Tddd& centerIN, const Quaternion& QIN) {
     this->Q = QIN;
     setProperties(aIN, bIN, cIN, centerIN);
   }
 };
 
 /* -------------------------------------------------------------------------- */
-inline std::ostream &operator<<(std::ostream &stream, const CoordinateBounds &bounds) { return (stream << bounds.bounds); };
-inline CoordinateBounds operator+(const CoordinateBounds &b0, const CoordinateBounds &b1) {
+inline std::ostream& operator<<(std::ostream& stream, const CoordinateBounds& bounds) { return (stream << bounds.bounds); };
+inline CoordinateBounds operator+(const CoordinateBounds& b0, const CoordinateBounds& b1) {
   auto [minX0, maxX0] = std::get<0>(b0.bounds);
   auto [minX1, maxX1] = std::get<0>(b1.bounds);
   auto [minY0, maxY0] = std::get<1>(b0.bounds);
@@ -1042,7 +1059,7 @@ inline CoordinateBounds operator+(const CoordinateBounds &b0, const CoordinateBo
   return CoordinateBounds(std::min(minX0, minX1), std::max(maxX0, maxX1), std::min(minY0, minY1), std::max(maxY0, maxY1), std::min(minZ0, minZ1), std::max(maxZ0, maxZ1));
 };
 
-inline CoordinateBounds &operator+=(CoordinateBounds &b0, const CoordinateBounds &b1) {
+inline CoordinateBounds& operator+=(CoordinateBounds& b0, const CoordinateBounds& b1) {
   auto [minX0, maxX0] = std::get<0>(b0.bounds);
   auto [minX1, maxX1] = std::get<0>(b1.bounds);
   auto [minY0, maxY0] = std::get<1>(b0.bounds);
@@ -1053,9 +1070,9 @@ inline CoordinateBounds &operator+=(CoordinateBounds &b0, const CoordinateBounds
   b0.bounds = {{{std::min(minX0, minX1), std::max(maxX0, maxX1)}, {std::min(minY0, minY1), std::max(maxY0, maxY1)}, {std::min(minZ0, minZ1), std::max(maxZ0, maxZ1)}}};
   return b0;
 };
-inline CoordinateBounds::CoordinateBounds(const std::vector<T3Tddd> &V_X) {
+inline CoordinateBounds::CoordinateBounds(const std::vector<T3Tddd>& V_X) {
   CoordinateBounds ret;
-  for (const auto &X : V_X)
+  for (const auto& X : V_X)
     ret += CoordinateBounds(X);
   this->bounds = ret.bounds;
 };
@@ -1073,7 +1090,7 @@ struct IntersectionSphereLine {
   Tddd X;
   double distance;
   bool isIntersecting;
-  IntersectionSphereLine(const Tddd &center, const double radius, const T2Tddd &p01) : p0(std::get<0>(p01)), p1(std::get<1>(p01)), t(Dot(center - p1, p0 - p1) / Dot(p0 - p1, p0 - p1)), X(p0 * t + p1 * (1 - t)), distance(Norm(X - center)), isIntersecting(distance <= radius && 0. <= t && t <= 1.) {
+  IntersectionSphereLine(const Tddd& center, const double radius, const T2Tddd& p01) : p0(std::get<0>(p01)), p1(std::get<1>(p01)), t(Dot(center - p1, p0 - p1) / Dot(p0 - p1, p0 - p1)), X(p0 * t + p1 * (1 - t)), distance(Norm(X - center)), isIntersecting(distance <= radius && 0. <= t && t <= 1.) {
     if (!isIntersecting) {
       // 線分と干渉しない場合でも，球に最も近い線分上の点を返すようにする．
       // これを実行しない場合，線分ではなく，直線上の点を返すことになる．
@@ -1088,7 +1105,7 @@ struct IntersectionSphereLine {
       }
     }
   };
-  IntersectionSphereLine(const double radius, const T2Tddd &p01) : p0(std::get<0>(p01)), p1(std::get<1>(p01)), t(Dot(-p1, p0 - p1) / Dot(p0 - p1, p0 - p1)), X(p0 * t + p1 * (1 - t)), distance(Norm(X)), isIntersecting(distance <= radius && 0. <= t && t <= 1.) {
+  IntersectionSphereLine(const double radius, const T2Tddd& p01) : p0(std::get<0>(p01)), p1(std::get<1>(p01)), t(Dot(-p1, p0 - p1) / Dot(p0 - p1, p0 - p1)), X(p0 * t + p1 * (1 - t)), distance(Norm(X)), isIntersecting(distance <= radius && 0. <= t && t <= 1.) {
     if (!isIntersecting) {
       // 線分と干渉しない場合でも，球に最も近い線分上の点を返すようにする．
       // これを実行しない場合，線分ではなく，直線上の点を返すことになる．
@@ -1156,7 +1173,7 @@ struct IntersectionTriangles {
   Tddd p10, p11, p12;
   Tddd normalP0, normalP1;
   /* -------------------------------------------------------------- */
-  IntersectionTriangles(const T3Tddd &P0_IN, const T3Tddd &P1_IN) : P0(P0_IN), P1(P1_IN), isIntersecting(false), p00(std::get<0>(P0)), p01(std::get<1>(P0)), p02(std::get<2>(P0)), p10(std::get<0>(P1)), p11(std::get<1>(P1)), p12(std::get<2>(P1)), normalP0(Normalize(Cross(p01 - p00, p02 - p00))), normalP1(Normalize(Cross(p11 - p10, p12 - p10))) {
+  IntersectionTriangles(const T3Tddd& P0_IN, const T3Tddd& P1_IN) : P0(P0_IN), P1(P1_IN), isIntersecting(false), p00(std::get<0>(P0)), p01(std::get<1>(P0)), p02(std::get<2>(P0)), p10(std::get<0>(P1)), p11(std::get<1>(P1)), p12(std::get<2>(P1)), normalP0(Normalize(Cross(p01 - p00, p02 - p00))), normalP1(Normalize(Cross(p11 - p10, p12 - p10))) {
     // if (IntersectQ(CoordinateBounds(P0), CoordinateBounds(P0)))
     // 	return;
     // auto [p00, p01, p02] = P0;
@@ -1270,7 +1287,7 @@ struct IntersectionLineTriangle {
   Tddd intersection; // intersection point
   bool isIntersecting;
 
-  IntersectionLineTriangle(const Tddd &v1, const Tddd &v2, const Tddd &v3, const Tddd &p0, const Tddd &p1) : v1(v1), v2(v2), v3(v3), p0(p0), p1(p1), isIntersecting(false) {
+  IntersectionLineTriangle(const Tddd& v1, const Tddd& v2, const Tddd& v3, const Tddd& p0, const Tddd& p1) : v1(v1), v2(v2), v3(v3), p0(p0), p1(p1), isIntersecting(false) {
     // Implement Möller–Trumbore intersection algorithm here
     Tddd h, s, q;
     double a, f, u, v;
@@ -1333,7 +1350,7 @@ struct IntersectionSphereTriangle {
   //    auto dvdt1 = Dot({0, 1, 0}, this->X0X1X2);
   //    return Dot(v, v);
   // };
-  IntersectionSphereTriangle(const Tddd &centerIN, const double radius, const T3Tddd &X0X1X2)
+  IntersectionSphereTriangle(const Tddd& centerIN, const double radius, const T3Tddd& X0X1X2)
       : center(centerIN), X0(std::get<0>(X0X1X2) - centerIN), X1(std::get<1>(X0X1X2) - centerIN), X2(std::get<2>(X0X1X2) - centerIN), x00(std::get<0>(X0)), x01(std::get<1>(X0)), x02(std::get<2>(X0)), x10(std::get<0>(X1)), x11(std::get<1>(X1)), x12(std::get<2>(X1)), x20(std::get<0>(X2)), x21(std::get<1>(X2)), x22(std::get<2>(X2)), n(Normalize(Cross(X1 - X0, X2 - X0))), n0(std::get<0>(n)), n1(std::get<1>(n)), n2(std::get<2>(n)),
         denominator(n2 * (x00 * x11 - x11 * x20 + x01 * (-x10 + x20) - x00 * x21 + x10 * x21) + n1 * (x02 * x10 - x00 * x12 - x02 * x20 + x12 * x20 + x00 * x22 - x10 * x22) + n0 * (-(x02 * x11) + x01 * x12 + x02 * x21 - x12 * x21 - x01 * x22 + x11 * x22)), t0((-(n2 * x11 * x20) + n1 * x12 * x20 + n2 * x10 * x21 - n0 * x12 * x21 - n1 * x10 * x22 + n0 * x11 * x22) / denominator),
         t1((n2 * x01 * x20 - n1 * x02 * x20 - n2 * x00 * x21 + n0 * x02 * x21 + n1 * x00 * x22 - n0 * x01 * x22) / denominator), scale((-(x02 * x11 * x20) + x01 * x12 * x20 + x02 * x10 * x21 - x00 * x12 * x21 - x01 * x10 * x22 + x00 * x11 * x22) / denominator), intxnL0(1E+20, T2Tddd{X0, X1}), intxnL1(1E+20, T2Tddd{X1, X2}), intxnL2(1E+20, T2Tddd{X2, X0}), distance(std::abs(scale)), X(scale * n + centerIN),
@@ -1410,7 +1427,7 @@ struct IntersectionSphereTriangleLimitedToNormalRegion {
   const double t0, t1, scale;
   const Tddd X;
   const bool isIntersecting;
-  IntersectionSphereTriangleLimitedToNormalRegion(const Tddd &centerIN, const double radius, const T3Tddd &P_IN)
+  IntersectionSphereTriangleLimitedToNormalRegion(const Tddd& centerIN, const double radius, const T3Tddd& P_IN)
       : P(P_IN), center(centerIN), p0(std::get<0>(P_IN)), p1(std::get<1>(P_IN)), p2(std::get<2>(P_IN)), n(Normalize(Cross(p1 - p0, p2 - p0))), nx(std::get<0>(n)), ny(std::get<1>(n)), nz(std::get<2>(n)), p02x(std::get<0>(p0 - p2)), p02y(std::get<1>(p0 - p2)), p02z(std::get<2>(p0 - p2)), p12x(std::get<0>(p1 - p2)), p12y(std::get<1>(p1 - p2)), p12z(std::get<2>(p1 - p2)), determ(-(nz * p02y * p12x) + ny * p02z * p12x + nz * p02x * p12y - nx * p02z * p12y - ny * p02x * p12z + nx * p02y * p12z),
         mat({{{nz * p12y - ny * p12z, -(nz * p02y) + ny * p02z, p02z * p12y - p02y * p12z}, {-(nz * p12x) + nx * p12z, nz * p02x - nx * p02z, -(p02z * p12x) + p02x * p12z}, {ny * p12x - nx * p12y, -(ny * p02x) + nx * p02y, p02y * p12x - p02x * p12y}}}), ans(Dot(center - p2, mat / determ)), t0(std::get<0>(ans)), t1(std::get<1>(ans)), scale(std::get<2>(ans)), X(scale * n + center),
         isIntersecting((std::abs(determ) > eps) && (std::abs(scale) <= radius && (0 <= t0 && t0 <= 1) && (0 <= t1 && t1 <= 1) && (0 <= (1 - t0 - t1) && (1 - t0 - t1) <= 1))) {};
@@ -1482,11 +1499,11 @@ struct IntersectionSphereTriangleLimitedToNormalRegion {
 #include <limits>
 #include <tuple>
 
-inline double AbsMax3(const Tddd &v) { return std::max({std::abs(v[0]), std::abs(v[1]), std::abs(v[2])}); }
+inline double AbsMax3(const Tddd& v) { return std::max({std::abs(v[0]), std::abs(v[1]), std::abs(v[2])}); }
 
-inline std::tuple<double, Tddd> Nearest_(const Tddd &X, const T2Tddd &ab) {
-  const auto &a = std::get<0>(ab);
-  const auto &b = std::get<1>(ab);
+inline std::tuple<double, Tddd> Nearest_(const Tddd& X, const T2Tddd& ab) {
+  const auto& a = std::get<0>(ab);
+  const auto& b = std::get<1>(ab);
 
   const Tddd d = a - b; // b -> a
   const Tddd xb = X - b;
@@ -1534,7 +1551,7 @@ inline std::tuple<double, Tddd> Nearest_(const Tddd &X, const T2Tddd &ab) {
   return {t, b + d * t};
 }
 
-inline Tdd Nearest_(const T2Tddd &ab, const T2Tddd &AB) {
+inline Tdd Nearest_(const T2Tddd& ab, const T2Tddd& AB) {
   const auto [a, b] = ab;
   const auto [A, B] = AB;
   const auto a_b = a - b;
@@ -1574,8 +1591,8 @@ inline Tdd Nearest_(const T2Tddd &ab, const T2Tddd &AB) {
   else
     return {t3, 0.};
 };
-inline Tddd Nearest(const Tddd &X, const T2Tddd &ab) { return std::get<1>(Nearest_(X, ab)); };
-inline std::tuple<double, double, Tddd> NearestXOnPlane_(const Tddd &X, const T3Tddd &abc) {
+inline Tddd Nearest(const Tddd& X, const T2Tddd& ab) { return std::get<1>(Nearest_(X, ab)); };
+inline std::tuple<double, double, Tddd> NearestXOnPlane_(const Tddd& X, const T3Tddd& abc) {
   // アンダースコアがついているものはパラメタも返す
   const auto [a, b, c] = abc;
   // use SolveLinearSystem
@@ -1591,7 +1608,7 @@ inline std::tuple<double, double, Tddd> NearestXOnPlane_(const Tddd &X, const T3
   const auto [t0, t1, alpah] = ans;
   return {t0, t1, a * t0 + b * t1 + c * (1. - t0 - t1)};
 };
-inline Tddd NearestXOnPlane(const Tddd &X, const T3Tddd &abc) {
+inline Tddd NearestXOnPlane(const Tddd& X, const T3Tddd& abc) {
   // アンダースコアがついているものはパラメタも返す
   return std::get<2>(NearestXOnPlane_(X, abc));
 };
@@ -1747,7 +1764,7 @@ inline Tddd NearestXOnPlane(const Tddd &X, const T3Tddd &abc) {
 
 // ...existing code...
 // \label{Nearest_}
-inline std::tuple<double, double, Tddd /*to nearest*/, Tddd /*normal vec*/> Nearest_(const Tddd &X, const T3Tddd &abc) {
+inline std::tuple<double, double, Tddd /*to nearest*/, Tddd /*normal vec*/> Nearest_(const Tddd& X, const T3Tddd& abc) {
   const auto [a, b, c] = abc;
 
   // 1. エッジベクトルと法線の計算
@@ -1834,12 +1851,12 @@ inline std::tuple<double, double, Tddd /*to nearest*/, Tddd /*normal vec*/> Near
 };
 // ...existing code...
 
-inline Tddd Nearest(const Tddd &X, const T3Tddd &abc) { return std::get<2>(Nearest_(X, abc)); };
+inline Tddd Nearest(const Tddd& X, const T3Tddd& abc) { return std::get<2>(Nearest_(X, abc)); };
 
-inline Tddd Nearest(const Tddd &X, const std::vector<T3Tddd> &ABC) {
+inline Tddd Nearest(const Tddd& X, const std::vector<T3Tddd>& ABC) {
   double distance = 1E+20, tmp;
   Tddd near, ret;
-  for (const auto &abc : ABC) {
+  for (const auto& abc : ABC) {
     if (distance > (tmp = Norm(X - (near = Nearest(X, abc))))) {
       distance = tmp;
       ret = near;
@@ -1848,7 +1865,7 @@ inline Tddd Nearest(const Tddd &X, const std::vector<T3Tddd> &ABC) {
   return ret;
 };
 
-inline Tddd Nearest(const Tddd &X, const T3Tdd &minmax3) {
+inline Tddd Nearest(const Tddd& X, const T3Tdd& minmax3) {
   double distance = 1E+20, tmp;
   Tddd near, ret;
   CoordinateBounds B(minmax3);
@@ -1859,7 +1876,7 @@ inline Tddd Nearest(const Tddd &X, const T3Tdd &minmax3) {
   //    }
   // });
 
-  for (const auto &abc : (T12T3Tddd)(B)) {
+  for (const auto& abc : (T12T3Tddd)(B)) {
     if (distance > (tmp = Norm(X - (near = Nearest(X, abc))))) {
       distance = tmp;
       ret = near;
@@ -1869,13 +1886,13 @@ inline Tddd Nearest(const Tddd &X, const T3Tdd &minmax3) {
   return ret;
 };
 
-inline Tddd Nearest(const Tddd &X, const Tddd &Y) { return Y; };
+inline Tddd Nearest(const Tddd& X, const Tddd& Y) { return Y; };
 
-inline T4d approximateNearest(const T3Tddd &XYZ, const T3Tddd &ABC) {
+inline T4d approximateNearest(const T3Tddd& XYZ, const T3Tddd& ABC) {
 
   auto t0t1_init = std::array<double, 2>{1 / 3., 1 / 3.};
 
-  auto gradF = [&](const std::array<double, 2> &t0t1) -> std::array<double, 2> {
+  auto gradF = [&](const std::array<double, 2>& t0t1) -> std::array<double, 2> {
     auto [t0, t1] = t0t1;
     auto f_t0 = (XYZ[0] - XYZ[2]);
     auto f_t1 = (XYZ[1] - XYZ[2]);
@@ -1993,7 +2010,7 @@ inline T4d approximateNearest(const T3Tddd &XYZ, const T3Tddd &ABC) {
 };
 
 //\label{Nearest(const T3Tddd &XYZ, const T3Tddd &ABC)}
-inline T2Tddd Nearest(const T3Tddd &XYZ, const T3Tddd &ABC) {
+inline T2Tddd Nearest(const T3Tddd& XYZ, const T3Tddd& ABC) {
   Tddd X0, X1, X0_near, X1_near;
   double nearest_distance = 1E+20, t0, t1, T0, T1, t0_min = 0, t0_max = 1, t1_min = 0, t1_max = 1, distance, w = 1;
   double nearest_t0, nearest_t1;
@@ -2131,7 +2148,7 @@ inline T2Tddd Nearest(const T3Tddd &XYZ, const T3Tddd &ABC) {
 
 // };
 
-inline double scalefactorToReach(const T2Tddd &line, const T3Tddd &triangle) {
+inline double scalefactorToReach(const T2Tddd& line, const T3Tddd& triangle) {
   auto [a, b] = line;
   auto [p0, p1, p2] = triangle;
   // オーダーが匹敵する物を選ぶ
@@ -2163,7 +2180,7 @@ inline double scalefactorToReach(const T2Tddd &line, const T3Tddd &triangle) {
 //             (std::get<1>(std::get<2>(b0)) < std::get<0>(std::get<2>(b1)) && std::get<1>(std::get<2>(b0)) < std::get<1>(std::get<2>(b1)) /*1のzの最大最小が，0のzの最大よりも大きい*/) /*これがtrueの場合，逆にhitなし*/);
 // };
 
-inline bool IntersectQ(const T3Tdd &b0, const T3Tdd &b1) {
+inline bool IntersectQ(const T3Tdd& b0, const T3Tdd& b1) {
   auto [x0min, x0max] = b0[0];
   auto [y0min, y0max] = b0[1];
   auto [z0min, z0max] = b0[2];
@@ -2181,21 +2198,21 @@ inline bool IntersectQ(const T3Tdd &b0, const T3Tdd &b1) {
 }
 
 //! cube - point
-inline bool IntersectQ(const Tddd &X, const T3Tdd &minmax3) { return !((std::get<0>(X) < std::get<0>(std::get<0>(minmax3)) || std::get<1>(std::get<0>(minmax3)) < std::get<0>(X)) || (std::get<1>(X) < std::get<0>(std::get<1>(minmax3)) || std::get<1>(std::get<1>(minmax3)) < std::get<1>(X)) || (std::get<2>(X) < std::get<0>(std::get<2>(minmax3)) || std::get<1>(std::get<2>(minmax3)) < std::get<2>(X))); };
-inline bool IntersectQ(const T3Tdd &minmax3, const Tddd &X) { return !((std::get<0>(X) < std::get<0>(std::get<0>(minmax3)) || std::get<1>(std::get<0>(minmax3)) < std::get<0>(X)) || (std::get<1>(X) < std::get<0>(std::get<1>(minmax3)) || std::get<1>(std::get<1>(minmax3)) < std::get<1>(X)) || (std::get<2>(X) < std::get<0>(std::get<2>(minmax3)) || std::get<1>(std::get<2>(minmax3)) < std::get<2>(X))); };
+inline bool IntersectQ(const Tddd& X, const T3Tdd& minmax3) { return !((std::get<0>(X) < std::get<0>(std::get<0>(minmax3)) || std::get<1>(std::get<0>(minmax3)) < std::get<0>(X)) || (std::get<1>(X) < std::get<0>(std::get<1>(minmax3)) || std::get<1>(std::get<1>(minmax3)) < std::get<1>(X)) || (std::get<2>(X) < std::get<0>(std::get<2>(minmax3)) || std::get<1>(std::get<2>(minmax3)) < std::get<2>(X))); };
+inline bool IntersectQ(const T3Tdd& minmax3, const Tddd& X) { return !((std::get<0>(X) < std::get<0>(std::get<0>(minmax3)) || std::get<1>(std::get<0>(minmax3)) < std::get<0>(X)) || (std::get<1>(X) < std::get<0>(std::get<1>(minmax3)) || std::get<1>(std::get<1>(minmax3)) < std::get<1>(X)) || (std::get<2>(X) < std::get<0>(std::get<2>(minmax3)) || std::get<1>(std::get<2>(minmax3)) < std::get<2>(X))); };
 //! sphere - point
-inline bool IntersectQ(const Tddd &center, const double &r, const Tddd &a) { return Norm(a - center) <= r; };
-inline bool IntersectQ(const Sphere &sp, const Tddd &a) { return Norm(a - sp.center) <= sp.radius; };
-inline bool IntersectQ(const Tddd &a, const Sphere &sp) { return Norm(a - sp.center) <= sp.radius; };
+inline bool IntersectQ(const Tddd& center, const double& r, const Tddd& a) { return Norm(a - center) <= r; };
+inline bool IntersectQ(const Sphere& sp, const Tddd& a) { return Norm(a - sp.center) <= sp.radius; };
+inline bool IntersectQ(const Tddd& a, const Sphere& sp) { return Norm(a - sp.center) <= sp.radius; };
 //! sphere - cube
-inline bool IntersectQ(const Tddd &X, const double &r, const T3Tdd &minmax3) { return IntersectQ(X, minmax3) || (r >= Norm(Nearest(X, minmax3) - X)); };
-inline bool IntersectQ(const Sphere &s, const T3Tdd &minmax3) { return IntersectQ(s.center, s.radius, minmax3); };
-inline bool IntersectQ(const T3Tdd &minmax3, const Sphere &s) { return IntersectQ(s.center, s.radius, minmax3); };
+inline bool IntersectQ(const Tddd& X, const double& r, const T3Tdd& minmax3) { return IntersectQ(X, minmax3) || (r >= Norm(Nearest(X, minmax3) - X)); };
+inline bool IntersectQ(const Sphere& s, const T3Tdd& minmax3) { return IntersectQ(s.center, s.radius, minmax3); };
+inline bool IntersectQ(const T3Tdd& minmax3, const Sphere& s) { return IntersectQ(s.center, s.radius, minmax3); };
 //! sphere - sphere
-inline bool IntersectQ(const Tddd &x0, const double r0, const Tddd &x1, const double r1) { return Norm(x0 - x1) <= (r0 + r1); };
-inline bool IntersectQ(const Sphere &s0, const Sphere &s1) { return Norm(s0.X - s1.X) >= (s0.radius + s1.radius); };
+inline bool IntersectQ(const Tddd& x0, const double r0, const Tddd& x1, const double r1) { return Norm(x0 - x1) <= (r0 + r1); };
+inline bool IntersectQ(const Sphere& s0, const Sphere& s1) { return Norm(s0.X - s1.X) >= (s0.radius + s1.radius); };
 //! sphere - line
-inline bool IntersectQ(const Tddd &center, const double radius, const T2Tddd &ab) {
+inline bool IntersectQ(const Tddd& center, const double radius, const T2Tddd& ab) {
   const auto a = std::get<0>(ab) - center;
   const auto b = std::get<1>(ab) - center;
   if (Norm(a) < radius || Norm(b) < radius)
@@ -2204,17 +2221,17 @@ inline bool IntersectQ(const Tddd &center, const double radius, const T2Tddd &ab
   const double t = Dot(-a, a2b) / Dot(a2b, a2b);
   return (0. <= t && t <= 1. && Norm(a + a2b * t) < radius);
 };
-inline bool IntersectQ(const Tddd &center, const double radius, const T6T2Tddd &ab) { return IntersectQ(center, radius, std::get<0>(ab)) || IntersectQ(center, radius, std::get<1>(ab)) || IntersectQ(center, radius, std::get<2>(ab)) || IntersectQ(center, radius, std::get<3>(ab)) || IntersectQ(center, radius, std::get<4>(ab)) || IntersectQ(center, radius, std::get<5>(ab)); };
+inline bool IntersectQ(const Tddd& center, const double radius, const T6T2Tddd& ab) { return IntersectQ(center, radius, std::get<0>(ab)) || IntersectQ(center, radius, std::get<1>(ab)) || IntersectQ(center, radius, std::get<2>(ab)) || IntersectQ(center, radius, std::get<3>(ab)) || IntersectQ(center, radius, std::get<4>(ab)) || IntersectQ(center, radius, std::get<5>(ab)); };
 
-inline bool IntersectQ(const Sphere &sp, const T6T2Tddd &ab) { return IntersectQ(sp.center, sp.radius, std::get<0>(ab)) || IntersectQ(sp.center, sp.radius, std::get<1>(ab)) || IntersectQ(sp.center, sp.radius, std::get<2>(ab)) || IntersectQ(sp.center, sp.radius, std::get<3>(ab)) || IntersectQ(sp.center, sp.radius, std::get<4>(ab)) || IntersectQ(sp.center, sp.radius, std::get<5>(ab)); };
+inline bool IntersectQ(const Sphere& sp, const T6T2Tddd& ab) { return IntersectQ(sp.center, sp.radius, std::get<0>(ab)) || IntersectQ(sp.center, sp.radius, std::get<1>(ab)) || IntersectQ(sp.center, sp.radius, std::get<2>(ab)) || IntersectQ(sp.center, sp.radius, std::get<3>(ab)) || IntersectQ(sp.center, sp.radius, std::get<4>(ab)) || IntersectQ(sp.center, sp.radius, std::get<5>(ab)); };
 
-inline bool IntersectQ(const Sphere &s, const T2Tddd &ab) { return IntersectQ(s.center, s.radius, ab); };
-inline bool IntersectQ(const T2Tddd &ab, const Sphere &sp) { return IntersectQ(sp, ab); };
+inline bool IntersectQ(const Sphere& s, const T2Tddd& ab) { return IntersectQ(s.center, s.radius, ab); };
+inline bool IntersectQ(const T2Tddd& ab, const Sphere& sp) { return IntersectQ(sp, ab); };
 //! sphere - triangle
-inline bool IntersectQ(const Tddd &X, const double r, const T3Tddd &abc) { return r >= Norm(Nearest(X, abc) - X); };
-inline bool IntersectQ(const Sphere &sp, const T3Tddd &abc) { return sp.radius > Norm(Nearest(sp.center, abc) - sp.center); };
+inline bool IntersectQ(const Tddd& X, const double r, const T3Tddd& abc) { return r >= Norm(Nearest(X, abc) - X); };
+inline bool IntersectQ(const Sphere& sp, const T3Tddd& abc) { return sp.radius > Norm(Nearest(sp.center, abc) - sp.center); };
 //! line - triangle
-inline std::tuple<bool, Tddd, Tddd> IntersectQ_(const T2Tddd &AB, const T3Tddd &abc) {
+inline std::tuple<bool, Tddd, Tddd> IntersectQ_(const T2Tddd& AB, const T3Tddd& abc) {
 
   if (IntersectQ(CoordinateBounds(AB).bounds, CoordinateBounds(abc).bounds)) {
     std::array<double, 3> x;
@@ -2263,7 +2280,7 @@ inline std::tuple<bool, Tddd, Tddd> IntersectQ_(const T2Tddd &AB, const T3Tddd &
   */
 };
 
-inline bool IntersectQ(const T2Tddd &AB, const T3Tddd &abc) {
+inline bool IntersectQ(const T2Tddd& AB, const T3Tddd& abc) {
   const auto [a, b, c] = abc;
   const auto [A, B] = AB;
   // const auto [t0, t1, T] = Dot(A - c, Inverse(T3Tddd{a - c, b - c, A - B}));
@@ -2275,9 +2292,9 @@ inline bool IntersectQ(const T2Tddd &AB, const T3Tddd &abc) {
   static const Tdd range = array_0_1;
   return Between(T, range) && Between(t0, range) && Between(t1, range) && Between(t0 + t1, range);
 };
-inline bool IntersectQ(const T3Tddd &abc, const T2Tddd &AB) { return IntersectQ(AB, abc); };
+inline bool IntersectQ(const T3Tddd& abc, const T2Tddd& AB) { return IntersectQ(AB, abc); };
 //! cube - line
-inline bool IntersectQ(const T3Tdd &minmax3, const T2Tddd &AB) {
+inline bool IntersectQ(const T3Tdd& minmax3, const T2Tddd& AB) {
   const auto [A, B] = AB;
   if (IntersectQ(minmax3, A) || IntersectQ(minmax3, B) || IntersectQ(minmax3, 0.5 * (A + B)))
     return true;
@@ -2342,22 +2359,22 @@ inline bool IntersectQ(const T3Tdd &minmax3, const T2Tddd &AB) {
   //! --------------------------------- */
   return Min(Tddd{std::get<1>(int0), std::get<1>(int1), std::get<1>(int2)}) >= Max(Tddd{std::get<0>(int0), std::get<0>(int1), std::get<0>(int2)});
 };
-inline bool IntersectQ(const T2Tddd &AB, const T3Tdd &minmax3) { return IntersectQ(minmax3, AB); };
+inline bool IntersectQ(const T2Tddd& AB, const T3Tdd& minmax3) { return IntersectQ(minmax3, AB); };
 
 //! cube - tringle
-inline bool IntersectQ(const T3Tdd &minmax3, const T3Tddd &abc) {
+inline bool IntersectQ(const T3Tdd& minmax3, const T3Tddd& abc) {
   // チェックの短縮化が必要
   CoordinateBounds boundTri(abc);
   if (IntersectQ(minmax3, boundTri.bounds)) {
     if (IntersectQ(minmax3, std::get<0>(abc)) || IntersectQ(minmax3, std::get<1>(abc)) || IntersectQ(minmax3, std::get<2>(abc)) || IntersectQ(minmax3, Mean(abc)))
       return true;
     auto [a, b, c] = abc;
-    return IntersectQ(minmax3, T2Tddd{a, b}) || IntersectQ(minmax3, T2Tddd{b, c}) || IntersectQ(minmax3, T2Tddd{c, a}) || std::ranges::any_of((T12T2Tddd)CoordinateBounds(minmax3), [&](const auto &AB) { return IntersectQ(abc, AB); });
+    return IntersectQ(minmax3, T2Tddd{a, b}) || IntersectQ(minmax3, T2Tddd{b, c}) || IntersectQ(minmax3, T2Tddd{c, a}) || std::ranges::any_of((T12T2Tddd)CoordinateBounds(minmax3), [&](const auto& AB) { return IntersectQ(abc, AB); });
   } else
     return false;
 };
 
-inline Tddd XonTriangle(const T3Tddd &abc, const T2Tddd &AB) {
+inline Tddd XonTriangle(const T3Tddd& abc, const T2Tddd& AB) {
   auto [a, b, c] = abc;
   auto [A, B] = AB;
   // auto [t0, t1, T] = Dot(Inverse(Transpose(T3Tddd{a - c, b - c, A - B})), A - c);
@@ -2372,7 +2389,7 @@ inline Tddd XonTriangle(const T3Tddd &abc, const T2Tddd &AB) {
 };
 
 //! tetrahedron - point
-inline bool IntersectQ(const T4Tddd &abcd, Tddd X) {
+inline bool IntersectQ(const T4Tddd& abcd, Tddd X) {
   //@ barycentric coordinates
   //
   // | a0, b0, c0, d0 | | t0 |   | x |
@@ -2416,7 +2433,7 @@ inline bool IntersectQ(const T4Tddd &abcd, Tddd X) {
 }
 
 //! tetrahedron - sphere
-inline bool IntersectQ(const Tddd &center, const double r, const T4Tddd &abcd) {
+inline bool IntersectQ(const Tddd& center, const double r, const T4Tddd& abcd) {
   if (IntersectQ(abcd, center))
     return true;
   else {
@@ -2425,37 +2442,37 @@ inline bool IntersectQ(const Tddd &center, const double r, const T4Tddd &abcd) {
   }
 }
 
-inline bool IntersectQ(const Sphere &sp, const Tetrahedron &t) { return IntersectQ(sp.center, sp.radius, t.vertices); }
-inline bool IntersectQ(const Tetrahedron &t, const Sphere &sp) { return IntersectQ(sp.center, sp.radius, t.vertices); }
+inline bool IntersectQ(const Sphere& sp, const Tetrahedron& t) { return IntersectQ(sp.center, sp.radius, t.vertices); }
+inline bool IntersectQ(const Tetrahedron& t, const Sphere& sp) { return IntersectQ(sp.center, sp.radius, t.vertices); }
 
 //! tetrahedron - line
-inline bool IntersectQ(const T4Tddd &abcd, const T2Tddd &AB) {
+inline bool IntersectQ(const T4Tddd& abcd, const T2Tddd& AB) {
   auto [a, b, c, d] = abcd;
   auto [A, B] = AB;
   return IntersectQ(abcd, A) || IntersectQ(abcd, B) || IntersectQ(T3Tddd{{a, b, c}}, AB) || IntersectQ(T3Tddd{{a, b, d}}, AB) || IntersectQ(T3Tddd{{a, c, d}}, AB) || IntersectQ(T3Tddd{{b, c, d}}, AB);
 };
 
-inline bool IntersectQ(const Tetrahedron &Tet, const T2Tddd &AB) {
+inline bool IntersectQ(const Tetrahedron& Tet, const T2Tddd& AB) {
   if (IntersectQ(Tet.bounds, AB))
     return IntersectQ(Tet.vertices, AB);
   else
     return false;
 };
 
-inline bool IntersectQ(const Tetrahedron &Tet0, const Tetrahedron &Tet1) {
+inline bool IntersectQ(const Tetrahedron& Tet0, const Tetrahedron& Tet1) {
   if (IntersectQ(Tet0.bounds, Tet1.bounds)) {
     if (IntersectQ(Tet0.incenter, Tet0.inradius, Tet1.incenter, Tet1.inradius))
       return true;
-    return std::ranges::any_of((T6T2Tddd)(Tet0), [&](const auto &ab) { return IntersectQ(Tet1, ab); }) ||
+    return std::ranges::any_of((T6T2Tddd)(Tet0), [&](const auto& ab) { return IntersectQ(Tet1, ab); }) ||
 
-           std::ranges::any_of((T6T2Tddd)(Tet1), [&](const auto &AB) { return IntersectQ(Tet0, AB); });
+           std::ranges::any_of((T6T2Tddd)(Tet1), [&](const auto& AB) { return IntersectQ(Tet0, AB); });
   } else
     return false;
 };
 
-inline bool IntersectQ(const T4Tddd &abcd, const T4Tddd &ABCD) { return IntersectQ(Tetrahedron(abcd), Tetrahedron(ABCD)); };
+inline bool IntersectQ(const T4Tddd& abcd, const T4Tddd& ABCD) { return IntersectQ(Tetrahedron(abcd), Tetrahedron(ABCD)); };
 
-inline Tddd t0_t1_alpha(const T3Tddd &p0p1p2, const Tddd &X) {
+inline Tddd t0_t1_alpha(const T3Tddd& p0p1p2, const Tddd& X) {
   //@ ３点の張る面　と　１点　の関係を調べる
   // a = (p0,p1,p2).(t0,t1,1-t0,t1)は，三角形が張る面上で，Xに最も近い点
   // この位置aから，alpha*nだけ移動した位置にXがある．n=(nx, ny, nz)は，三角形がつくる単位法線ベクトル
@@ -2473,9 +2490,9 @@ using V_i = std::vector<int>;
 using VV_i = std::vector<std::vector<int>>;
 /* ------------------------------------------------------ */
 
-inline double normalDirDistanceFromTriangle(const T3Tddd &ps, const Tddd &a) { return Dot(TriangleNormal(ps), std::get<0>(ps) - a); };
+inline double normalDirDistanceFromTriangle(const T3Tddd& ps, const Tddd& a) { return Dot(TriangleNormal(ps), std::get<0>(ps) - a); };
 
-inline double factorOfVectorToReachTriangle(const Tddd &p0, const Tddd &p1, const Tddd &p2, const Tddd &a, const Tddd &b) {
+inline double factorOfVectorToReachTriangle(const Tddd& p0, const Tddd& p1, const Tddd& p2, const Tddd& a, const Tddd& b) {
   // オーダーが匹敵する物を選ぶ
   double log_b_a = std::log10(Norm(b - a));
   double diff0 = std::abs(std::log10(Norm(p0 - a) - log_b_a));
@@ -2491,7 +2508,7 @@ inline double factorOfVectorToReachTriangle(const Tddd &p0, const Tddd &p1, cons
 };
 
 /* ------------------------------------------------------ */
-inline Tddd vectorToInfiniteLine(const Tddd &P, Tddd A, Tddd B) {
+inline Tddd vectorToInfiniteLine(const Tddd& P, Tddd A, Tddd B) {
   // Tddd BA = B - A, AP = A - P;
   // return AP - BA * Dot(AP, BA) / Dot(BA, BA);
   /* ------------------------------------------------------ */
@@ -2499,16 +2516,16 @@ inline Tddd vectorToInfiniteLine(const Tddd &P, Tddd A, Tddd B) {
   A -= P;
   return A - B * Dot(A, B) / Dot(B, B);
 };
-inline double distanceToInfiniteLine(const Tddd &P, const Tddd &A, const Tddd &B) { return Norm(vectorToInfiniteLine(P, A, B)); };
+inline double distanceToInfiniteLine(const Tddd& P, const Tddd& A, const Tddd& B) { return Norm(vectorToInfiniteLine(P, A, B)); };
 /* ------------------------------------------------------ */
-inline Tddd pOnSurfaceTuple(const Tddd &p0, const Tddd &p1, const Tddd &p2, const Tddd &a, const Tddd &b) {
+inline Tddd pOnSurfaceTuple(const Tddd& p0, const Tddd& p1, const Tddd& p2, const Tddd& a, const Tddd& b) {
   Tddd n = TriangleNormal(p0, p1, p2), b_a = b - a;
   return a + b_a * Dot(p0 - a, n) / Dot(b_a, n); // 分母が0の場合はあり得る
 }
-inline Tddd pOnSurfaceTuple(const T3Tddd &p0p1p2, const T2Tddd &ab) { return pOnSurfaceTuple(std::get<0>(p0p1p2), std::get<1>(p0p1p2), std::get<2>(p0p1p2), std::get<0>(ab), std::get<1>(ab)); }
+inline Tddd pOnSurfaceTuple(const T3Tddd& p0p1p2, const T2Tddd& ab) { return pOnSurfaceTuple(std::get<0>(p0p1p2), std::get<1>(p0p1p2), std::get<2>(p0p1p2), std::get<0>(ab), std::get<1>(ab)); }
 /* -------------------------------------------------------------------------- */
 
-inline bool isConvexPolygon(const std::vector<Tddd> &ps, const Tddd &n) {
+inline bool isConvexPolygon(const std::vector<Tddd>& ps, const Tddd& n) {
   auto s = ps.size();
   if (s < 3)
     return false;
@@ -2525,19 +2542,19 @@ inline bool isConvexPolygon(const std::vector<Tddd> &ps, const Tddd &n) {
   return true;
 };
 
-inline bool isConcavePolygon(const std::vector<Tddd> &ps, const Tddd &n) { return !isConvexPolygon(ps, n); };
+inline bool isConcavePolygon(const std::vector<Tddd>& ps, const Tddd& n) { return !isConvexPolygon(ps, n); };
 
-inline bool isConvexPolygon(const std::vector<Tdd> &ps) {
+inline bool isConvexPolygon(const std::vector<Tdd>& ps) {
   std::vector<Tddd> Ps(ps.size());
   int i = 0;
-  for (const auto &v : ps)
+  for (const auto& v : ps)
     Ps[i++] = {std::get<0>(v), std::get<1>(v), 0.};
   return isConvexPolygon(Ps, Tddd{0., 0., 1});
 };
 
-inline bool isConcavePolygon(const std::vector<Tdd> &ps) { return !isConvexPolygon(ps); };
+inline bool isConcavePolygon(const std::vector<Tdd>& ps) { return !isConvexPolygon(ps); };
 
-inline bool isConcavePolygon(const std::vector<Tddd> &ps) {
+inline bool isConcavePolygon(const std::vector<Tddd>& ps) {
   auto s = ps.size();
   if (s < 3)
     return false;
@@ -2563,42 +2580,46 @@ inline bool isConcavePolygon(const std::vector<Tddd> &ps) {
 
 /* ------------------------------------------------------ */
 
-template <typename T> inline double windingNumber(const Tddd &X, const std::vector<std::array<T, 3>> &V_vertices) {
+template <typename T>
+inline double windingNumber(const Tddd& X, const std::vector<std::array<T, 3>>& V_vertices) {
   double ret = 0;
 #ifdef _OPENMP
 #pragma omp parallel for reduction(+ : ret)
 #endif
-  for (const auto &V : V_vertices)
+  for (const auto& V : V_vertices)
     ret += SolidAngle_VanOosteromAandStrackeeJ1983(X, ToX(V));
   return ret / (4. * M_PI);
 };
 
-template <typename T> inline double windingNumber(const Tddd &X, const std::vector<T> &V_vertices) {
+template <typename T>
+inline double windingNumber(const Tddd& X, const std::vector<T>& V_vertices) {
   double ret = 0;
 #ifdef _OPENMP
 #pragma omp parallel for reduction(+ : ret)
 #endif
-  for (const auto &V : V_vertices)
+  for (const auto& V : V_vertices)
     ret += SolidAngle_VanOosteromAandStrackeeJ1983(X, ToX(V));
   return ret / (4. * M_PI);
 };
 
-template <> inline double windingNumber(const Tddd &X, const std::vector<T3Tddd> &V_vertices) {
+template <>
+inline double windingNumber(const Tddd& X, const std::vector<T3Tddd>& V_vertices) {
   double ret = 0;
 #ifdef _OPENMP
 #pragma omp parallel for reduction(+ : ret)
 #endif
-  for (const auto &V : V_vertices)
+  for (const auto& V : V_vertices)
     ret += SolidAngle_VanOosteromAandStrackeeJ1983(X, V);
   return ret / (4. * M_PI);
 };
 
-template <typename T> inline T8d windingNumber(const T8Tddd &Xs, const std::vector<T> &V_vertices) {
+template <typename T>
+inline T8d windingNumber(const T8Tddd& Xs, const std::vector<T>& V_vertices) {
   T8d ret = {0., 0., 0., 0., 0., 0., 0., 0.};
   // for (const auto &V : V_vertices)
   {
-    for_each(ret, Xs, [&](auto &r, auto &X) {
-      for (const auto &V : V_vertices)
+    for_each(ret, Xs, [&](auto& r, auto& X) {
+      for (const auto& V : V_vertices)
         r += SolidAngle_VanOosteromAandStrackeeJ1983(X, ToX(V));
     });
 
@@ -2610,42 +2631,44 @@ template <typename T> inline T8d windingNumber(const T8Tddd &Xs, const std::vect
   return ret / (4. * M_PI);
 };
 
-template <> inline T8d windingNumber(const T8Tddd &Xs, const std::vector<T3Tddd> &V_vertices) {
+template <>
+inline T8d windingNumber(const T8Tddd& Xs, const std::vector<T3Tddd>& V_vertices) {
   T8d ret = {0., 0., 0., 0., 0., 0., 0, 0.};
-  for (const auto &V : V_vertices)
-    for_each(ret, Xs, [&](auto &r, auto &X) { r += SolidAngle_VanOosteromAandStrackeeJ1983(X, V); });
+  for (const auto& V : V_vertices)
+    for_each(ret, Xs, [&](auto& r, auto& X) { r += SolidAngle_VanOosteromAandStrackeeJ1983(X, V); });
   // std::ranges::for_each(ret, Xs, [&](auto &r, const auto &X) { r += SolidAngle_VanOosteromAandStrackeeJ1983(X, V); });
   return ret / (4. * M_PI);
 };
-template <> inline T8d windingNumber(const T8Tddd &Xs, const std::vector<Tddd> &V_vertices) { return {0., 0., 0., 0., 0., 0., 0, 0.}; };
+template <>
+inline T8d windingNumber(const T8Tddd& Xs, const std::vector<Tddd>& V_vertices) { return {0., 0., 0., 0., 0., 0., 0, 0.}; };
 
-inline T8d windingNumber(const T8Tddd &Xs, const std::unordered_set<Tddd> &V_vertices) { return {0., 0., 0., 0., 0., 0., 0, 0.}; };
+inline T8d windingNumber(const T8Tddd& Xs, const std::unordered_set<Tddd>& V_vertices) { return {0., 0., 0., 0., 0., 0., 0, 0.}; };
 
-inline std::vector<double> windingNumber(const std::vector<Tddd> &Xs, const std::vector<T3Tddd> &V_vertices) {
+inline std::vector<double> windingNumber(const std::vector<Tddd>& Xs, const std::vector<T3Tddd>& V_vertices) {
   std::vector<double> ret(Xs.size(), 0.);
   for (auto i = 0; i < Xs.size(); ++i) {
     auto X = Xs[i];
     auto tmp = 0;
-    for (const auto &vertices : V_vertices)
+    for (const auto& vertices : V_vertices)
       tmp += SolidAngle_VanOosteromAandStrackeeJ1983(X, vertices);
     ret[i] = tmp / (4. * M_PI);
   }
   return ret;
 };
 
-inline T8d windingNumber(const T8Tddd &Xs, const std::vector<T3Tddd> &V_vertices) {
+inline T8d windingNumber(const T8Tddd& Xs, const std::vector<T3Tddd>& V_vertices) {
   T8d ret = {0., 0., 0., 0., 0., 0., 0, 0.};
-  for (const auto &vertices : V_vertices)
-    for_each(ret, Xs, [&](auto &r, auto &X) { r += SolidAngle_VanOosteromAandStrackeeJ1983(X, vertices); });
+  for (const auto& vertices : V_vertices)
+    for_each(ret, Xs, [&](auto& r, auto& X) { r += SolidAngle_VanOosteromAandStrackeeJ1983(X, vertices); });
   return ret / (4. * M_PI);
 };
 
-inline double windingNumber(const Tddd &X, const std::vector<Tddd> &V_vertices) { return 0.; };
+inline double windingNumber(const Tddd& X, const std::vector<Tddd>& V_vertices) { return 0.; };
 
 /* -------------------------------------------------------------------------- */
 
-inline bool InsideQ(const Tddd &X, const std::vector<T3Tddd> &V_vertices) { return (CoordinateBounds(V_vertices).InsideQ(X) && windingNumber(X, V_vertices) < 0.75); };
-inline bool InsideQ(const Tddd &X, const std::vector<Tddd> &V_vertices) { return !CoordinateBounds(V_vertices).InsideQ(X); };
+inline bool InsideQ(const Tddd& X, const std::vector<T3Tddd>& V_vertices) { return (CoordinateBounds(V_vertices).InsideQ(X) && windingNumber(X, V_vertices) < 0.75); };
+inline bool InsideQ(const Tddd& X, const std::vector<Tddd>& V_vertices) { return !CoordinateBounds(V_vertices).InsideQ(X); };
 // bool InsideQ(const CoordinateBounds &bounds, const geometry::Sphere &s) {
 //    // cube v.s. sphere
 //    // cube < sphere ?
@@ -2663,7 +2686,7 @@ inline bool InsideQ(const Tddd &X, const std::vector<Tddd> &V_vertices) { return
 // };
 /* ------------------------------------------------------ */
 
-inline Tddd ToX(const Tddd *X) { return *X; };
+inline Tddd ToX(const Tddd* X) { return *X; };
 inline Tddd ToX(const Tddd X) { return X; };
 inline T3Tddd ToX(const T3Tddd X) { return X; };
 
@@ -2671,7 +2694,8 @@ inline T3Tddd ToX(const T3Tddd X) { return X; };
 // b%                                     八分木                                  */
 // b% -------------------------------------------------------------------------- */
 // 基本的な形状に対してoctreeを生成できるようにする．
-template <typename T> struct octree : public CoordinateBounds {
+template <typename T>
+struct octree : public CoordinateBounds {
   /*
   top level -> depth = 0
   ---------
@@ -2680,30 +2704,30 @@ template <typename T> struct octree : public CoordinateBounds {
   last level -> depth = depthlimit = 2
   ---------
   */
-  octree<T> *const parent;
+  octree<T>* const parent;
   const int depth;
-  const octree *top; // 最上階のデータ
+  const octree* top; // 最上階のデータ
   const std::vector<T> faces_only_for_top;
   std::vector<T> faces_;
   T8d WNs; // winding numbers
   bool inside;
-  std::vector<octree<T> *> children;
+  std::vector<octree<T>*> children;
   /* ------------------------------------------------------ */
   // objnumの数だけセル中にオブジェクトがあれば，最後までツリーを作成するというもの．もしなければ，minDepthまで作成して終了する．
   // A winding number of 0 means the point is outside the polygon
-  octree(const CoordinateBounds &boundsIN, const Tii &depthlimit, const int objnum, const std::vector<T> &FACES)
+  octree(const CoordinateBounds& boundsIN, const Tii& depthlimit, const int objnum, const std::vector<T>& FACES)
       : CoordinateBounds(boundsIN), parent(nullptr), depth(0), top(this), faces_only_for_top(FACES), faces_({}), // inside(windingNumber(boundsIN.getCenter(), top->faces_only_for_top) > 0.75),
-        WNs(windingNumber((T8Tddd)boundsIN, top->faces_only_for_top)), inside(std::ranges::any_of(WNs, [](const auto &w_num) { return w_num > 0.6; })), children(generateChildrenParallel(depthlimit, objnum, FACES)) {};
-  octree(const CoordinateBounds &boundsIN, const Tii &depthlimit, const int objnum, const std::unordered_set<T> &FACES)
+        WNs(windingNumber((T8Tddd)boundsIN, top->faces_only_for_top)), inside(std::ranges::any_of(WNs, [](const auto& w_num) { return w_num > 0.6; })), children(generateChildrenParallel(depthlimit, objnum, FACES)) {};
+  octree(const CoordinateBounds& boundsIN, const Tii& depthlimit, const int objnum, const std::unordered_set<T>& FACES)
       : CoordinateBounds(boundsIN), parent(nullptr), depth(0), top(this), faces_only_for_top(std::vector<T>(FACES.begin(), FACES.end())), faces_({}), // inside(windingNumber(boundsIN.getCenter(), top->faces_only_for_top) > 0.75),
-        WNs(windingNumber((T8Tddd)boundsIN, top->faces_only_for_top)), inside(std::ranges::any_of(WNs, [](const auto &w_num) { return w_num > 0.6; })), children(generateChildrenParallel(depthlimit, objnum, faces_only_for_top)) {};
+        WNs(windingNumber((T8Tddd)boundsIN, top->faces_only_for_top)), inside(std::ranges::any_of(WNs, [](const auto& w_num) { return w_num > 0.6; })), children(generateChildrenParallel(depthlimit, objnum, faces_only_for_top)) {};
   /* ------------------------------------------------------ */
-  octree(const CoordinateBounds &boundsIN, const Tii &depthlimit, const int objnum, const std::vector<T> &FACES, octree<T> *const parentIN)
+  octree(const CoordinateBounds& boundsIN, const Tii& depthlimit, const int objnum, const std::vector<T>& FACES, octree<T>* const parentIN)
       : CoordinateBounds(boundsIN), parent(parentIN), depth(parentIN->depth + 1), top(parentIN->top), faces_only_for_top({}), faces_({}),
         //  inside((parentIN && FACES.empty()) ? parentIN->inside : (windingNumber(boundsIN.getCenter(), top->faces_only_for_top) > 0.75)),
-        WNs((parentIN && FACES.empty()) ? parentIN->WNs : windingNumber((T8Tddd)boundsIN, top->faces_only_for_top)), inside(std::ranges::any_of(WNs, [](const auto &w_num) { return w_num > 0.6; })), children(generateChildrenParallel(depthlimit, objnum, FACES)) {};
+        WNs((parentIN && FACES.empty()) ? parentIN->WNs : windingNumber((T8Tddd)boundsIN, top->faces_only_for_top)), inside(std::ranges::any_of(WNs, [](const auto& w_num) { return w_num > 0.6; })), children(generateChildrenParallel(depthlimit, objnum, FACES)) {};
   /* ------------------------------------------------------ */
-  std::vector<octree<T> *> generateChildrenParallel(const Tii &depthlimit, const int objnum, const std::vector<T> &FACES) {
+  std::vector<octree<T>*> generateChildrenParallel(const Tii& depthlimit, const int objnum, const std::vector<T>& FACES) {
     // std::vector<T> faces_;
     faces_.reserve(FACES.size());
     // これまでの取得方法
@@ -2711,7 +2735,7 @@ template <typename T> struct octree : public CoordinateBounds {
     //     if (IntersectQ(this->bounds, ToX(f))) faces_.emplace_back(f);
     //  キューブの球に入るものを取得．SPHで内部外部のチェックがうまくいかないことがあったので，faceを多く取得することにした
     //
-    for (const auto &f : FACES) {
+    for (const auto& f : FACES) {
       if (Norm(Nearest(this->X, ToX(f)) - this->X) <= this->getScale() / 2.)
         faces_.emplace_back(f);
     }
@@ -2720,7 +2744,7 @@ template <typename T> struct octree : public CoordinateBounds {
       const auto bounds8 = to8Bounds();
 
 #ifdef _OPENMP
-      std::vector<octree<T> *> ret(8);
+      std::vector<octree<T>*> ret(8);
 #pragma omp parallel sections
       {
 #pragma omp section
@@ -2747,10 +2771,10 @@ template <typename T> struct octree : public CoordinateBounds {
     } else
       return {};
   };
-  std::vector<octree<T> *> generateChildren(const Tii &depthlimit, const int objnum, std::vector<T> &FACES) {
+  std::vector<octree<T>*> generateChildren(const Tii& depthlimit, const int objnum, std::vector<T>& FACES) {
     // std::vector<T> faces_;
     faces_.reserve(FACES.size());
-    for (const auto &f : FACES)
+    for (const auto& f : FACES)
       if (IntersectQ(this->bounds, ToX(f)))
         faces_.emplace_back(f);
     if (std::get<0>(depthlimit) >= this->depth || (std::get<1>(depthlimit) >= this->depth && objnum <= faces_.size())) {
@@ -2764,12 +2788,12 @@ template <typename T> struct octree : public CoordinateBounds {
       return {};
   };
   /* ------------------------------------------------------ */
-  octree(const CoordinateBounds &boundsIN, const std::vector<T> &FACES, const Tii &depthlimit) : CoordinateBounds(boundsIN), parent(nullptr), depth(0), top(this), faces_only_for_top(FACES), faces_(voronoiConnectivity(FACES)), children(voronoiChildren(depthlimit, faces_)) {};
-  octree(const CoordinateBounds &boundsIN, const std::vector<T> &FACES, const Tii &depthlimit, octree<T> *const parentIN) : CoordinateBounds(boundsIN), parent(parentIN), depth(parentIN->depth + 1), top(parentIN->top), faces_(voronoiConnectivity(FACES)), children(voronoiChildren(depthlimit, faces_)) {};
-  std::vector<T> voronoiConnectivity(const std::vector<T> &FACES) const {
+  octree(const CoordinateBounds& boundsIN, const std::vector<T>& FACES, const Tii& depthlimit) : CoordinateBounds(boundsIN), parent(nullptr), depth(0), top(this), faces_only_for_top(FACES), faces_(voronoiConnectivity(FACES)), children(voronoiChildren(depthlimit, faces_)) {};
+  octree(const CoordinateBounds& boundsIN, const std::vector<T>& FACES, const Tii& depthlimit, octree<T>* const parentIN) : CoordinateBounds(boundsIN), parent(parentIN), depth(parentIN->depth + 1), top(parentIN->top), faces_(voronoiConnectivity(FACES)), children(voronoiChildren(depthlimit, faces_)) {};
+  std::vector<T> voronoiConnectivity(const std::vector<T>& FACES) const {
     Tdd minmax, r = {1E+10, 1E+10};
     std::vector<T> ret;
-    for (const auto &f : FACES) {
+    for (const auto& f : FACES) {
       minmax = Distance(ToX(f));
       if (std::get<0>(r) >= std::get<0>(minmax))
         std::get<0>(r) = std::get<0>(minmax);
@@ -2777,18 +2801,18 @@ template <typename T> struct octree : public CoordinateBounds {
         std::get<1>(r) = std::get<1>(minmax);
     }
     ret.reserve(FACES.size());
-    for (const auto &f : FACES) {
+    for (const auto& f : FACES) {
       minmax = Distance(ToX(f));
       if (Between(std::get<0>(minmax), r) || Between(std::get<1>(minmax), r) || Between(std::get<0>(r), minmax))
         ret.emplace_back(f);
     }
     return ret;
   };
-  std::vector<octree<T> *> voronoiChildren(const Tii &depthlimit, const std::vector<T> &faces) {
+  std::vector<octree<T>*> voronoiChildren(const Tii& depthlimit, const std::vector<T>& faces) {
     if (faces.empty() || std::get<0>(depthlimit) <= this->depth || std::get<1>(depthlimit) >= faces.size()) {
       return {};
     } else {
-      std::vector<octree<T> *> ret(8);
+      std::vector<octree<T>*> ret(8);
       const auto bounds8 = to8Bounds();
 #pragma omp parallel sections
       {
@@ -2815,27 +2839,28 @@ template <typename T> struct octree : public CoordinateBounds {
   void deleteOuside() {
     if (!this->children.empty()) {
       auto tmp = this->children;
-      for (auto &c : tmp)
+      for (auto& c : tmp)
         c->deleteOuside();
     } else if (!this->inside)
       delete this;
   };
   ~octree() {
     auto tmp = this->children;
-    for (const auto &c : tmp)
+    for (const auto& c : tmp)
       delete c;
     if (parent)
       parent->children.erase(std::remove(parent->children.begin(), parent->children.end(), this), parent->children.end());
   };
-  void getDescendants(auto &accum) const {
-    for (const auto &c : this->children) {
+  void getDescendants(auto& accum) const {
+    for (const auto& c : this->children) {
       accum.emplace(c);
       c->getDescendants(accum);
     }
   };
   bool hasChildren() const { return !this->children.empty(); };
   /* ------------------------------------------------------ */
-  template <typename U> bool isAllVertexInsideOf(const U &object) const {
+  template <typename U>
+  bool isAllVertexInsideOf(const U& object) const {
     /*
     このセルの頂点全てが，何かsの中に入っているか？
     all vertices of this cube are in the given object ?
@@ -2843,80 +2868,80 @@ template <typename T> struct octree : public CoordinateBounds {
     auto [X0, X1, X2, X3, X4, X5, X6, X7] = this->getVertices();
     return IntersectQ(object, X0) && IntersectQ(object, X1) && IntersectQ(object, X2) && IntersectQ(object, X3) && IntersectQ(object, X4) && IntersectQ(object, X5) && IntersectQ(object, X6) && IntersectQ(object, X7);
   };
-  bool isAllVertexInsideOf(const Tddd &s) const { return false; };
-  bool isAllVertexInsideOf(const Sphere &s) const {
+  bool isAllVertexInsideOf(const Tddd& s) const { return false; };
+  bool isAllVertexInsideOf(const Sphere& s) const {
     auto [X0, X1, X2, X3, X4, X5, X6, X7] = this->getVertices();
     return (Norm(X0 - s.center) <= s.radius && Norm(X1 - s.center) <= s.radius && Norm(X2 - s.center) <= s.radius && Norm(X3 - s.center) <= s.radius && Norm(X4 - s.center) <= s.radius && Norm(X5 - s.center) <= s.radius && Norm(X6 - s.center) <= s.radius && Norm(X7 - s.center) <= s.radius);
   };
   // b* -------------------------------------------------------------------------- */
   // b*                                INTERSECTIONS                               */
   // b* -------------------------------------------------------------------------- */
-  std::unordered_set<octree<T> *> getIntersectAsUnorderedSet(const auto &s) const { // 交わる最深階層にあるキューブ
-    std::unordered_set<octree<T> *> accum;
+  std::unordered_set<octree<T>*> getIntersectAsUnorderedSet(const auto& s) const { // 交わる最深階層にあるキューブ
+    std::unordered_set<octree<T>*> accum;
     accum.reserve(100000);
-    for (const auto &c : this->children)
+    for (const auto& c : this->children)
       c->getIntersect(accum, s);
     return accum;
   };
-  void getIntersect(std::unordered_set<octree<T> *> &accum, const auto &s) {
+  void getIntersect(std::unordered_set<octree<T>*>& accum, const auto& s) {
     if (!this->children.empty())
-      for (const auto &c : this->children)
+      for (const auto& c : this->children)
         c->getIntersect(accum, s);
     else if (this->inside && IntersectQ(this->bounds, s))
       accum.emplace(this);
   };
-  void getAllDeepest(std::unordered_set<octree<T> *> &accum) {
+  void getAllDeepest(std::unordered_set<octree<T>*>& accum) {
     if (!this->children.empty())
-      for (const auto &c : this->children)
+      for (const auto& c : this->children)
         c->getAllDeepest(accum);
     else
       accum.emplace(this);
   };
-  void getAllDeepestInside(std::unordered_set<octree<T> *> &accum) {
+  void getAllDeepestInside(std::unordered_set<octree<T>*>& accum) {
     if (!this->children.empty())
-      for (const auto &c : this->children)
+      for (const auto& c : this->children)
         c->getAllDeepestInside(accum);
     else if (this->inside)
       accum.emplace(this);
   };
-  void getAllDeepestInside(std::vector<octree<T> *> &accum) {
+  void getAllDeepestInside(std::vector<octree<T>*>& accum) {
     if (!this->children.empty())
-      for (const auto &c : this->children)
+      for (const auto& c : this->children)
         c->getAllDeepestInside(accum);
     else if (this->inside)
       accum.emplace_back(this);
   };
-  std::unordered_set<octree<T> *> getAllDeepest() {
-    std::unordered_set<octree<T> *> ret;
+  std::unordered_set<octree<T>*> getAllDeepest() {
+    std::unordered_set<octree<T>*> ret;
     if (!this->children.empty())
-      for (const auto &c : this->children)
+      for (const auto& c : this->children)
         c->getAllDeepest(ret);
     else
       ret.emplace(this);
     return ret;
   };
   /* ------------------------------------------------------ */
-  void getDepth(const int &d, std::unordered_set<octree<T> *> &accum) {
+  void getDepth(const int& d, std::unordered_set<octree<T>*>& accum) {
     if (this->depth < d && !this->children.empty())
-      for (const auto &c : this->children)
+      for (const auto& c : this->children)
         c->getDepth(d, accum);
     else if (this->depth == d)
       accum.emplace(this);
   };
-  std::unordered_set<octree<T> *> getDepth(const int &d) {
-    std::unordered_set<octree<T> *> ret;
+  std::unordered_set<octree<T>*> getDepth(const int& d) {
+    std::unordered_set<octree<T>*> ret;
     if (this->depth < d && !this->children.empty())
-      for (const auto &c : this->children)
+      for (const auto& c : this->children)
         c->getDepth(d, ret);
     else if (this->depth == d)
       ret.emplace(this);
     return ret;
   };
   /* ------------------------------------------------------ */
-  std::unordered_set<octree<T> *> getAllDeepestInside() {
-    std::unordered_set<octree<T> *> ret;
+  std::unordered_set<octree<T>*> getAllDeepestInside() {
+    std::unordered_set<octree<T>*> ret;
     if (!this->children.empty())
-      for (const auto &c : this->children)
+      for (const auto& c : this->children)
         c->getAllDeepestInside(ret);
     else if (this->inside) // 全てあるかないかなので，一つでもnullptrなら，最後の階層と考えられる．
       ret.emplace(this);
@@ -2924,18 +2949,18 @@ template <typename T> struct octree : public CoordinateBounds {
   };
   /* ------------------------------------------------------ */
   // ここからかんがえてみよう
-  void isIntersectInside(bool &found, const auto &s) {
+  void isIntersectInside(bool& found, const auto& s) {
     if (!found && IntersectQ(this->bounds, s)) {
       if (!this->children.empty()) {
-        for (const auto &c : this->children)
+        for (const auto& c : this->children)
           c->isIntersectInside(found, s);
       } else if (this->inside)
         found = true;
     }
   };
-  bool isIntersectInside(const auto &s) const { // 交わる最深階層にあるキューブ
+  bool isIntersectInside(const auto& s) const { // 交わる最深階層にあるキューブ
     bool found = false;
-    for (const auto &c : this->children)
+    for (const auto& c : this->children)
       c->isIntersectInside(found, s);
     return found;
   };
@@ -2952,35 +2977,35 @@ template <typename T> struct octree : public CoordinateBounds {
     このように，高速に判定が終了する場合が多い．
     球体表面付近だけ，オブジェクトが位置する場合，探査に時間がかかってしまうと考えられる．
    */
-  bool findIntersect(const auto &s, const std::function<bool(const T &)> &func) const {
+  bool findIntersect(const auto& s, const std::function<bool(const T&)>& func) const {
     if (this->faces_.empty() || !IntersectQ(this->bounds, s.bounds))
       return false;
     // 最下層の場合は，オブジェクト全てとの干渉を調べる
     if (this->children.empty() /*最下層に到達した場合*/) {
-      for (const auto &f : this->faces_)
+      for (const auto& f : this->faces_)
         if (func(f))
           return true;
     }
     // さらに下層を探査する
-    for (const auto &c : this->children) {
+    for (const auto& c : this->children) {
       if (c->findIntersect(s, func))
         return true;
     }
     return false;
   };
-  bool none_of(const Tddd &x, const double radius /*検索半径*/, const std::function<bool(const T &)> &func) const {
+  bool none_of(const Tddd& x, const double radius /*検索半径*/, const std::function<bool(const T&)>& func) const {
     Sphere sphere(x, radius);
     if (IntersectQ(this->bounds, sphere))
-      for (const auto &c : this->children)
+      for (const auto& c : this->children)
         if (c->findIntersect(sphere, func))
           return false;
     return true;
   };
-  bool none_of(const Tddd &x, const std::function<bool(const T &)> &func) const {
+  bool none_of(const Tddd& x, const std::function<bool(const T&)>& func) const {
     /*検索半径無限大*/
     Sphere sphere(x, 1E+20);
     if (IntersectQ(this->bounds, sphere))
-      for (const auto &c : this->children)
+      for (const auto& c : this->children)
         if (c->findIntersect(sphere, func))
           return false;
     return true;
@@ -3003,70 +3028,70 @@ template <typename T> struct octree : public CoordinateBounds {
   //    return false;
   // };
   /* ------------------------------------------------------- */
-  void getIntersect(std::vector<octree<T> *> &accum, const auto &s) {
+  void getIntersect(std::vector<octree<T>*>& accum, const auto& s) {
     if (IntersectQ(this->bounds, s)) {
       if (!this->children.empty())
-        for (const auto &c : this->children)
+        for (const auto& c : this->children)
           c->getIntersect(accum, s);
       else
         accum.emplace_back(this);
     }
   };
-  std::vector<octree<T> *> getIntersect(const auto &s) const { // 交わる最深階層にあるキューブ
-    std::vector<octree<T> *> accum;
+  std::vector<octree<T>*> getIntersect(const auto& s) const { // 交わる最深階層にあるキューブ
+    std::vector<octree<T>*> accum;
     accum.reserve(100000);
-    for (const auto &c : this->children)
+    for (const auto& c : this->children)
       c->getIntersect(accum, s);
     return accum;
   };
   /* ------------------------------------------------------- */
-  void getIntersect(octree<T> *&p_cell, const Tddd &X) {
+  void getIntersect(octree<T>*& p_cell, const Tddd& X) {
     if (!p_cell && IntersectQ(this->bounds, X)) {
       if (!this->children.empty()) {
-        for (const auto &c : this->children)
+        for (const auto& c : this->children)
           c->getIntersect(p_cell, X);
       } else if (this->inside)
         p_cell = this;
     }
   };
-  octree<T> *getIntersect(const Tddd &X) const { // 交わる最深階層にあるキューブ
-    octree<T> *p_cell = nullptr;
-    for (const auto &c : this->children)
+  octree<T>* getIntersect(const Tddd& X) const { // 交わる最深階層にあるキューブ
+    octree<T>* p_cell = nullptr;
+    for (const auto& c : this->children)
       c->getIntersect(p_cell, X);
     return p_cell;
   };
 
   /* ------------------------------------------------------- */
-  void getIntersectInside(std::vector<octree<T> *> &accum, const auto &s) {
+  void getIntersectInside(std::vector<octree<T>*>& accum, const auto& s) {
     if (IntersectQ(this->bounds, s)) {
       if (!this->children.empty()) {  //! c->c0とせずにc0とだけすることによる問題が多い
                                       // b! 今のエラーは，ここのエラーではない．sphereの干渉チェックの問題
         if (isAllVertexInsideOf(s)) { // 全ての頂点がsの内部にあるので，以降，干渉チェックは行わない．
-          for (const auto &c : this->children)
+          for (const auto& c : this->children)
             c->getAllDeepestInside(accum);
         } else {
-          for (const auto &c : this->children)
+          for (const auto& c : this->children)
             c->getIntersectInside(accum, s);
         }
       } else if (this->inside)
         accum.emplace_back(this);
     }
   };
-  std::vector<octree<T> *> getIntersectInside(const auto &s) const { // 交わる最深階層にあるキューブ
-    std::vector<octree<T> *> accum;
+  std::vector<octree<T>*> getIntersectInside(const auto& s) const { // 交わる最深階層にあるキューブ
+    std::vector<octree<T>*> accum;
     accum.reserve(100000);
-    for (const auto &c : this->children)
+    for (const auto& c : this->children)
       c->getIntersectInside(accum, s);
     return accum;
   };
-  void apply(const std::function<void(octree<T> *)> &func) const { // 交わる最深階層にあるキューブ
-    for (const auto &c : this->children)
+  void apply(const std::function<void(octree<T>*)>& func) const { // 交わる最深階層にあるキューブ
+    for (const auto& c : this->children)
       func(c);
   };
-  void apply(const std::function<void(octree<T> *)> &func, const auto &s) {
+  void apply(const std::function<void(octree<T>*)>& func, const auto& s) {
     if (IntersectQ(this->bounds, s)) {
       if (!this->children.empty()) { //! c->c0とせずにc0とだけすることによる問題が多い
-        for (const auto &c : this->children)
+        for (const auto& c : this->children)
           c->apply(func, s);
       } else if (this->inside)
         func(this);
@@ -3075,14 +3100,15 @@ template <typename T> struct octree : public CoordinateBounds {
   // b! -------------------------------------------------------------------------- */
   // b!                              SETTING NEIGHBORS                             */
   // b! -------------------------------------------------------------------------- */
-  std::unordered_set<octree<T> *> neighbors;
+  std::unordered_set<octree<T>*> neighbors;
   std::array<T, 8> nearest_face;
   std::unordered_set<T> nearest_faces;
   std::array<bool, 8> bools;
   T8d scalers;
   T8Tddd vectors;
   std::unordered_set<T> checked_faces_passed;
-  template <typename U> U Interpolate(const Tddd &X, const std::array<U, 8> &c) const {
+  template <typename U>
+  U Interpolate(const Tddd& X, const std::array<U, 8>& c) const {
     const auto [x, y, z] = X;
     const auto [c000, c001, c010, c011, c100, c101, c110, c111] = c;
     const auto [x0, x1] = std::get<0>(this->bounds);
@@ -3090,7 +3116,8 @@ template <typename T> struct octree : public CoordinateBounds {
     const auto [z0, z1] = std::get<2>(this->bounds);
     return (-(((c111 * (x - x0) + c011 * (-x + x1)) * (y - y0) + (c101 * (-x + x0) + c001 * (x - x1)) * (y - y1)) * (z - z0)) + ((c110 * (x - x0) + c010 * (-x + x1)) * (y - y0) + (c100 * (-x + x0) + c000 * (x - x1)) * (y - y1)) * (z - z1)) / ((x0 - x1) * (y0 - y1) * (z0 - z1));
   };
-  template <typename U> U Integrate(const std::array<U, 8> &c) const {
+  template <typename U>
+  U Integrate(const std::array<U, 8>& c) const {
     const auto [c000, c001, c010, c011, c100, c101, c110, c111] = c;
     const auto [x0, x1] = std::get<0>(this->bounds);
     const auto [y0, y1] = std::get<1>(this->bounds);
@@ -3105,7 +3132,7 @@ template <typename T> struct octree : public CoordinateBounds {
     にセットする．
     */
     double distance;
-    for (const auto &c : this->getAllDeepest()) {
+    for (const auto& c : this->getAllDeepest()) {
       c->neighbors.clear();
       auto [X0, X1] = std::get<0>(c->bounds);
       auto [Y0, Y1] = std::get<1>(c->bounds);
@@ -3113,7 +3140,7 @@ template <typename T> struct octree : public CoordinateBounds {
       auto d0 = (X1 - X0) * 0.2;
       auto d1 = (Y1 - Y0) * 0.2;
       auto d2 = (Z1 - Z0) * 0.2;
-      for (const auto &v : top->getIntersectInside(T3Tdd{{{X0 - d0, X1 + d0}, {Y0 - d1, Y1 + d1}, {Z0 - d2, Z1 + d2}}})) {
+      for (const auto& v : top->getIntersectInside(T3Tdd{{{X0 - d0, X1 + d0}, {Y0 - d1, Y1 + d1}, {Z0 - d2, Z1 + d2}}})) {
         if (v != c)
           c->neighbors.emplace(v);
       }
@@ -3122,14 +3149,15 @@ template <typename T> struct octree : public CoordinateBounds {
 };
 
 // template <typename = typename std::enable_if<std::is_same<T, T3Tddd>::value>::type>
-template <typename T> inline void setVectorsToTriangle(octree<T> &tree) {
+template <typename T>
+inline void setVectorsToTriangle(octree<T>& tree) {
   auto tmp = tree.getAllDeepestInside();
-  for (const auto &cell : tmp) {
+  for (const auto& cell : tmp) {
     cell->checked_faces_passed.clear();
     cell->bools = {false, false, false, false, false, false, false, false};
-    for (const auto &f : cell->faces_) {
+    for (const auto& f : cell->faces_) {
       // 各頂点にとって最も近い点を抽出
-      for_each01111(cell->getVertices(), cell->scalers, cell->vectors, cell->nearest_face, cell->bools, [&](const auto &x, auto &s, auto &v, auto &f4v, auto &b) {
+      for_each01111(cell->getVertices(), cell->scalers, cell->vectors, cell->nearest_face, cell->bools, [&](const auto& x, auto& s, auto& v, auto& f4v, auto& b) {
         auto XonTriangle = Nearest(x, ToX(f));
         if (Norm(XonTriangle - x) <= s || !b) {
           s = Norm(XonTriangle - x);
@@ -3152,12 +3180,12 @@ template <typename T> inline void setVectorsToTriangle(octree<T> &tree) {
   }
   //
   for (int i = 0; i < 5; ++i)
-    for (const auto &cell : tmp) { // cellにとって，最も近い面を，neighborsから探す
-      for (const auto &nei : cell->neighbors) {
-        std::ranges::for_each(nei->nearest_face, nei->bools, [&](const auto &f, const auto &B) {
+    for (const auto& cell : tmp) { // cellにとって，最も近い面を，neighborsから探す
+      for (const auto& nei : cell->neighbors) {
+        std::ranges::for_each(nei->nearest_face, nei->bools, [&](const auto& f, const auto& B) {
           if (B && (cell->checked_faces_passed.emplace(f)).second) {
             // std::cout << "各頂点にとって最も近い点を抽出" << std::endl;
-            for_each01111(cell->getVertices(), cell->scalers, cell->vectors, cell->nearest_face, cell->bools, [&](const auto &x, auto &s, auto &v, auto &f4v, auto &b) {
+            for_each01111(cell->getVertices(), cell->scalers, cell->vectors, cell->nearest_face, cell->bools, [&](const auto& x, auto& s, auto& v, auto& f4v, auto& b) {
               auto XonTriangle = Nearest(x, ToX(f));
               if (Norm(XonTriangle - x) <= s || !b) {
                 s = Norm(XonTriangle - x);
@@ -3178,11 +3206,11 @@ template <typename T> inline void setVectorsToTriangle(octree<T> &tree) {
             //               });
           }
         });
-        for (const auto &f : nei->faces_)
+        for (const auto& f : nei->faces_)
           if (cell->checked_faces_passed.emplace(f).second) {
             // std::cout << "各頂点にとって最も近い点を抽出" << std::endl;
 
-            for_each01111(cell->getVertices(), cell->scalers, cell->vectors, cell->nearest_face, cell->bools, [&](const auto &x, auto &s, auto &v, auto &f4v, auto &b) {
+            for_each01111(cell->getVertices(), cell->scalers, cell->vectors, cell->nearest_face, cell->bools, [&](const auto& x, auto& s, auto& v, auto& f4v, auto& b) {
               auto XonTriangle = Nearest(x, ToX(f));
               if (Norm(XonTriangle - x) <= s || !b) {
                 s = Norm(XonTriangle - x);
@@ -3206,5 +3234,6 @@ template <typename T> inline void setVectorsToTriangle(octree<T> &tree) {
       }
     }
 };
-template <typename T> inline void setVectorsToTriangle(octree<T> *tree) { setVectorsToTriangle(*tree); };
+template <typename T>
+inline void setVectorsToTriangle(octree<T>* tree) { setVectorsToTriangle(*tree); };
 #endif

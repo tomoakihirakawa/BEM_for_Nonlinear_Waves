@@ -209,6 +209,14 @@ VV_VarForOutput dataForOutput(const Network* water, const double dt) {
     uomap_DOF_d P_lf_pressure_detachment_eligible_count = dof_d0;
     uomap_DOF_d P_lf_detached_by_pressure_count = dof_d0;
 
+    // Curvature-based mesh density control
+    uomap_DOF_d P_geom_kmax = dof_d0;
+    uomap_DOF_d P_geom_k1 = dof_d0;
+    uomap_DOF_d P_geom_k2 = dof_d0;
+    uomap_DOF_d P_geom_curvature_valid = dof_d0;
+    uomap_DOF_Tddd P_geom_PD1 = dof_tdd0;
+    uomap_DOF_Tddd P_geom_PD2 = dof_tdd0;
+
     uomap_F_d F_lagrangian_surface_nearest_mean;
     uomap_F_d F_lagrangian_surface_nearest_max;
     uomap_F_d F_lagrangian_surface_global_fallback;
@@ -444,6 +452,13 @@ VV_VarForOutput dataForOutput(const Network* water, const double dt) {
           P_minDepthFromCORNER[p] = p->minDepthFromCORNER;
           P_minDepthFromMultipleNode[p] = p->minDepthFromMultipleNode;
           P_almost_solid_angle[p] = p->almost_solid_angle;
+          // Curvature-based mesh density
+          P_geom_kmax[p] = p->geom_curvature.kmax;
+          P_geom_k1[p] = p->geom_curvature.k1;
+          P_geom_k2[p] = p->geom_curvature.k2;
+          P_geom_curvature_valid[p] = p->geom_curvature.valid ? 1.0 : 0.0;
+          P_geom_PD1[p] = p->geom_curvature.PD1;
+          P_geom_PD2[p] = p->geom_curvature.PD2;
         } catch (const std::exception& e) {
           const int fail_idx = output_eval_fail_count.fetch_add(1) + 1;
           P_position[p] = ToX(p);
@@ -479,19 +494,7 @@ VV_VarForOutput dataForOutput(const Network* water, const double dt) {
         auto [pA, pB] = l->getPoints();
         // Direct midpoint values
         P_phi[l] = l->phiphin[0];
-        if (auto* d0 = l->findActiveBieDof(nullptr))
-          P_phin[l] = d0->phin;
-        else {
-          double wa = 0., wp = 0.;
-          for (auto* f : l->getBoundaryFaces())
-            if (f) {
-              if (auto* df = l->findActiveBieDof(f)) {
-                wp += df->phin * f->area;
-                wa += f->area;
-              }
-            }
-          P_phin[l] = (wa > 0.) ? wp / wa : l->phiphin[1];
-        }
+        P_phin[l] = l->phiphin[1];
         P_phi_t[l] = l->phiphin_t[0];
         P_phin_t[l] = l->phiphin_t[1];
         P_diag[l] = l->diag_coeff_BEM;
@@ -593,6 +596,12 @@ VV_VarForOutput dataForOutput(const Network* water, const double dt) {
         avg_d(P_minDepthFromCORNER);
         avg_d(P_minDepthFromMultipleNode);
         avg_d(P_almost_solid_angle);
+        avg_d(P_geom_kmax);
+        avg_d(P_geom_k1);
+        avg_d(P_geom_k2);
+        avg_d(P_geom_curvature_valid);
+        avg_v(P_geom_PD1);
+        avg_v(P_geom_PD2);
         avg_d(P_phin_t_from_Hessian);
         avg_d(P_facesNeuamnn);
         avg_v(P_accelNeumann);
@@ -669,6 +678,7 @@ VV_VarForOutput dataForOutput(const Network* water, const double dt) {
           {"body_vertices_count", P_body_vertices_count},
           {"isInContact_pass_count", P_isInContact_pass_count},
           {"pressure", P_pressure},
+          // Note: component_id CellData is added conditionally below
           //  {"P_V2ContactFaces0", P_V2ContactFaces0},
           //  {"P_V2ContactFaces1", P_V2ContactFaces1},
           //  {"P_V2ContactFaces2", P_V2ContactFaces2},
@@ -678,7 +688,21 @@ VV_VarForOutput dataForOutput(const Network* water, const double dt) {
           //  {"P_minDepthFromCORNER", P_minDepthFromCORNER},
           //  {"P_minDepthFromMultipleNode", P_minDepthFromMultipleNode},
           //  {"P_almost_solid_angle", P_almost_solid_angle}
+          {"geom_kmax", P_geom_kmax},
+          {"geom_k1", P_geom_k1},
+          {"geom_k2", P_geom_k2},
+          {"geom_curvature_valid", P_geom_curvature_valid},
+          {"geom_PD1", P_geom_PD1},
+          {"geom_PD2", P_geom_PD2},
       };
+      // Multi-part rigid body: add component_id as CellData
+      if (!water->component_names.empty()) {
+        uomap_F_d F_component_id;
+        for (const auto& f : water->getBoundaryFaces())
+          F_component_id[const_cast<networkFace*>(f)] = static_cast<double>(f->component_id);
+        data.push_back({"component_id", F_component_id});
+      }
+
       return data;
     } catch (const error_message&) {
       throw;

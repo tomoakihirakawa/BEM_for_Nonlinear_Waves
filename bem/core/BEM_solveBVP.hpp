@@ -237,6 +237,52 @@ struct calculateFluidInteraction {
     return {force, torque};
   };
 
+  // Integrate pressure on a subset of acting faces, with explicit torque reference point
+  std::array<Tddd, 2> surfaceIntegralOfPressureOnSubset(
+      const std::vector<networkFace*>& subset,
+      const Tddd& reference_COM) const {
+    Tddd force = {0., 0., 0.}, torque = {0., 0., 0.};
+    for (const auto& f : subset) {
+      Tddd F_tmp = {0., 0., 0.}, T_tmp = {0., 0., 0.};
+      auto [p0, p1, p2] = f->getPoints();
+      if (use_true_quadratic_element && f->isTrueQuadraticElement) {
+        const auto& [l0, l1, l2] = f->Lines;
+        const std::array<double, 6> P6 = {
+            pressureAtActivePoint(p0, f), pressureAtActivePoint(p1, f), pressureAtActivePoint(p2, f),
+            pressureAtActiveMidpoint(l0, f), pressureAtActiveMidpoint(l1, f), pressureAtActiveMidpoint(l2, f)};
+        const T6Tddd X6 = {p0->X, p1->X, p2->X, l0->X_mid, l1->X_mid, l2->X_mid};
+        constexpr std::array<bool, 3> all_true{true, true, true};
+        for (const auto& [x0, x1, w0w1] : __GWGW10__Tuple) {
+          auto bary = ModTriShape<3>(x0, x1);
+          auto N6 = f->trueQuadN6(bary[0], bary[1]);
+          auto dN_dt0 = D_TriShape<6, 1, 0>(bary[0], bary[1], all_true);
+          auto dN_dt1 = D_TriShape<6, 0, 1>(bary[0], bary[1], all_true);
+          auto X_q = Dot(TriShape<6>(bary[0], bary[1], all_true), X6);
+          auto cross_q = Cross(Dot(dN_dt0, X6), Dot(dN_dt1, X6));
+          auto pressure_q = Dot(N6, P6);
+          auto df = pressure_q * w0w1 * (1. - x0) * cross_q;
+          F_tmp += df;
+          T_tmp += Cross(X_q - reference_COM, df);
+        }
+      } else {
+        std::array<double, 3> P012 = {
+            pressureAtActivePoint(p0, f), pressureAtActivePoint(p1, f), pressureAtActivePoint(p2, f)};
+        std::array<std::array<double, 3>, 3> X012 = {p0->X, p1->X, p2->X};
+        auto intpP = interpolationTriangleLinear0101(P012);
+        auto intpX = interpolationTriangleLinear0101(X012);
+        auto n = TriangleNormal(X012);
+        for (const auto& [x0, x1, w0w1] : __GWGW10__Tuple) {
+          auto df = intpP(x0, x1) * intpX.J(x0, x1) * w0w1 * n;
+          F_tmp += df;
+          T_tmp += Cross(intpX(x0, x1) - reference_COM, df);
+        }
+      }
+      force += F_tmp;
+      torque += T_tmp;
+    }
+    return {force, torque};
+  };
+
   std::array<Tddd, 2> surfaceIntegralOfVerySimplifiedDrag() {
     this->simplified_drag.fill(0.);
     this->simplified_drag_torque.fill(0.);
@@ -629,7 +675,7 @@ struct BEM_BVP {
   int matrix_size = 0;
 
   /*展開次数*/
-  Buckets<std::shared_ptr<source4FMM<target4FMM>>, 6 /*展開項数*/> B_poles;
+  Buckets<std::shared_ptr<source4FMM<target4FMM>>, 10 /*展開項数*/> B_poles;
 
   std::array<double, 3> solve() {
     TimeWatch watch, watch_from_start;

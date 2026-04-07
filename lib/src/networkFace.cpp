@@ -2,6 +2,36 @@
 #include "Network.hpp"
 #include "pch.hpp"
 
+bool networkFace::replace(netP* const oldP, netP* const newP) {
+  bool found = false;
+  if (std::get<0>(this->Points) == oldP) {
+    std::get<0>(this->Points) = newP;
+    found = true;
+  } else if (std::get<1>(this->Points) == oldP) {
+    std::get<1>(this->Points) = newP;
+    found = true;
+  } else if (std::get<2>(this->Points) == oldP) {
+    std::get<2>(this->Points) = newP;
+    found = true;
+  }
+  if (found) {
+    if (std::get<0>(this->PLPLPL) == oldP)
+      std::get<0>(this->PLPLPL) = newP;
+    else if (std::get<2>(this->PLPLPL) == oldP)
+      std::get<2>(this->PLPLPL) = newP;
+    else if (std::get<4>(this->PLPLPL) == oldP)
+      std::get<4>(this->PLPLPL) = newP;
+
+    // 面の全頂点を invalidate（法線・面積が変わるため）
+    auto [p0, p1, p2] = this->Points;
+    if (p0) p0->geom_curvature.valid = false;
+    if (p1) p1->geom_curvature.valid = false;
+    if (p2) p2->geom_curvature.valid = false;
+    if (oldP) oldP->geom_curvature.valid = false;
+  }
+  return found;
+};
+
 namespace {
 
 bool isPointFaceNeumannLocal(const networkPoint* p, const networkFace* f) {

@@ -1,0 +1,11 @@
+{
+    "name": "wavemaker",
+    "type": "RigidBody",
+    "velocity": [
+        "Goring1979",
+        3.0,
+        0.025,
+        0.25
+    ],
+    "objfile": ["../../../obj/Goring1979/wavemaker.obj"]
+}

@@ -14,7 +14,7 @@
 #include <utility>
 #include <vector>
 
-#include "BEM_freqency_domain.hpp"
+#include "BEM_frequency_domain.hpp"
 #include "basic_vectors.hpp"
 #include "rootFinding.hpp"
 
@@ -228,8 +228,11 @@ struct SolutionIndex {
 inline SolutionIndex build_solution_index(const Solution &sol) {
   SolutionIndex idx;
   idx.index.reserve(sol.n);
-  for (std::size_t i = 0; i < sol.n; ++i)
-    idx.index.emplace(sol.id_by_index[i], i);
+  for (std::size_t i = 0; i < sol.n; ++i) {
+    const auto &d = sol.id_by_index[i];
+    if (d.is_point()) // Line DOFs are not indexed for QTF (postprocess is point-only)
+      idx.index.emplace(Id{d.point, d.face}, i);
+  }
   return idx;
 }
 
@@ -248,8 +251,11 @@ inline Complex lookup_phi(const Solution &sol, const SolutionIndex &idx, const n
 inline LinearSolution capture_linear_solution(double omega, const Solution &sol, const std::unordered_set<networkFace *> &faces) {
   std::unordered_map<Id, std::size_t, IdHash, IdEq> index;
   index.reserve(sol.n);
-  for (std::size_t i = 0; i < sol.n; ++i)
-    index.emplace(sol.id_by_index[i], i);
+  for (std::size_t i = 0; i < sol.n; ++i) {
+    const auto &d = sol.id_by_index[i];
+    if (d.is_point())
+      index.emplace(Id{d.point, d.face}, i);
+  }
 
   auto lookup = [&](const networkPoint *p, const networkFace *f, const std::vector<Complex> &vals) -> Complex {
     Id key{const_cast<networkPoint *>(p), const_cast<networkFace *>(f)};

@@ -315,6 +315,8 @@ int main(int argc, char** argv) {
   PVDWriter cornerPointsPVD(output_directory / "cornerPointsPVD.pvd");
   PVDWriter DirichletSurfacePVD(output_directory / "DirichletSurface.pvd");
   PVDWriter vpm_pvd(output_directory / "vpm.pvd");
+  // patch PVD は FluidObject ごとに1つ。v1 では最初の FluidObject の名前を使う。
+  PVDWriter patch_pvd((output_directory / (FluidObject.empty() ? "patch.pvd" : (FluidObject[0]->getName() + "_patch.pvd"))).string());
   Print("setting done");
 
   /*DOC_EXTRACT 0_1_BEM
@@ -600,10 +602,18 @@ int main(int argc, char** argv) {
           //@ --- 3c-2a. Remesh + quality checks ---
           _Pragma("omp parallel for") for (const auto& net : AllObjects) net->makeBuckets(net->getScale() / 10.);
           refreshBoundaryStatesAndTypes(FluidObject, Join(RigidBodyObject, SoftBodyObject));
+          // 診断: remesh 前の penetration 状態をログ出力（throw しない）
+          try {
+            BEM_Penetration::throwIfStructurePenetrated(FluidObject, Join(RigidBodyObject, SoftBodyObject), time_step, "pre-remesh-diag", use_true_quadratic_element);
+          } catch (const step_failure& e) {
+            std::cout << Yellow << "[pre-remesh penetration] " << e.what() << colorReset << std::endl;
+          }
           for (auto& water : FluidObject) {
             remesh_for_main_loop(*water, time_step, min_edge_length, tetrahedralize, surface_flip, setting.remeshing.collision,
                                  setting.remeshing.surface_split, setting.remeshing.surface_collapse,
-                                 retry_state.degraded_mode);
+                                 setting.remeshing.surface_smoothing,
+                                 retry_state.degraded_mode,
+                                 output_directory.string(), simulation_time, &patch_pvd);
             retry_state.collapse_repeatedly_rejected_faces(*water, step_retry);
             if (!retry_state.degraded_mode) {
               refreshFaceBadQualityHistory(*water, time_step, std::nullopt, 0.1, subsurface_altitude_reject);
@@ -1049,12 +1059,17 @@ int main(int argc, char** argv) {
             applyAbsorptionAndPush(fluid_nodes, mean_phi,
                                    node_relocation_method == NodeRelocationMethod::ALE);
 
-            //& --- Inactive line: 頂点の線形補間で値を維持 ---
+            //& --- Inactive line: 頂点の線形補間で値を維持 + 壁スナッピング ---
             for (auto* water : FluidObject)
               for (auto* l : water->getBoundaryLines())
                 if (!l->hasActiveBieDof()) {
                   auto [pA, pB] = l->getPoints();
-                  l->setXSingle(0.5 * (pA->X + pB->X));
+                  Tddd X_mid_linear = 0.5 * (pA->X + pB->X);
+                  // node relocation で計算された clungSurface を反映
+                  // (凸壁で端点平均が貫入するのを防止)
+                  if (isFinite(l->clungSurface) && Norm(l->clungSurface) > 1e-16)
+                    X_mid_linear = X_mid_linear + l->clungSurface;
+                  l->setXSingle(X_mid_linear);
                   l->phiphin[0] = 0.5 * (std::get<0>(pA->phiphin) + std::get<0>(pB->phiphin));
                 }
 

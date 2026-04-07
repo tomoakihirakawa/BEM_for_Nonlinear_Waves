@@ -45,6 +45,61 @@ struct FaceAltitudeDetail {
   int subface_index = -1;
 };
 
+namespace remesh_detail {
+
+inline std::vector<networkLine*> collect_non_adjacent(const std::vector<networkLine*>& candidates) {
+  std::vector<networkLine*> batch;
+  std::unordered_set<networkPoint*> used_points;
+  batch.reserve(candidates.size());
+  used_points.reserve(candidates.size() * 2);
+  for (auto* l : candidates) {
+    if (!l)
+      continue;
+    auto [p0, p1] = l->getPoints();
+    if (!p0 || !p1)
+      continue;
+    if (used_points.contains(p0) || used_points.contains(p1))
+      continue;
+    used_points.insert(p0);
+    used_points.insert(p1);
+    batch.emplace_back(l);
+  }
+  return batch;
+}
+
+inline void gather_neighbor_lines(const networkLine* l, std::unordered_set<networkLine*>& out) {
+  if (!l)
+    return;
+  auto [p0, p1] = l->getPoints();
+  auto add_from_point = [&](networkPoint* p) {
+    if (!p)
+      return;
+    for (auto* nl : p->getBoundaryLines())
+      if (nl)
+        out.insert(nl);
+  };
+  add_from_point(p0);
+  add_from_point(p1);
+  for (auto* f : l->getBoundaryFaces())
+    if (f)
+      for (auto* nl : f->getLines())
+        if (nl)
+          out.insert(nl);
+}
+
+inline std::unordered_set<networkLine*> build_protection_halo(const std::unordered_set<networkLine*>& seeds) {
+  std::unordered_set<networkLine*> halo = seeds;
+  std::vector<networkLine*> queue(seeds.begin(), seeds.end());
+  for (auto* l : queue) {
+    if (!l)
+      continue;
+    gather_neighbor_lines(l, halo);
+  }
+  return halo;
+}
+
+} // namespace remesh_detail
+
 inline std::string faceBadQualityHistorySummary(const networkFace* face) {
   if (!face || face->bad_quality_history.empty())
     return "";
@@ -597,7 +652,9 @@ inline bool collapseFaceByIndexIfPossible(Network& water, const int face_index) 
 
   if (try_collapse(false))
     return true;
-  return try_collapse(true);
+  // CORNER edges should not be collapsed — they are feature edges
+  // return try_collapse(true);
+  return false;
 }
 
 inline FaceAltitudeDetail faceAltitudeRelativeToSharedEdgeDetail(networkFace* face, networkLine* shared_line) {
@@ -814,44 +871,6 @@ inline bool flipIfBatched(Network& water, const Tdd& limit_Dirichlet, const Tdd&
   std::cout << "flipIf (batched)" << (tag ? std::string(" ") + tag : "") << std::endl;
   water.setGeometricPropertiesForce();
   auto line_alive = [&](const networkLine* l) { return l && (water.Lines.find(const_cast<networkLine*>(l)) != water.Lines.end()); };
-  auto collect_non_adjacent = [&](const std::vector<networkLine*>& candidates) {
-    std::vector<networkLine*> batch;
-    std::unordered_set<networkPoint*> used_points;
-    batch.reserve(candidates.size());
-    used_points.reserve(candidates.size() * 2);
-    for (auto* l : candidates) {
-      if (!l)
-        continue;
-      auto [p0, p1] = l->getPoints();
-      if (!p0 || !p1)
-        continue;
-      if (used_points.contains(p0) || used_points.contains(p1))
-        continue;
-      used_points.insert(p0);
-      used_points.insert(p1);
-      batch.emplace_back(l);
-    }
-    return batch;
-  };
-  auto gather_neighbor_lines = [&](const networkLine* l, std::unordered_set<networkLine*>& out) {
-    if (!l)
-      return;
-    auto [p0, p1] = l->getPoints();
-    auto add_from_point = [&](networkPoint* p) {
-      if (!p)
-        return;
-      for (auto* nl : p->getBoundaryLines())
-        if (nl)
-          out.insert(nl);
-    };
-    add_from_point(p0);
-    add_from_point(p1);
-    for (auto* f : l->getBoundaryFaces())
-      if (f)
-        for (auto* nl : f->getLines())
-          if (nl)
-            out.insert(nl);
-  };
 
   int total_flipped = 0;
   std::unordered_set<networkLine*> dirty;
@@ -868,7 +887,7 @@ inline bool flipIfBatched(Network& water, const Tdd& limit_Dirichlet, const Tdd&
     if (candidates.empty())
       break;
     auto shuffled = RandomSample(candidates);
-    auto batch = collect_non_adjacent(shuffled);
+    auto batch = remesh_detail::collect_non_adjacent(shuffled);
     if (batch.empty())
       break;
     int flipped_in_batch = 0;
@@ -889,7 +908,7 @@ inline bool flipIfBatched(Network& water, const Tdd& limit_Dirichlet, const Tdd&
       if (flipped) {
         flipped_in_batch++;
         total_flipped++;
-        gather_neighbor_lines(l, touched);
+        remesh_detail::gather_neighbor_lines(l, touched);
       }
     }
     if (flipped_in_batch == 0)
@@ -912,10 +931,87 @@ inline bool flipIfBatched(Network& water, const Tdd& limit_Dirichlet, const Tdd&
 void remesh_for_main_loop(Network& water, int time_step, double min_edge_length, bool tetrahedralize, bool surface_flip,
                           const CollisionSettings& collision_settings = {},
                           bool surface_split = true, bool surface_collapse = true,
-                          bool skip_post_remesh_quality_rejects = false);
+                          bool surface_smoothing = true,
+                          bool skip_post_remesh_quality_rejects = false,
+                          const std::string& patch_output_directory = "",
+                          double simulation_time = 0.0,
+                          PVDWriter* patch_pvd = nullptr);
+
+// ---------------------------------------------------------------------------
+// Curvature-based mesh density control
+// ---------------------------------------------------------------------------
+
+// θ 判定の結果（split/collapse 共通）
+enum class EdgeThetaVerdict {
+  CurvatureInvalid,  // 曲率が無効 → fallback に委ねる
+  CollapseCandidate, // θ < θ_collapse → 過密
+  Keep,              // θ_collapse ≤ θ < θ_split → 適正
+  SplitCandidate,    // θ ≥ θ_split → 粗すぎ
+};
+
+// ---------------------------------------------------------------------------
+// 品質改善 smoothing ベクトル（BEM_calculateVelocities.hpp から移植）
+// ---------------------------------------------------------------------------
+// CircumradiusToInradius ベースの歪み度を重みにして、各隣接面に対する
+// 正三角形の理想位置への修正ベクトルの加重平均を返す。
+// BEM_calculateVelocities.hpp の DistorsionMeasureWeightedSmoothingVector_modified と同等。
+// BEM 固有のヘッダに依存しないよう、ここに配置。
+
+inline Tddd qualitySmoothingVector(const networkPoint* p,
+                                   const Tddd& current_pX,
+                                   std::function<Tddd(const networkPoint*)> position) {
+  auto faces = p->CORNER ? p->getFacesDirichlet() : p->getBoundaryFaces();
+  thread_local std::vector<double> weights;
+  weights.clear();
+  thread_local std::vector<Tddd> positions_vec;
+  positions_vec.clear();
+
+  for (const auto& f : faces) {
+    auto [p0, p1, p2] = f->getPoints(p);
+    Tddd X0 = current_pX;
+    Tddd X1 = position(p1);
+    Tddd X2 = position(p2);
+    double W = CircumradiusToInradius(X0, X1, X2) - 2.0;
+    Tddd Xmid = (X2 + X1) * 0.5;
+    const auto e = X2 - X1;
+    const auto e_norm = Norm(e);
+    if (!(e_norm > 0) || !std::isfinite(e_norm))
+      continue;
+    auto v_raw = Chop(X0 - Xmid, e);
+    const auto v_norm = Norm(v_raw);
+    if (!(v_norm > 0) || !std::isfinite(v_norm))
+      continue;
+    Tddd vertical = v_raw / v_norm;
+    double height = e_norm * std::sqrt(3.) * 0.5;
+    if (!(height > 0) || !std::isfinite(height))
+      continue;
+    Tddd X_ideal = height * vertical + Xmid;
+    Tddd To_ideal = X_ideal - current_pX;
+    double normalized_discrepancy = Norm(To_ideal) / height;
+    weights.push_back(5.0 * (normalized_discrepancy + W));
+    positions_vec.emplace_back(To_ideal);
+  }
+
+  if (weights.empty())
+    return {0., 0., 0.};
+
+  double sum = Sum(weights);
+  if (sum < 1E-12)
+    weights /= static_cast<double>(weights.size());
+  else
+    weights /= sum;
+  Tddd V = {0., 0., 0.};
+  for (std::size_t i = 0; i < weights.size(); ++i)
+    V += weights[i] * positions_vec[i];
+  return V;
+}
+
+// Check whether a collapse would pass basic quality guards
+// (altitude, area ratio, min angle). Shared between existing and curvature-based collapse.
+bool collapseQualityGuardOK(const networkLine* l, double local_mean_len_val);
 
 // Implementation moved to BEM_remesh_main.cpp
-#if 0  // --- implementation guard (compiled in BEM_remesh_main.cpp) ---
+#if 0 // --- implementation guard (compiled in BEM_remesh_main.cpp) ---
 inline void remesh_for_main_loop_IMPL_UNUSED(Network& water, const int time_step, const double min_edge_length, const bool tetrahedralize, const bool surface_flip,
                                  const CollisionSettings& collision_settings,
                                  const bool surface_split, const bool surface_collapse) {
@@ -1781,4 +1877,4 @@ inline void remesh_for_main_loop_IMPL_UNUSED(Network& water, const int time_step
 
   water.improveTetrahedraDelaunay();
 }
-#endif  // --- end implementation guard ---
+#endif // --- end implementation guard ---
