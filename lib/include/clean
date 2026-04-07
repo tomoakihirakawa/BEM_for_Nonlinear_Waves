@@ -1,4 +1,0 @@
-# !/bin/zsh
-
-rm -r ./*.gch
-rm -r ./*.pch

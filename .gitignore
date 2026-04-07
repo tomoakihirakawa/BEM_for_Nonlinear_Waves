@@ -58,6 +58,8 @@ __pycache__/
 *.vtk
 *.vtu
 *.vtp
+*.pvd
+*.mtl
 *.csv
 *.nb
 *.mov
@@ -99,6 +101,35 @@ ROBUSTNESS_*.md
 *.pptx
 *.docx
 *.xlsx
+
+# =========================
+# lib/include junk (test files, experiments, unrelated data)
+# =========================
+lib/include/clean
+lib/include/draft.md
+lib/include/precompile.sh
+lib/include/test.cpp
+lib/include/fundamentaltest.cpp
+lib/include/fundamental.js
+lib/include/fundamental.wasm
+lib/include/pumpkin_simplified.obj
+lib/include/ultrasonic_sensor_data1.csv
+lib/include/trash_*.hpp
+
+# =========================
+# Dev logs / notes
+# =========================
+DEVLOG_*.md
+log.md
+log.txt
+note.md
+build.sh
+計画.md
+
+# =========================
+# cable junk
+# =========================
+cable/clean
 
 # =========================
 # Misc
