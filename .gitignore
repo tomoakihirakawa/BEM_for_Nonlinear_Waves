@@ -115,6 +115,7 @@ lib/include/fundamental.wasm
 lib/include/pumpkin_simplified.obj
 lib/include/ultrasonic_sensor_data1.csv
 lib/include/trash_*.hpp
+lib/include/README_ABSTRACT.md
 
 # =========================
 # Dev logs / notes
