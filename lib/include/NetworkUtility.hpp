@@ -95,7 +95,7 @@ inline void createOBJ(std::ofstream &ofs, Network &net) {
 
 inline bool isFlat(const netPp p, double minangle = M_PI / 180.) {
   if (p->getLines().empty())
-    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "p->getLines().empty()");
+    return true; // 辺なし → flat 扱い（OMP 並列内で throw 禁止）
   auto faces = p->getBoundaryFaces();
   for (auto i = 0; i < faces.size(); i++)
     for (auto j = i; j < faces.size(); j++)
@@ -251,7 +251,7 @@ inline Tddd findOptimalPositionByCriteriaOn(const networkPoint *p, const std::fu
         return false;
       // if (isFlat(TriangleNormal(base_X0, base_X1, base_X2), TriangleNormal(replace_X, base_X1, base_X2), acceptable_change_angle))
       if (p0 != p && p1 != p && p2 != p)
-        throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "p0 != p && p1 != p && p2 != p");
+        return false; // OMP 並列内で throw 禁止
       return true;
     });
   };

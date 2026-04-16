@@ -1,0 +1,114 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="820" height="700" viewBox="0 0 820 700">
+<rect width="100%" height="100%" fill="#f8fafc"/>
+<text x="35" y="42" font-family="Arial, sans-serif" font-size="23" fill="#111827" font-weight="700" text-anchor="start">Fred Hartman Table 15: published 12-stay properties</text>
+<text x="35" y="68" font-family="Arial, sans-serif" font-size="13" fill="#475569" font-weight="400" text-anchor="start">Source values used in the solver: length, tension, mass, frequency. Endpoint geometry is not published.</text>
+<text x="35" y="122" font-family="Arial, sans-serif" font-size="14" fill="#2563eb" font-weight="700" text-anchor="start">13S</text>
+<rect x="90" y="105" width="66.2" height="11" rx="3" fill="#2563eb" opacity="0.85"/>
+<text x="320" y="116" font-family="Arial, sans-serif" font-size="11" fill="#334155" font-weight="400" text-anchor="start">L 59.5 m</text>
+<rect x="420" y="105" width="54.6" height="11" rx="3" fill="#dc2626" opacity="0.80"/>
+<text x="580" y="116" font-family="Arial, sans-serif" font-size="11" fill="#334155" font-weight="400" text-anchor="start">T 1.65 MN</text>
+<rect x="90" y="122" width="220.0" height="11" rx="3" fill="#059669" opacity="0.85"/>
+<text x="320" y="133" font-family="Arial, sans-serif" font-size="11" fill="#334155" font-weight="400" text-anchor="start">f 1.893 Hz</text>
+<rect x="420" y="122" width="64.1" height="11" rx="3" fill="#9333ea" opacity="0.70"/>
+<text x="580" y="133" font-family="Arial, sans-serif" font-size="11" fill="#334155" font-weight="400" text-anchor="start">m 32.50 kg/m</text>
+<text x="35" y="167" font-family="Arial, sans-serif" font-size="14" fill="#0891b2" font-weight="700" text-anchor="start">14S</text>
+<rect x="90" y="150" width="74.9" height="11" rx="3" fill="#2563eb" opacity="0.85"/>
+<text x="320" y="161" font-family="Arial, sans-serif" font-size="11" fill="#334155" font-weight="400" text-anchor="start">L 67.3 m</text>
+<rect x="420" y="150" width="53.0" height="11" rx="3" fill="#dc2626" opacity="0.80"/>
+<text x="580" y="161" font-family="Arial, sans-serif" font-size="11" fill="#334155" font-weight="400" text-anchor="start">T 1.60 MN</text>
+<rect x="90" y="167" width="157.5" height="11" rx="3" fill="#059669" opacity="0.85"/>
+<text x="320" y="178" font-family="Arial, sans-serif" font-size="11" fill="#334155" font-weight="400" text-anchor="start">f 1.355 Hz</text>
+<rect x="420" y="167" width="94.6" height="11" rx="3" fill="#9333ea" opacity="0.70"/>
+<text x="580" y="178" font-family="Arial, sans-serif" font-size="11" fill="#334155" font-weight="400" text-anchor="start">m 47.93 kg/m</text>
+<text x="35" y="212" font-family="Arial, sans-serif" font-size="14" fill="#059669" font-weight="700" text-anchor="start">15S</text>
+<rect x="90" y="195" width="85.1" height="11" rx="3" fill="#2563eb" opacity="0.85"/>
+<text x="320" y="206" font-family="Arial, sans-serif" font-size="11" fill="#334155" font-weight="400" text-anchor="start">L 76.5 m</text>
+<rect x="420" y="195" width="62.9" height="11" rx="3" fill="#dc2626" opacity="0.80"/>
+<text x="580" y="206" font-family="Arial, sans-serif" font-size="11" fill="#334155" font-weight="400" text-anchor="start">T 1.90 MN</text>
+<rect x="90" y="212" width="151.1" height="11" rx="3" fill="#059669" opacity="0.85"/>
+<text x="320" y="223" font-family="Arial, sans-serif" font-size="11" fill="#334155" font-weight="400" text-anchor="start">f 1.300 Hz</text>
+<rect x="420" y="212" width="94.6" height="11" rx="3" fill="#9333ea" opacity="0.70"/>
+<text x="580" y="223" font-family="Arial, sans-serif" font-size="11" fill="#334155" font-weight="400" text-anchor="start">m 47.93 kg/m</text>
+<text x="35" y="257" font-family="Arial, sans-serif" font-size="14" fill="#65a30d" font-weight="700" text-anchor="start">16S</text>
+<rect x="90" y="240" width="97.1" height="11" rx="3" fill="#2563eb" opacity="0.85"/>
+<text x="320" y="251" font-family="Arial, sans-serif" font-size="11" fill="#334155" font-weight="400" text-anchor="start">L 87.3 m</text>
+<rect x="420" y="240" width="71.5" height="11" rx="3" fill="#dc2626" opacity="0.80"/>
+<text x="580" y="251" font-family="Arial, sans-serif" font-size="11" fill="#334155" font-weight="400" text-anchor="start">T 2.16 MN</text>
+<rect x="90" y="257" width="141.2" height="11" rx="3" fill="#059669" opacity="0.85"/>
+<text x="320" y="268" font-family="Arial, sans-serif" font-size="11" fill="#334155" font-weight="400" text-anchor="start">f 1.215 Hz</text>
+<rect x="420" y="257" width="94.6" height="11" rx="3" fill="#9333ea" opacity="0.70"/>
+<text x="580" y="268" font-family="Arial, sans-serif" font-size="11" fill="#334155" font-weight="400" text-anchor="start">m 47.93 kg/m</text>
+<text x="35" y="302" font-family="Arial, sans-serif" font-size="14" fill="#ca8a04" font-weight="700" text-anchor="start">17S</text>
+<rect x="90" y="285" width="110.5" height="11" rx="3" fill="#2563eb" opacity="0.85"/>
+<text x="320" y="296" font-family="Arial, sans-serif" font-size="11" fill="#334155" font-weight="400" text-anchor="start">L 99.4 m</text>
+<rect x="420" y="285" width="79.1" height="11" rx="3" fill="#dc2626" opacity="0.80"/>
+<text x="580" y="296" font-family="Arial, sans-serif" font-size="11" fill="#334155" font-weight="400" text-anchor="start">T 2.39 MN</text>
+<rect x="90" y="302" width="124.5" height="11" rx="3" fill="#059669" opacity="0.85"/>
+<text x="320" y="313" font-family="Arial, sans-serif" font-size="11" fill="#334155" font-weight="400" text-anchor="start">f 1.071 Hz</text>
+<rect x="420" y="302" width="104.3" height="11" rx="3" fill="#9333ea" opacity="0.70"/>
+<text x="580" y="313" font-family="Arial, sans-serif" font-size="11" fill="#334155" font-weight="400" text-anchor="start">m 52.87 kg/m</text>
+<text x="35" y="347" font-family="Arial, sans-serif" font-size="14" fill="#d97706" font-weight="700" text-anchor="start">18S</text>
+<rect x="90" y="330" width="124.9" height="11" rx="3" fill="#2563eb" opacity="0.85"/>
+<text x="320" y="341" font-family="Arial, sans-serif" font-size="11" fill="#334155" font-weight="400" text-anchor="start">L 112.3 m</text>
+<rect x="420" y="330" width="90.4" height="11" rx="3" fill="#dc2626" opacity="0.80"/>
+<text x="580" y="341" font-family="Arial, sans-serif" font-size="11" fill="#334155" font-weight="400" text-anchor="start">T 2.73 MN</text>
+<rect x="90" y="347" width="117.6" height="11" rx="3" fill="#059669" opacity="0.85"/>
+<text x="320" y="358" font-family="Arial, sans-serif" font-size="11" fill="#334155" font-weight="400" text-anchor="start">f 1.012 Hz</text>
+<rect x="420" y="347" width="104.3" height="11" rx="3" fill="#9333ea" opacity="0.70"/>
+<text x="580" y="358" font-family="Arial, sans-serif" font-size="11" fill="#334155" font-weight="400" text-anchor="start">m 52.87 kg/m</text>
+<text x="35" y="392" font-family="Arial, sans-serif" font-size="14" fill="#dc2626" font-weight="700" text-anchor="start">19S</text>
+<rect x="90" y="375" width="139.9" height="11" rx="3" fill="#2563eb" opacity="0.85"/>
+<text x="320" y="386" font-family="Arial, sans-serif" font-size="11" fill="#334155" font-weight="400" text-anchor="start">L 125.8 m</text>
+<rect x="420" y="375" width="106.0" height="11" rx="3" fill="#dc2626" opacity="0.80"/>
+<text x="580" y="386" font-family="Arial, sans-serif" font-size="11" fill="#334155" font-weight="400" text-anchor="start">T 3.20 MN</text>
+<rect x="90" y="392" width="102.4" height="11" rx="3" fill="#059669" opacity="0.85"/>
+<text x="320" y="403" font-family="Arial, sans-serif" font-size="11" fill="#334155" font-weight="400" text-anchor="start">f 0.881 Hz</text>
+<rect x="420" y="392" width="128.6" height="11" rx="3" fill="#9333ea" opacity="0.70"/>
+<text x="580" y="403" font-family="Arial, sans-serif" font-size="11" fill="#334155" font-weight="400" text-anchor="start">m 65.20 kg/m</text>
+<text x="35" y="437" font-family="Arial, sans-serif" font-size="14" fill="#be123c" font-weight="700" text-anchor="start">20S</text>
+<rect x="90" y="420" width="155.3" height="11" rx="3" fill="#2563eb" opacity="0.85"/>
+<text x="320" y="431" font-family="Arial, sans-serif" font-size="11" fill="#334155" font-weight="400" text-anchor="start">L 139.7 m</text>
+<rect x="420" y="420" width="110.9" height="11" rx="3" fill="#dc2626" opacity="0.80"/>
+<text x="580" y="431" font-family="Arial, sans-serif" font-size="11" fill="#334155" font-weight="400" text-anchor="start">T 3.35 MN</text>
+<rect x="90" y="437" width="90.9" height="11" rx="3" fill="#059669" opacity="0.85"/>
+<text x="320" y="448" font-family="Arial, sans-serif" font-size="11" fill="#334155" font-weight="400" text-anchor="start">f 0.782 Hz</text>
+<rect x="420" y="437" width="138.3" height="11" rx="3" fill="#9333ea" opacity="0.70"/>
+<text x="580" y="448" font-family="Arial, sans-serif" font-size="11" fill="#334155" font-weight="400" text-anchor="start">m 70.12 kg/m</text>
+<text x="35" y="482" font-family="Arial, sans-serif" font-size="14" fill="#9333ea" font-weight="700" text-anchor="start">21S</text>
+<rect x="90" y="465" width="171.3" height="11" rx="3" fill="#2563eb" opacity="0.85"/>
+<text x="320" y="476" font-family="Arial, sans-serif" font-size="11" fill="#334155" font-weight="400" text-anchor="start">L 154.1 m</text>
+<rect x="420" y="465" width="126.8" height="11" rx="3" fill="#dc2626" opacity="0.80"/>
+<text x="580" y="476" font-family="Arial, sans-serif" font-size="11" fill="#334155" font-weight="400" text-anchor="start">T 3.83 MN</text>
+<rect x="90" y="482" width="88.2" height="11" rx="3" fill="#059669" opacity="0.85"/>
+<text x="320" y="493" font-family="Arial, sans-serif" font-size="11" fill="#334155" font-weight="400" text-anchor="start">f 0.759 Hz</text>
+<rect x="420" y="482" width="138.3" height="11" rx="3" fill="#9333ea" opacity="0.70"/>
+<text x="580" y="493" font-family="Arial, sans-serif" font-size="11" fill="#334155" font-weight="400" text-anchor="start">m 70.12 kg/m</text>
+<text x="35" y="527" font-family="Arial, sans-serif" font-size="14" fill="#7c3aed" font-weight="700" text-anchor="start">22S</text>
+<rect x="90" y="510" width="187.3" height="11" rx="3" fill="#2563eb" opacity="0.85"/>
+<text x="320" y="521" font-family="Arial, sans-serif" font-size="11" fill="#334155" font-weight="400" text-anchor="start">L 168.4 m</text>
+<rect x="420" y="510" width="117.5" height="11" rx="3" fill="#dc2626" opacity="0.80"/>
+<text x="580" y="521" font-family="Arial, sans-serif" font-size="11" fill="#334155" font-weight="400" text-anchor="start">T 3.55 MN</text>
+<rect x="90" y="527" width="77.6" height="11" rx="3" fill="#059669" opacity="0.85"/>
+<text x="320" y="538" font-family="Arial, sans-serif" font-size="11" fill="#334155" font-weight="400" text-anchor="start">f 0.668 Hz</text>
+<rect x="420" y="527" width="138.3" height="11" rx="3" fill="#9333ea" opacity="0.70"/>
+<text x="580" y="538" font-family="Arial, sans-serif" font-size="11" fill="#334155" font-weight="400" text-anchor="start">m 70.12 kg/m</text>
+<text x="35" y="572" font-family="Arial, sans-serif" font-size="14" fill="#475569" font-weight="700" text-anchor="start">23S</text>
+<rect x="90" y="555" width="203.6" height="11" rx="3" fill="#2563eb" opacity="0.85"/>
+<text x="320" y="566" font-family="Arial, sans-serif" font-size="11" fill="#334155" font-weight="400" text-anchor="start">L 183.1 m</text>
+<rect x="420" y="555" width="142.1" height="11" rx="3" fill="#dc2626" opacity="0.80"/>
+<text x="580" y="566" font-family="Arial, sans-serif" font-size="11" fill="#334155" font-weight="400" text-anchor="start">T 4.29 MN</text>
+<rect x="90" y="572" width="75.3" height="11" rx="3" fill="#059669" opacity="0.85"/>
+<text x="320" y="583" font-family="Arial, sans-serif" font-size="11" fill="#334155" font-weight="400" text-anchor="start">f 0.648 Hz</text>
+<rect x="420" y="572" width="150.0" height="11" rx="3" fill="#9333ea" opacity="0.70"/>
+<text x="580" y="583" font-family="Arial, sans-serif" font-size="11" fill="#334155" font-weight="400" text-anchor="start">m 76.03 kg/m</text>
+<text x="35" y="617" font-family="Arial, sans-serif" font-size="14" fill="#111827" font-weight="700" text-anchor="start">24S</text>
+<rect x="90" y="600" width="220.0" height="11" rx="3" fill="#2563eb" opacity="0.85"/>
+<text x="320" y="611" font-family="Arial, sans-serif" font-size="11" fill="#334155" font-weight="400" text-anchor="start">L 197.8 m</text>
+<rect x="420" y="600" width="150.0" height="11" rx="3" fill="#dc2626" opacity="0.80"/>
+<text x="580" y="611" font-family="Arial, sans-serif" font-size="11" fill="#334155" font-weight="400" text-anchor="start">T 4.53 MN</text>
+<rect x="90" y="617" width="71.7" height="11" rx="3" fill="#059669" opacity="0.85"/>
+<text x="320" y="628" font-family="Arial, sans-serif" font-size="11" fill="#334155" font-weight="400" text-anchor="start">f 0.617 Hz</text>
+<rect x="420" y="617" width="150.0" height="11" rx="3" fill="#9333ea" opacity="0.70"/>
+<text x="580" y="628" font-family="Arial, sans-serif" font-size="11" fill="#334155" font-weight="400" text-anchor="start">m 76.03 kg/m</text>
+<text x="35" y="670" font-family="Arial, sans-serif" font-size="12" fill="#475569" font-weight="400" text-anchor="start">Longer stays have lower published frequency; this figure shows source properties rather than deformed cable geometry.</text>
+</svg>

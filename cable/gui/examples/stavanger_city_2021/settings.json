@@ -1,0 +1,37 @@
+{
+  "name": "C1E",
+  "end_a_position": [
+    -85.301,
+    0.0,
+    0.0
+  ],
+  "end_b_position": [
+    0.0,
+    0.0,
+    48.853
+  ],
+  "cable_length": 98.3,
+  "n_points": 51,
+  "line_density": 40.0,
+  "EA": 980333987.6,
+  "damping": 0.5,
+  "diameter": 0.079,
+  "gravity": 9.81,
+  "mode": "dynamic",
+  "dt": 0.005,
+  "t_end": 20.0,
+  "output_interval": 0.05,
+  "max_equilibrium_steps": 500000,
+  "equilibrium_tol": 0.01,
+  "snapshot_interval": 200,
+  "initial_condition": "tension",
+  "tension_top": 1714055.2,
+  "tension_bottom": 1695301.3,
+  "fluid": "air",
+  "wind_type": "uniform",
+  "wind_U_mean": [
+    10.0,
+    0.0,
+    0.0
+  ]
+}

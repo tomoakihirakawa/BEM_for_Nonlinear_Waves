@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="390" viewBox="0 0 1080 390">
+<rect width="100%" height="100%" fill="#f8fafc"/>
+<text x="35" y="42" font-family="Arial, sans-serif" font-size="24" fill="#111827" font-weight="700" text-anchor="start">Frequency reference error from taut-string estimate</text>
+<text x="35" y="68" font-family="Arial, sans-serif" font-size="13" fill="#475569" font-weight="400" text-anchor="start">This is not free-vibration validation. It compares f=(1/2L)sqrt(T/m) from input values with published/reference f1.</text>
+<line x1="420" y1="94" x2="420" y2="315" stroke="#334155" stroke-width="1.2"/>
+<text x="35" y="125" font-family="Arial, sans-serif" font-size="13" fill="#334155" font-weight="400" text-anchor="start">sutong_2008 / C_547m</text>
+<rect x="120.0" y="110" width="300.0" height="22" rx="4" fill="#dc2626" opacity="0.9"/>
+<text x="744" y="125" font-family="Arial, sans-serif" font-size="13" fill="#111827" font-weight="400" text-anchor="start">-7.36%  (0.239 vs 0.258 Hz)</text>
+<text x="744" y="141" font-family="Arial, sans-serif" font-size="10" fill="#64748b" font-weight="400" text-anchor="start">published f1; H target caveat</text>
+<text x="35" y="167" font-family="Arial, sans-serif" font-size="13" fill="#334155" font-weight="400" text-anchor="start">sutong_2008 / C_454m</text>
+<rect x="189.0" y="152" width="231.0" height="22" rx="4" fill="#dc2626" opacity="0.9"/>
+<text x="744" y="167" font-family="Arial, sans-serif" font-size="13" fill="#111827" font-weight="400" text-anchor="start">-5.66%  (0.282 vs 0.299 Hz)</text>
+<text x="744" y="183" font-family="Arial, sans-serif" font-size="10" fill="#64748b" font-weight="400" text-anchor="start">published f1; H target caveat</text>
+<text x="35" y="209" font-family="Arial, sans-serif" font-size="13" fill="#334155" font-weight="400" text-anchor="start">sutong_2008 / C_334m</text>
+<rect x="295.3" y="194" width="124.7" height="22" rx="4" fill="#d97706" opacity="0.9"/>
+<text x="744" y="209" font-family="Arial, sans-serif" font-size="13" fill="#111827" font-weight="400" text-anchor="start">-3.06%  (0.381 vs 0.393 Hz)</text>
+<text x="744" y="225" font-family="Arial, sans-serif" font-size="10" fill="#64748b" font-weight="400" text-anchor="start">published f1; H target caveat</text>
+<text x="35" y="251" font-family="Arial, sans-serif" font-size="13" fill="#334155" font-weight="400" text-anchor="start">east_china_sea_viv_2019 / CAC20</text>
+<rect x="420.0" y="236" width="23.8" height="22" rx="4" fill="#059669" opacity="0.9"/>
+<text x="744" y="251" font-family="Arial, sans-serif" font-size="13" fill="#111827" font-weight="400" text-anchor="start">+0.58%  (0.380 vs 0.378 Hz)</text>
+<text x="744" y="267" font-family="Arial, sans-serif" font-size="10" fill="#64748b" font-weight="400" text-anchor="start">published f1; assumed mass</text>
+<text x="35" y="293" font-family="Arial, sans-serif" font-size="13" fill="#334155" font-weight="400" text-anchor="start">stavanger_city_2021 / C1E</text>
+<rect x="420.0" y="278" width="11.4" height="22" rx="4" fill="#059669" opacity="0.9"/>
+<text x="744" y="293" font-family="Arial, sans-serif" font-size="13" fill="#111827" font-weight="400" text-anchor="start">+0.28%  (1.053 vs 1.050 Hz)</text>
+<text x="744" y="309" font-family="Arial, sans-serif" font-size="10" fill="#64748b" font-weight="400" text-anchor="start">published f1; input-derived T</text>
+<text x="35" y="362" font-family="Arial, sans-serif" font-size="12" fill="#475569" font-weight="400" text-anchor="start">Positive means taut-string estimate is higher than reference; negative means lower.</text>
+</svg>

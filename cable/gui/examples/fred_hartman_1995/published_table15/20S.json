@@ -1,0 +1,38 @@
+{
+  "_comment": "FHWA-HRT-05-083 Appendix F Table 15 published stay 20S: m=70.12 kg/m, T=3.350e+06 N, L=139.701 m, omega=4.916 rad/s, f=0.782 Hz. Endpoint geometry is an assumed 30 deg planar chord because Table 15 does not publish coordinates. EA and diameter are inferred from mass using rho_steel=7850 kg/m^3 and E=200 GPa.",
+  "name": "20S",
+  "source": "FHWA-HRT-05-083 Appendix F Table 15",
+  "published": {
+    "mass_kg_per_m": 70.12,
+    "tension_N": 3350000.0,
+    "length_m": 139.701,
+    "omega_rad_per_s": 4.916,
+    "frequency_Hz": 0.782
+  },
+  "assumptions": {
+    "geometry": "planar 30 degree chord; not published in Table 15",
+    "EA": "E=200 GPa times steel-equivalent area mass/rho_steel",
+    "diameter": "steel-equivalent diameter from mass/rho_steel; aerodynamic diameter not published here"
+  },
+  "end_a_position": [
+    -120.984615,
+    0.0,
+    0.0
+  ],
+  "end_a_body": "deck",
+  "end_b_position": [
+    0.0,
+    0.0,
+    69.8505
+  ],
+  "end_b_body": "tower",
+  "cable_length": 139.701,
+  "n_points": 41,
+  "line_density": 70.12,
+  "EA": 1786496815.287,
+  "damping": 0.5,
+  "diameter": 0.106645,
+  "initial_condition": "tension",
+  "tension_top": 3350000.0,
+  "tension_bottom": 3350000.0
+}

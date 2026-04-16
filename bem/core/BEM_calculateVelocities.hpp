@@ -378,56 +378,7 @@ inline constexpr auto t0t1_high = UniformPointsOnTriangle_00_10_01<15>(); // 136
 /* -------------------------------------------------------------------------- */
 /*     Dirichlet面上の最近点探索                                               */
 /* -------------------------------------------------------------------------- */
-
-// グリッド探索の初期値から、曲面上の真の最近点パラメタをNewton法で精緻化
-// 勾配 g = {(X-P)·∂X/∂t0, (X-P)·∂X/∂t1} = 0 を解く
-// factor 2 は g と H 両方にかかるため省略
-template <typename XFunc, typename DXFunc>
-inline Tdd refineNearestParam(const Tddd& P, Tdd param,
-                              XFunc X_func, DXFunc DX_func,
-                              int max_iter = 5, double tol = 1e-10) {
-  auto [t0, t1] = param;
-  for (int iter = 0; iter < max_iter; ++iter) {
-    Tddd X = X_func(t0, t1);
-    Tddd diff = X - P;
-
-    Tddd dXdt0 = DX_func(t0, t1, 1, 0);
-    Tddd dXdt1 = DX_func(t0, t1, 0, 1);
-
-    double g0 = Dot(diff, dXdt0);
-    double g1 = Dot(diff, dXdt1);
-
-    if (std::abs(g0) < tol && std::abs(g1) < tol)
-      break;
-
-    Tddd d2Xdt0dt0 = DX_func(t0, t1, 2, 0);
-    Tddd d2Xdt1dt1 = DX_func(t0, t1, 0, 2);
-    Tddd d2Xdt0dt1 = DX_func(t0, t1, 1, 1);
-
-    double H00 = Dot(dXdt0, dXdt0) + Dot(diff, d2Xdt0dt0);
-    double H11 = Dot(dXdt1, dXdt1) + Dot(diff, d2Xdt1dt1);
-    double H01 = Dot(dXdt0, dXdt1) + Dot(diff, d2Xdt0dt1);
-
-    double det = H00 * H11 - H01 * H01;
-    if (std::abs(det) < 1e-20)
-      break;
-    double dt0 = -(H11 * g0 - H01 * g1) / det;
-    double dt1 = -(H00 * g1 - H01 * g0) / det;
-
-    t0 += dt0;
-    t1 += dt1;
-
-    // 参照三角形内にクランプ: t0 >= 0, t1 >= 0, t0+t1 <= 1
-    t0 = std::max(0.0, t0);
-    t1 = std::max(0.0, t1);
-    if (t0 + t1 > 1.0) {
-      double s = t0 + t1;
-      t0 /= s;
-      t1 /= s;
-    }
-  }
-  return {t0, t1};
-}
+// refineNearestParam は basic_surface_geometry.hpp に移動済み
 
 // pseudo-quadratic補間によるDirichlet面上の最近点
 // dodecaPoints[0] の補間で曲面を構成し、均一格子点でサンプルして最近点を探す

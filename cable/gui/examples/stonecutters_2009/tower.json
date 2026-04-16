@@ -1,0 +1,15 @@
+{
+  "name": "tower",
+  "type": "RigidBody",
+  "_comment": "Stonecutters single-shaft pylon, 298 m. Cantilever mode 1, T=1.0 s near 1:1 resonance with C_short (T1=0.73 s, slightly off to avoid divergence). amp=0.02 m (2 cm tip) ensures visible motion without excessive cable response. Cable T1 range: 0.73-3.63 s. For stronger demo of C_mid 1:1 use T=2.30s + smaller amp.",
+  "velocity": [
+    "cantilever",
+    0.0,
+    0.02,
+    1.0,
+    0.0, 0.0, 0.0,
+    0.0, 0.0, 1.0,
+    1.0, 0.0, 0.0,
+    298.0
+  ]
+}

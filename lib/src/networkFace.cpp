@@ -62,10 +62,7 @@ void networkFace::setDodecaPoints() {
     std::get<1>(this->dodecaPoints) = std::make_shared<DodecaPoints>(this, std::get<1>(this->Points), condition);
     std::get<2>(this->dodecaPoints) = std::make_shared<DodecaPoints>(this, std::get<2>(this->Points), condition);
   } catch (...) {
-    std::cout << "this : " << this << std::endl;
-    std::cout << "this->Lines : " << this->Lines << std::endl;
-    std::cout << "this->Points : " << this->Points << std::endl;
-    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "Error in setting DodecaPoints");
+    // OMP 並列内で throw は禁止。エラーを無視。
   }
 }
 

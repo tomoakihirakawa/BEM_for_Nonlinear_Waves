@@ -3,7 +3,7 @@
 #include <fstream>
 #include <iostream>
 #include <vector>
-#include "MooringLine.hpp"
+#include "LumpedCable.hpp"
 #include "basic_IO.hpp"
 #include "basic_arithmetic_array_operations.hpp"
 #include "basic_vectors.hpp"
@@ -51,7 +51,7 @@ int main() {
    const double mass = 15 * 1E+8;
    const double density = mass / total_length;
 
-   auto mooring = new MooringLine(X_left,
+   auto mooring = new LumpedCable(X_left,
                                   X_right,
                                   total_length,
                                   n_points);

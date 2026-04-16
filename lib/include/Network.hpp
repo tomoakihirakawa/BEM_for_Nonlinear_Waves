@@ -414,6 +414,13 @@ protected:
   bool BoundaryQ() const;
   bool ComputationalBoundaryQ() const;
 
+public:
+  // border edge: 面が片側だけの辺
+  bool BorderQ() const noexcept { return this->getBoundaryFaces().size() < 2; }
+
+  // sharp edge: 隣接面の法線偏差が閾値を超える（角の上にいる）
+  bool SharpQ(double threshold = 20.0 * M_PI / 180.0) const noexcept;
+
   //---------------------------------
 public:
   networkLine(Network* network_IN, netP* sPoint_IN, netP* ePoint_IN);
@@ -473,8 +480,7 @@ public:
     return true;
   };
   bool isMergeable() const;
-  netPp Collapse();                              // targetX を内部で決定（中点）
-  netPp Collapse(const Tddd& externalTargetX);   // targetX を外部から指定
+  netPp Collapse(const Tddd& externalTargetX = {1E+80, 1E+80, 1E+80});  // デフォルト = 内部決定
   netPp mergeIfMergeable(); // deleteしていない方のpointを返す
   //---------------------------------
   //  netP* operator()(netP* a){return this->Point2Point[a];};
@@ -600,10 +606,12 @@ public:
     return force;
   }
 
-  std::array<double, 3> getDragForce(const double Cd = 0.3) {
+  std::array<double, 3> getDragForce(const double Cd = 0.3,
+                                     const double rho = _WATER_DENSITY_,
+                                     const Tddd& U_fluid = {0., 0., 0.}) {
     std::array<double, 3> drag_force, relative_velocity, mean_v, fluid_velocity, normalized_relative_velocity, A2B;
     drag_force.fill(0);
-    fluid_velocity.fill(0);
+    fluid_velocity = U_fluid;
     double A;
     for (const auto& l : this->getLines()) {
       // mean_v = 0.5 * ((*l)(this)->RK_velocity_sub.getX() +
@@ -615,7 +623,7 @@ public:
       normalized_relative_velocity = Normalize(relative_velocity);
       A = l->diameter * Norm(A2B) * 0.5;                                                           //! half area
       A *= Norm(normalized_relative_velocity - Dot(normalized_relative_velocity, Normalize(A2B))); //! projected area
-      drag_force += 0.5 * _WATER_DENSITY_ * Dot(relative_velocity, relative_velocity) * Cd * A * normalized_relative_velocity;
+      drag_force += 0.5 * rho * Dot(relative_velocity, relative_velocity) * Cd * A * normalized_relative_velocity;
 
       if (!isFinite(A2B) || !isFinite(Normalize(A2B)) || !isFinite(normalized_relative_velocity) || !isFinite(relative_velocity) || !isFinite(drag_force)) {
         std::cout << "A2B = " << A2B << std::endl;
@@ -1237,6 +1245,22 @@ public:
 
   bool BoundaryQ() const noexcept;
   bool ComputationalBoundaryQ() const noexcept;
+
+  // border point: 面が片側だけの辺（border edge）に接続する点
+  bool BorderQ() const noexcept {
+    for (auto* l : this->Lines)
+      if (l && l->getBoundaryFaces().size() < 2)
+        return true;
+    return false;
+  }
+
+  // sharp point: 隣接面の法線偏差が閾値を超える（角の上にいる）
+  bool SharpQ(double threshold = 20.0 * M_PI / 180.0) const noexcept;
+
+  // 隣接境界辺の長さの変動係数 (Coefficient of Variation, CV = σ/μ)
+  // 隣接辺の長さがどれだけ揃っているか（local grading の指標）
+  // 辺が < 2 本なら 0 を返す
+  double localEdgeLengthCV() const noexcept;
 
   // getBoundaryFaces() is declared above as override of ContactDetectable
   std::vector<networkLine*> getBoundaryLines() const;
@@ -2039,23 +2063,11 @@ public:
       */
       CoordinateBounds::setBounds(toX_this_points);
       Triangle::setProperties(toX_this_points);
-      if (!isFinite(toX_this_points) || !isFinite(this->area) || !isFinite(this->normal) || !isFinite(this->angles)) {
-        std::stringstream ss;
-        ss << "線が更新されておらずエラーになる可能性がある" << std::endl;
-        ss << "全ての線が更新されている必要があるため" << std::endl;
-        ss << "this->Points = " << this->Points << std::endl;
-        ss << "this->Lines = " << this->Lines << std::endl;
-        ss << "toX_this_points = " << toX_this_points << std::endl;
-        ss << "this->area = " << this->area << std::endl;
-        ss << "this->normal = " << this->normal << std::endl;
-        ss << "this->angles = " << this->angles << std::endl;
-        throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, ss.str());
-      } else
-        return true;
-    } catch (const error_message&) {
-      throw;
-    } catch (const std::exception& e) {
-      throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, e.what());
+      if (!isFinite(toX_this_points) || !isFinite(this->area) || !isFinite(this->normal) || !isFinite(this->angles))
+        return false; // OMP 並列内で throw は禁止
+      return true;
+    } catch (...) {
+      return false; // OMP 並列内で throw は禁止
     };
   };
 
@@ -2969,7 +2981,8 @@ T_3L ConnectedQ(const T_3P& abc);
 /*   @-@-@                                                                    */
 /*  ========================================================================= */
 
-class MooringLine;
+class LumpedCable;
+class LumpedCableSystem;
 class Network : public CoordinateBounds, public RigidBodyDynamics {
 public:
   virtual ~Network(); // = default;  // Virtual destructor
@@ -3478,6 +3491,15 @@ public:
   bool erase(networkPoint* p);
   bool erase(networkLine* l);
 
+  // border edge（面が片側だけの辺）の端点を返す
+  std::unordered_set<networkPoint*> getBorderPoints() const {
+    std::unordered_set<networkPoint*> bpts;
+    for (auto* p : this->Points)
+      if (p->BorderQ())
+        bpts.insert(p);
+    return bpts;
+  }
+
   // パッチ貼り付け: patchA 領域を patchB で置き換える
   // 外周点の対応は座標比較（coord_eps）で取る
   bool replacePatch(Network& patchB, double coord_eps = 1e-10);
@@ -3632,8 +3654,14 @@ public:
   std::size_t geometrySignature(double inv_eps = 1e12) const;
 
   // 局所パッチのコピー: 辺または点の近傍を別の Network にコピーする
+  // コピー元の要素は patch.copied_points / copied_lines / copied_faces に記録される
   networkLine* copyLocalPatch(Network& patch, networkLine* l, int ring_depth = 1) const;
   networkPoint* copyLocalPatch(Network& patch, networkPoint* p, int ring_depth = 1) const;
+
+  // copyLocalPatch で記録されたコピー元の要素（this がパッチの場合のみ使用）
+  std::unordered_set<networkPoint*> copied_points;
+  std::unordered_set<networkLine*> copied_lines;
+  std::unordered_set<networkFace*> copied_faces;
 
 private:
   void assignPointFaceIndices();
@@ -3672,7 +3700,13 @@ public:
 
   /* ------------------------------------------------------ */
 public:
-  std::vector<MooringLine*> mooringLines;
+  // Phase 2 (2026-04-12): cable_system replaces the old `mooringLines` vector.
+  // It owns the LumpedCable instances (RAII via unique_ptr) and exposes the
+  // unified API for both the bridge-cable use case (`solveEquilibrium()`) and
+  // the BEM time-loop use case (`advanceRKStage()` + `commitRKStep()` +
+  // `forceOnBody()`). BEM call sites that iterated
+  // `for (auto& m : net->mooringLines)` now use `net->cable_system->cables()`.
+  std::unique_ptr<LumpedCableSystem> cable_system;
 
 #ifdef tetgenH
 
@@ -5276,6 +5310,49 @@ inline bool networkPoint::ComputationalBoundaryQ() const noexcept {
   return std::any_of(this->Faces.begin(), this->Faces.end(), [](const auto& f) { return f->ComputationalBoundaryQ(); });
 }
 
+inline bool networkPoint::SharpQ(double threshold) const noexcept {
+  auto faces = this->getBoundaryFaces();
+  Tddd n_avg = {0., 0., 0.};
+  for (auto* f : faces)
+    n_avg += f->area * f->normal;
+  n_avg = Normalize(n_avg);
+  for (auto* f : faces)
+    if (!isFlat(n_avg, f->normal, threshold))
+      return true;
+  return false;
+}
+
+inline double networkPoint::localEdgeLengthCV() const noexcept {
+  double sum = 0., sq_sum = 0.;
+  int n = 0;
+  for (auto* l : this->Lines) {
+    if (!l) continue;
+    if (l->getBoundaryFaces().empty()) continue;
+    double len = l->length();
+    sum += len;
+    sq_sum += len * len;
+    ++n;
+  }
+  if (n < 2) return 0.;
+  double mu = sum / n;
+  if (mu < 1e-20) return 0.;
+  double var = sq_sum / n - mu * mu;
+  return std::sqrt(std::max(var, 0.)) / mu;
+}
+
+inline bool networkLine::SharpQ(double threshold) const noexcept {
+  auto faces = this->getBoundaryFaces();
+  if (faces.size() < 2) return false;
+  Tddd n_avg = {0., 0., 0.};
+  for (auto* f : faces)
+    n_avg += f->area * f->normal;
+  n_avg = Normalize(n_avg);
+  for (auto* f : faces)
+    if (!isFlat(n_avg, f->normal, threshold))
+      return true;
+  return false;
+}
+
 inline Tddd tetraCentroid(const networkTetra* t) {
   auto [p0, p1, p2, p3] = t->Points;
   return (p0->X + p1->X + p2->X + p3->X) * 0.25;
@@ -5329,7 +5406,7 @@ inline networkTetra* networkFace::getOutsideTetra() const noexcept {
   return nullptr;
 }
 
-#include "MooringLine.hpp"
+#include "LumpedCable.hpp"
 #include "NetworkUtility.hpp"
 // #include "networkFace.cpp"
 // #include "networkLine.cpp"

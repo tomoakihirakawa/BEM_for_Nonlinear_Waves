@@ -1,0 +1,23 @@
+{
+  "_comment": "Representative FHWA/NRC dry inclined cable setup 1B. Frequency is assumed for initial tension only; see README.md.",
+  "name": "FHWA_Dry_1B",
+  "end_a_position": [
+    -4.7376,
+    0.0,
+    0.0
+  ],
+  "end_b_position": [
+    0.0,
+    0.0,
+    4.7376
+  ],
+  "cable_length": 6.7,
+  "n_points": 41,
+  "line_density": 60.8,
+  "EA": 4021238596.6,
+  "damping": 0.5,
+  "diameter": 0.16,
+  "initial_condition": "tension",
+  "tension_top": 12296.7,
+  "tension_bottom": 9538.2
+}

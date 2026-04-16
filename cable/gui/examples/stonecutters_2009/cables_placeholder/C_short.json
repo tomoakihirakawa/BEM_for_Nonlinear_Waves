@@ -1,0 +1,17 @@
+{
+  "_comment": "Short inner stay (~82 m) — placeholder. TODO: replace with Ni et al. 2010 / Wong 2007 specific values.",
+  "name": "C_short",
+  "end_a_position": [-60.0, 0.0, 0.0],
+  "end_a_body": "deck",
+  "end_b_position": [0.0, 0.0, 55.0],
+  "end_b_body": "tower",
+  "cable_length": 81.39,
+  "n_points": 31,
+  "line_density": 60.0,
+  "EA": 1300000000.0,
+  "damping": 0.5,
+  "diameter": 0.140,
+  "initial_condition": "tension",
+  "tension_top": 3000000.0,
+  "tension_bottom": 2950000.0
+}

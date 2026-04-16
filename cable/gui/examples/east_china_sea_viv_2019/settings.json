@@ -1,0 +1,37 @@
+{
+  "name": "CAC20",
+  "end_a_position": [
+    -289.565,
+    0.0,
+    0.0
+  ],
+  "end_b_position": [
+    0.0,
+    0.0,
+    143.112
+  ],
+  "cable_length": 323.0,
+  "n_points": 121,
+  "line_density": 80.0,
+  "EA": 2261946710.6,
+  "damping": 0.5,
+  "diameter": 0.12,
+  "gravity": 9.81,
+  "mode": "dynamic",
+  "dt": 0.005,
+  "t_end": 20.0,
+  "output_interval": 0.05,
+  "max_equilibrium_steps": 500000,
+  "equilibrium_tol": 0.01,
+  "snapshot_interval": 200,
+  "initial_condition": "tension",
+  "tension_top": 4826046.1,
+  "tension_bottom": 4714901.9,
+  "fluid": "air",
+  "wind_type": "uniform",
+  "wind_U_mean": [
+    5.75,
+    0.0,
+    0.0
+  ]
+}

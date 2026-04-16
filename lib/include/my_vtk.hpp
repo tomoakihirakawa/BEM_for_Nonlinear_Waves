@@ -150,10 +150,14 @@ inline std::string NumtoString(const auto &x) {
 #define debug_PVDWriter
 struct PVDWriter {
   std::string pvdFileName;
-  std::vector<std::tuple<std::string, double>> V_vtuFileName_time;
+  // (vtuFileName, time, part). `part` distinguishes datasets that share a
+  // timestep (e.g. multiple cables written into one master PVD).
+  std::vector<std::tuple<std::string, double, int>> V_vtuFileName_time;
   //
   PVDWriter(const std::string &pvdFileNameIN) : pvdFileName(pvdFileNameIN) {};
-  void push(const std::string &vtuFileName, const double time) { this->V_vtuFileName_time.emplace_back(std::make_tuple(vtuFileName, time)); };
+  void push(const std::string &vtuFileName, const double time, int part = 0) {
+    this->V_vtuFileName_time.emplace_back(vtuFileName, time, part);
+  };
   //
   void output(std::string filename = "") const {
     if (filename.empty())
@@ -170,8 +174,9 @@ struct PVDWriter {
     fprintf(fp, "<?xml version=\"1.0\"?>\n");
     fprintf(fp, "<VTKFile type=\"Collection\" version=\"0.1\" ByteOrder=\"LittleEndian\">\n");
     fprintf(fp, "  <Collection>\n");
-    for (const auto &name_time : V_vtuFileName_time)
-      fprintf(fp, "    <DataSet file=\"%s\" group=\"\" part=\"0\" timestep=\"%.15lf\"/>\n", std::get<0>(name_time).c_str(), std::get<1>(name_time));
+    for (const auto &entry : V_vtuFileName_time)
+      fprintf(fp, "    <DataSet file=\"%s\" group=\"\" part=\"%d\" timestep=\"%.15lf\"/>\n",
+              std::get<0>(entry).c_str(), std::get<2>(entry), std::get<1>(entry));
     fprintf(fp, "  </Collection>\n");
     fprintf(fp, "</VTKFile>\n");
     fclose(fp);

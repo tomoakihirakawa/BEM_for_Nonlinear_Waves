@@ -935,7 +935,10 @@ void remesh_for_main_loop(Network& water, int time_step, double min_edge_length,
                           bool skip_post_remesh_quality_rejects = false,
                           const std::string& patch_output_directory = "",
                           double simulation_time = 0.0,
-                          PVDWriter* patch_pvd = nullptr);
+                          PVDWriter* patch_pvd = nullptr,
+                          PVDWriter* split_candidate_pvd = nullptr,
+                          PVDWriter* collapse_candidate_pvd = nullptr,
+                          PVDWriter* edges_pvd = nullptr);
 
 // ---------------------------------------------------------------------------
 // Curvature-based mesh density control
@@ -961,10 +964,8 @@ inline Tddd qualitySmoothingVector(const networkPoint* p,
                                    const Tddd& current_pX,
                                    std::function<Tddd(const networkPoint*)> position) {
   auto faces = p->CORNER ? p->getFacesDirichlet() : p->getBoundaryFaces();
-  thread_local std::vector<double> weights;
-  weights.clear();
-  thread_local std::vector<Tddd> positions_vec;
-  positions_vec.clear();
+  std::vector<double> weights;
+  std::vector<Tddd> positions_vec;
 
   for (const auto& f : faces) {
     auto [p0, p1, p2] = f->getPoints(p);

@@ -316,7 +316,11 @@ int main(int argc, char** argv) {
   PVDWriter DirichletSurfacePVD(output_directory / "DirichletSurface.pvd");
   PVDWriter vpm_pvd(output_directory / "vpm.pvd");
   // patch PVD は FluidObject ごとに1つ。v1 では最初の FluidObject の名前を使う。
-  PVDWriter patch_pvd((output_directory / (FluidObject.empty() ? "patch.pvd" : (FluidObject[0]->getName() + "_patch.pvd"))).string());
+  const std::string water_name = FluidObject.empty() ? "" : FluidObject[0]->getName() + "_";
+  PVDWriter patch_pvd((output_directory / (water_name + "remeshed.pvd")).string());
+  PVDWriter split_candidate_pvd((output_directory / (water_name + "split_candidate.pvd")).string());
+  PVDWriter collapse_candidate_pvd((output_directory / (water_name + "collapse_candidate.pvd")).string());
+  PVDWriter edges_pvd((output_directory / (water_name + "edges.pvd")).string());
   Print("setting done");
 
   /*DOC_EXTRACT 0_1_BEM
@@ -613,7 +617,7 @@ int main(int argc, char** argv) {
                                  setting.remeshing.surface_split, setting.remeshing.surface_collapse,
                                  setting.remeshing.surface_smoothing,
                                  retry_state.degraded_mode,
-                                 output_directory.string(), simulation_time, &patch_pvd);
+                                 output_directory.string(), simulation_time, &patch_pvd, &split_candidate_pvd, &collapse_candidate_pvd, &edges_pvd);
             retry_state.collapse_repeatedly_rejected_faces(*water, step_retry);
             if (!retry_state.degraded_mode) {
               refreshFaceBadQualityHistory(*water, time_step, std::nullopt, 0.1, subsurface_altitude_reject);
@@ -897,28 +901,18 @@ int main(int argc, char** argv) {
                 std::cout << "name = " << net->getName() << std::endl;
                 std::cout << "net->velocityTranslational() = " << net->velocityTranslational() << std::endl;
 
-                for (auto& mooring : net->mooringLines) {
-                  //! mooring->lastPoint は，浮体ともに動く．
-                  auto Xcurrent = mooring->lastPoint->X;
-                  mooring->lastPoint->X_last = Xcurrent;
-                  Tddd V = (nextPositionOnBody(net, mooring->lastPoint) - Xcurrent) / (net->RK_COM.getTimeAtNextStep() - simulation_time);
-                  mooring->simulate(simulation_time, net->RK_COM.getTimeAtNextStep() - simulation_time, [&](networkPoint* p) {
-                    if (p == mooring->firstPoint) {
-                      p->acceleration.fill(0);
-                      p->velocity.fill(0);
-                    } else if (p == mooring->lastPoint) {
-                      p->acceleration.fill(0);
-                      p->velocity[0] = V[0];
-                      p->velocity[1] = V[1];
-                      p->velocity[2] = V[2];
-                    }
-                  });
-
+                // Phase 2 (2026-04-12): mooring advance migrated to
+                // LumpedCableSystem. The 2-stage API (advanceRKStage +
+                // commitRKStep) replaces the inlined per-line loop, the
+                // velocity-BC computation, and the trailing nextPositionOnBody
+                // overwrite. The fairlead-velocity calculation and rigid-body
+                // transform are now encapsulated inside CableAttachment.
+                if (net->cable_system) {
+                  net->cable_system->advanceRKStage(
+                      simulation_time,
+                      net->RK_COM.getTimeAtNextStep() - simulation_time);
                   if (net->RK_Q.finished)
-                    mooring->applyMooringSimulationResult();
-
-                  for (const auto& p : mooring->getPoints())
-                    mooring->lastPoint->setX(nextPositionOnBody(net, mooring->lastPoint));
+                    net->cable_system->commitRKStep();
                 }
               }
 
@@ -992,28 +986,18 @@ int main(int argc, char** argv) {
                 std::cout << "name = " << net->getName() << std::endl;
                 std::cout << "net->velocityTranslational() = " << net->velocityTranslational() << std::endl;
 
-                for (auto& mooring : net->mooringLines) {
-                  //! mooring->lastPoint は，浮体ともに動く．
-                  auto Xcurrent = mooring->lastPoint->X;
-                  mooring->lastPoint->X_last = Xcurrent;
-                  Tddd V = (nextPositionOnBody(net, mooring->lastPoint) - Xcurrent) / (net->RK_COM.getTimeAtNextStep() - simulation_time);
-                  mooring->simulate(simulation_time, net->RK_COM.getTimeAtNextStep() - simulation_time, [&](networkPoint* p) {
-                    if (p == mooring->firstPoint) {
-                      p->acceleration.fill(0);
-                      p->velocity.fill(0);
-                    } else if (p == mooring->lastPoint) {
-                      p->acceleration.fill(0);
-                      p->velocity[0] = V[0];
-                      p->velocity[1] = V[1];
-                      p->velocity[2] = V[2];
-                    }
-                  });
-
+                // Phase 2 (2026-04-12): see the corresponding pre-solve block
+                // above for the detailed migration note. This post-solve block
+                // calls the same advanceRKStage + conditional commitRKStep
+                // pattern, this time with the body's RK accumulator already
+                // pushed forward by net->RK_COM.push(V) above (so the cable
+                // sees the post-acceleration body state).
+                if (net->cable_system) {
+                  net->cable_system->advanceRKStage(
+                      simulation_time,
+                      net->RK_COM.getTimeAtNextStep() - simulation_time);
                   if (net->RK_Q.finished)
-                    mooring->applyMooringSimulationResult();
-
-                  for (const auto& p : mooring->getPoints())
-                    mooring->lastPoint->setX(nextPositionOnBody(net, mooring->lastPoint));
+                    net->cable_system->commitRKStep();
                 }
               }
               // 人工的な粘性で結果が一致するようになるかどうかチェックする．

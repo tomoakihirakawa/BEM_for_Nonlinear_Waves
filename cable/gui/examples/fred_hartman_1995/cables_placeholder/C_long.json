@@ -1,0 +1,17 @@
+{
+  "_comment": "Long stay (~180 m, 222 m chord). Among the cables with documented RWIV events in Main & Jones (2001) JSV 245(3).",
+  "name": "C_long",
+  "end_a_position": [-178.0, 0.0, 0.0],
+  "end_a_body": "deck",
+  "end_b_position": [0.0, 0.0, 134.0],
+  "end_b_body": "tower",
+  "cable_length": 222.75,
+  "n_points": 31,
+  "line_density": 82.0,
+  "EA": 1800000000.0,
+  "damping": 0.5,
+  "diameter": 0.220,
+  "initial_condition": "tension",
+  "tension_top": 4500000.0,
+  "tension_bottom": 4400000.0
+}

@@ -1,0 +1,23 @@
+{
+  "_comment": "CAC20 high-mode VIV benchmark from Chen et al. 2019. Mass, tension, and EA are inferred in README.md.",
+  "name": "CAC20",
+  "end_a_position": [
+    -289.565,
+    0.0,
+    0.0
+  ],
+  "end_b_position": [
+    0.0,
+    0.0,
+    143.112
+  ],
+  "cable_length": 323.0,
+  "n_points": 121,
+  "line_density": 80.0,
+  "EA": 2261946710.6,
+  "damping": 0.5,
+  "diameter": 0.12,
+  "initial_condition": "tension",
+  "tension_top": 4826046.1,
+  "tension_bottom": 4714901.9
+}

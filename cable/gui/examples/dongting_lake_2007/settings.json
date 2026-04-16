@@ -1,0 +1,37 @@
+{
+  "name": "A12_representative",
+  "end_a_position": [
+    -105.655,
+    0.0,
+    0.0
+  ],
+  "end_b_position": [
+    0.0,
+    0.0,
+    61.0
+  ],
+  "cable_length": 122.0,
+  "n_points": 61,
+  "line_density": 80.0,
+  "EA": 3078760800.5,
+  "damping": 0.5,
+  "diameter": 0.14,
+  "gravity": 9.81,
+  "mode": "dynamic",
+  "dt": 0.005,
+  "t_end": 20.0,
+  "output_interval": 0.05,
+  "max_equilibrium_steps": 500000,
+  "equilibrium_tol": 0.01,
+  "snapshot_interval": 200,
+  "initial_condition": "tension",
+  "tension_top": 2035846.9,
+  "tension_bottom": 1988802.5,
+  "fluid": "air",
+  "wind_type": "uniform",
+  "wind_U_mean": [
+    10.0,
+    0.0,
+    0.0
+  ]
+}

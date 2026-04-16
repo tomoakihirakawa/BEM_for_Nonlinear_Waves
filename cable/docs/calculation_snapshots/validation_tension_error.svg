@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1180" height="720" viewBox="0 0 1180 720">
+<rect width="100%" height="100%" fill="#f8fafc"/>
+<text x="35" y="42" font-family="Arial, sans-serif" font-size="24" fill="#111827" font-weight="700" text-anchor="start">Tension target error after dynamic initialization</text>
+<text x="35" y="68" font-family="Arial, sans-serif" font-size="13" fill="#475569" font-weight="400" text-anchor="start">Reference value = tension_top in cables/*.json. For Sutong this target is H-like, so axial T_top comparison has a definition caveat.</text>
+<text x="35" y="92" font-family="Arial, sans-serif" font-size="13" fill="#334155" font-weight="700" text-anchor="start">Case / cable</text>
+<text x="420" y="92" font-family="Arial, sans-serif" font-size="12" fill="#64748b" font-weight="700" text-anchor="end">-err</text>
+<text x="760" y="92" font-family="Arial, sans-serif" font-size="12" fill="#64748b" font-weight="700" text-anchor="start">+err</text>
+<line x1="430" y1="104" x2="430" y2="665" stroke="#334155" stroke-width="1.2"/>
+<text x="35" y="131" font-family="Arial, sans-serif" font-size="12" fill="#334155" font-weight="400" text-anchor="start">sutong_2008 / C_454m</text>
+<rect x="430.0" y="116" width="320.0" height="20" rx="4" fill="#dc2626" opacity="0.9"/>
+<text x="778" y="131" font-family="Arial, sans-serif" font-size="12" fill="#111827" font-weight="400" text-anchor="start">+1.493%  (5.1751 vs 5.0990 MN)</text>
+<text x="35" y="169" font-family="Arial, sans-serif" font-size="12" fill="#334155" font-weight="400" text-anchor="start">sutong_2008 / C_547m</text>
+<rect x="430.0" y="154" width="316.9" height="20" rx="4" fill="#dc2626" opacity="0.9"/>
+<text x="778" y="169" font-family="Arial, sans-serif" font-size="12" fill="#111827" font-weight="400" text-anchor="start">+1.478%  (6.3327 vs 6.2405 MN)</text>
+<text x="35" y="207" font-family="Arial, sans-serif" font-size="12" fill="#334155" font-weight="400" text-anchor="start">sutong_2008 / C_334m</text>
+<rect x="430.0" y="192" width="292.4" height="20" rx="4" fill="#dc2626" opacity="0.9"/>
+<text x="778" y="207" font-family="Arial, sans-serif" font-size="12" fill="#111827" font-weight="400" text-anchor="start">+1.364%  (4.2395 vs 4.1825 MN)</text>
+<text x="35" y="245" font-family="Arial, sans-serif" font-size="12" fill="#334155" font-weight="400" text-anchor="start">stonecutters_2009 / C_long</text>
+<rect x="246.3" y="230" width="183.7" height="20" rx="4" fill="#d97706" opacity="0.9"/>
+<text x="778" y="245" font-family="Arial, sans-serif" font-size="12" fill="#111827" font-weight="400" text-anchor="start">-0.857%  (9.9143 vs 10.0000 MN)</text>
+<text x="35" y="283" font-family="Arial, sans-serif" font-size="12" fill="#334155" font-weight="400" text-anchor="start">fred_hartman_1995 / C_mid</text>
+<rect x="296.8" y="268" width="133.2" height="20" rx="4" fill="#d97706" opacity="0.9"/>
+<text x="778" y="283" font-family="Arial, sans-serif" font-size="12" fill="#111827" font-weight="400" text-anchor="start">-0.621%  (3.4783 vs 3.5000 MN)</text>
+<text x="35" y="321" font-family="Arial, sans-serif" font-size="12" fill="#334155" font-weight="400" text-anchor="start">fred_hartman_1995 / C_short</text>
+<rect x="316.1" y="306" width="113.9" height="20" rx="4" fill="#d97706" opacity="0.9"/>
+<text x="778" y="321" font-family="Arial, sans-serif" font-size="12" fill="#111827" font-weight="400" text-anchor="start">-0.531%  (2.4867 vs 2.5000 MN)</text>
+<text x="35" y="359" font-family="Arial, sans-serif" font-size="12" fill="#334155" font-weight="400" text-anchor="start">stonecutters_2009 / C_short</text>
+<rect x="363.1" y="344" width="66.9" height="20" rx="4" fill="#d97706" opacity="0.9"/>
+<text x="778" y="359" font-family="Arial, sans-serif" font-size="12" fill="#111827" font-weight="400" text-anchor="start">-0.312%  (2.9906 vs 3.0000 MN)</text>
+<text x="35" y="397" font-family="Arial, sans-serif" font-size="12" fill="#334155" font-weight="400" text-anchor="start">stonecutters_2009 / C_mid</text>
+<rect x="430.0" y="382" width="63.5" height="20" rx="4" fill="#059669" opacity="0.9"/>
+<text x="778" y="397" font-family="Arial, sans-serif" font-size="12" fill="#111827" font-weight="400" text-anchor="start">+0.296%  (5.5163 vs 5.5000 MN)</text>
+<text x="35" y="435" font-family="Arial, sans-serif" font-size="12" fill="#334155" font-weight="400" text-anchor="start">fred_hartman_1995 / C_long</text>
+<rect x="430.0" y="420" width="9.5" height="20" rx="4" fill="#059669" opacity="0.9"/>
+<text x="778" y="435" font-family="Arial, sans-serif" font-size="12" fill="#111827" font-weight="400" text-anchor="start">+0.044%  (4.5020 vs 4.5000 MN)</text>
+<text x="35" y="473" font-family="Arial, sans-serif" font-size="12" fill="#334155" font-weight="400" text-anchor="start">stavanger_city_2021 / C1E</text>
+<rect x="430.0" y="458" width="1.8" height="20" rx="4" fill="#059669" opacity="0.9"/>
+<text x="778" y="473" font-family="Arial, sans-serif" font-size="12" fill="#111827" font-weight="400" text-anchor="start">+0.008%  (1.7142 vs 1.7141 MN)</text>
+<text x="35" y="511" font-family="Arial, sans-serif" font-size="12" fill="#334155" font-weight="400" text-anchor="start">east_china_sea_viv_2019 / CAC20</text>
+<rect x="430.0" y="496" width="1.1" height="20" rx="4" fill="#059669" opacity="0.9"/>
+<text x="778" y="511" font-family="Arial, sans-serif" font-size="12" fill="#111827" font-weight="400" text-anchor="start">+0.005%  (4.8263 vs 4.8260 MN)</text>
+<text x="35" y="549" font-family="Arial, sans-serif" font-size="12" fill="#334155" font-weight="400" text-anchor="start">fhwa_dry_inclined_2007 / FHWA_Dry_1B</text>
+<rect x="430.0" y="534" width="0.5" height="20" rx="4" fill="#059669" opacity="0.9"/>
+<text x="778" y="549" font-family="Arial, sans-serif" font-size="12" fill="#111827" font-weight="400" text-anchor="start">+0.002%  (0.0123 vs 0.0123 MN)</text>
+<text x="35" y="587" font-family="Arial, sans-serif" font-size="12" fill="#334155" font-weight="400" text-anchor="start">nrc_rwiv_2023 / NRC_RWIV_30deg</text>
+<rect x="430.0" y="572" width="0.2" height="20" rx="4" fill="#059669" opacity="0.9"/>
+<text x="778" y="587" font-family="Arial, sans-serif" font-size="12" fill="#111827" font-weight="400" text-anchor="start">+0.001%  (0.0163 vs 0.0163 MN)</text>
+<text x="35" y="625" font-family="Arial, sans-serif" font-size="12" fill="#334155" font-weight="400" text-anchor="start">dongting_lake_2007 / A12_representative</text>
+<rect x="430.0" y="610" width="0.1" height="20" rx="4" fill="#059669" opacity="0.9"/>
+<text x="778" y="625" font-family="Arial, sans-serif" font-size="12" fill="#111827" font-weight="400" text-anchor="start">+0.000%  (2.0359 vs 2.0358 MN)</text>
+<text x="35" y="696" font-family="Arial, sans-serif" font-size="13" fill="#475569" font-weight="400" text-anchor="start">Max absolute error = 1.493%; all checked tensions are finite and non-negative.</text>
+</svg>

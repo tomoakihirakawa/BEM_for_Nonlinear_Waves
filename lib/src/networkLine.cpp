@@ -204,7 +204,8 @@ p0, q1--this---(P)---(LC)---- p1, q0
     /* --------------------------------------------------------------- */
 
     /* ------------------------------------- */
-    auto P = new networkPoint(this->network, (p0->X + p1->X) / 2.);
+    const Tddd splitPos = (midX[0] < 1E+79) ? midX : (p0->X + p1->X) / 2.;
+    auto P = new networkPoint(this->network, splitPos);
     dual_replace(this, p1, P);
 
     auto LC = new networkLine(this->network, P, p1);
@@ -362,7 +363,7 @@ bool networkLine::isMergeable() const {
 
 /* -------------------------------------------------------------------------- */
 
-netPp networkLine::Collapse() {
+netPp networkLine::Collapse(const Tddd& externalTargetX) {
 
   /*
                  p2
@@ -398,7 +399,7 @@ netPp networkLine::Collapse() {
   const auto [q0, this__, q1, e1, q2, e2] = f1->getPointsAndLines(this);
 
   if (this_ != this || this__ != this || p0 != q1 || p1 != q0)
-    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "Topology error in flip");
+    return nullptr; // Topology error — OMP 並列内で throw は禁止
 
   if (!p0 || !p1) {
     std::cout << "p0 == nullptr or p1 == nullptr" << std::endl;
@@ -415,11 +416,45 @@ netPp networkLine::Collapse() {
   /* ------------------------------------- */
   const bool preserve_p0 = p0->CORNER && !p1->CORNER;
   const bool preserve_p1 = p1->CORNER && !p0->CORNER;
-  auto targetX = 0.5 * (p0->X + p1->X);
-  if (preserve_p0)
-    targetX = p0->X;
-  else if (preserve_p1)
-    targetX = p1->X;
+  Tddd targetX;
+  if (externalTargetX[0] < 1E+79) {
+    targetX = externalTargetX;  // 外部指定
+  } else {
+    targetX = 0.5 * (p0->X + p1->X);
+    if (preserve_p0)
+      targetX = p0->X;
+    else if (preserve_p1)
+      targetX = p1->X;
+  }
+
+  // Collapse 後に残る面が退化しないかチェック
+  // p0, p1 に接続する面のうち f0, f1 以外が、targetX に移動した後に面積≈0 にならないか
+  {
+    constexpr double min_area_ratio = 1e-4;
+    for (auto* f : {f0, f1}) {
+      (void)f; // f0, f1 は消えるのでスキップ
+    }
+    for (auto* p : {p0, p1}) {
+      for (auto* f : p->getBoundaryFaces()) {
+        if (f == f0 || f == f1)
+          continue;
+        auto [fp0, fp1, fp2] = f->getPoints();
+        // p0 or p1 を targetX に置き換えて面積を計算
+        Tddd x0 = (fp0 == p0 || fp0 == p1) ? targetX : fp0->X;
+        Tddd x1 = (fp1 == p0 || fp1 == p1) ? targetX : fp1->X;
+        Tddd x2 = (fp2 == p0 || fp2 == p1) ? targetX : fp2->X;
+        double new_area = TriangleArea(x0, x1, x2);
+        double old_area = TriangleArea(fp0->X, fp1->X, fp2->X);
+        if (old_area > 1e-20 && new_area < min_area_ratio * old_area)
+          return nullptr; // 退化面が生まれる → collapse 拒否
+        // 法線反転チェック
+        auto old_normal = Cross(fp1->X - fp0->X, fp2->X - fp0->X);
+        auto new_normal = Cross(x1 - x0, x2 - x0);
+        if (Dot(old_normal, new_normal) < 0)
+          return nullptr; // 法線反転 → collapse 拒否
+      }
+    }
+  }
 
 #if defined(BEM)
   // Save old face geometry for Nearest projection of X_mid/phi_mid after collapse.
@@ -465,14 +500,13 @@ netPp networkLine::Collapse() {
 
   auto faces = l1->getBoundaryFaces();
   if (faces.size() != 2)
-    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "faces.size() !=2");
+    return nullptr;
   auto fl1 = (faces[0] == f0 ? faces[1] : faces[0]);
   dual_replace(l2, f0, fl1, nullptr, l1);
-  //   std::cout << "fl1: " << fl1 << ", fl1->Lines: " << fl1->Lines << std::endl;
 
   faces = e2->getBoundaryFaces();
   if (faces.size() != 2)
-    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "faces.size() !=2");
+    return nullptr;
   auto fe2 = (faces[0] == f1 ? faces[1] : faces[0]);
   dual_replace(e1, f1, fe2, nullptr, e2);
   //   std::cout << "fe2: " << fe2 << ", fe2->Lines: " << fe2->Lines << std::endl;
@@ -543,12 +577,11 @@ netPp networkLine::Collapse() {
     auto l1 = Line(p1, p0);
     if (l0 && l1) {
       if (l0 != l1) {
-        std::cout << "p0: " << p0 << ", p1: " << p1 << std::endl;
-        std::cout << "l0: " << l0 << ", l1: " << l1 << std::endl;
-        throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "Points are linked but by differrent lines");
+        std::cerr << "Collapse checkLine: Points are linked but by different lines" << std::endl;
       }
-    } else
-      throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "Points are not linked by any line");
+    } else {
+      std::cerr << "Collapse checkLine: Points are not linked by any line" << std::endl;
+    }
   };
   //   std::cout << "p0->getLines(): " << p0->getLines() << std::endl;
   for (auto p : p0->getNeighbors())
@@ -588,16 +621,6 @@ netPp networkLine::Collapse() {
 }
 
 /* -------------------------------------------------------------------------- */
-
-netPp networkLine::Collapse(const Tddd& externalTargetX) {
-  // Collapse() に委譲し、生存点を externalTargetX に移動。
-  // 注意: Collapse() 内の CORNER 保存や X_mid 投影は内部 targetX で実行される。
-  // externalTargetX が CORNER 保存と矛盾する場合は呼び出し側の責任。
-  auto* result = this->Collapse();
-  if (result)
-    result->setXSingle(externalTargetX);
-  return result;
-}
 
 netPp networkLine::mergeIfMergeable() {
   if (isMergeable())

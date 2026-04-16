@@ -1,0 +1,23 @@
+{
+  "_comment": "Representative Dongting Lake Bridge RWIV cable. Published values are mixed with clearly documented assumptions in README.md.",
+  "name": "A12_representative",
+  "end_a_position": [
+    -105.655,
+    0.0,
+    0.0
+  ],
+  "end_b_position": [
+    0.0,
+    0.0,
+    61.0
+  ],
+  "cable_length": 122.0,
+  "n_points": 61,
+  "line_density": 80.0,
+  "EA": 3078760800.5,
+  "damping": 0.5,
+  "diameter": 0.14,
+  "initial_condition": "tension",
+  "tension_top": 2035846.9,
+  "tension_bottom": 1988802.5
+}

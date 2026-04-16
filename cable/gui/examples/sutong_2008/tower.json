@@ -1,0 +1,13 @@
+{
+  "name": "tower",
+  "type": "RigidBody",
+  "_comment": "Sutong inverted-Y pylon, 300.4 m. Cantilever mode 1, T=5.08s tuned for 2:1 parametric resonance with C_334m (f1=0.393 Hz, T1=2.54 s). Keep amp small (≤0.1 m) to avoid divergence. For pure 1:1 resonance of C_334m use T=2.54 s with amp ~0.01 m.",
+  "velocity": [
+    "cantilever",
+    0.0, 0.05, 5.08,
+    0, 0, 0,
+    0, 0, 1,
+    1, 0, 0,
+    300.4
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "_comment": "Sutong Bridge Cable #3 from Chen et al. 2020 SCHM 27(6) e2536 Table 1. L=546.9 m, m=91.3 kg/m, D=0.151 m, H=6240.5 kN, A=10891 mm², inclination=23°, λ²=1.97, E=200 GPa.",
+  "name": "C_547m",
+  "end_a_position": [
+    -503.424,
+    0.0,
+    0.0
+  ],
+  "end_a_body": "deck",
+  "end_b_position": [
+    0.0,
+    0.0,
+    213.691
+  ],
+  "end_b_body": "tower",
+  "cable_length": 546.9,
+  "n_points": 31,
+  "line_density": 91.3,
+  "EA": 2178200000.0,
+  "damping": 0.5,
+  "diameter": 0.151,
+  "initial_condition": "tension",
+  "tension_top": 6240500.0,
+  "tension_bottom": 6240500.0
+}

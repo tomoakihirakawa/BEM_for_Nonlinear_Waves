@@ -921,20 +921,25 @@ void write_step(const OutputContext &ctx, const std::map<std::string, outputInfo
       info.PVD->output();
     }
 
-    // Mooring lines (VTP)
-    for (auto *mooring : net->mooringLines) {
-      auto itm = NetOutputInfo.find(mooring->getName());
-      if (itm == NetOutputInfo.end())
-        continue;
-      const auto &minfo = itm->second;
+    // Mooring / cable lines (VTP)
+    // Phase 2 (2026-04-12): iterate cable_system->cables() instead of the
+    // removed `mooringLines` field. Behaviour identical: each cable is
+    // written as one .vtp per time step, indexed by name in NetOutputInfo.
+    if (net->cable_system) {
+      for (auto *mooring : net->cable_system->cables()) {
+        auto itm = NetOutputInfo.find(mooring->getName());
+        if (itm == NetOutputInfo.end())
+          continue;
+        const auto &minfo = itm->second;
 
-      std::filesystem::path filename_m = minfo.vtu_file_name + std::to_string(ctx.time_step) + ".vtp";
-      std::ofstream ofs(ctx.output_directory / filename_m);
-      vtkPolygonWrite(ofs, mooring->getLines());
-      ofs.close();
-      if (minfo.PVD) {
-        minfo.PVD->push(filename_m, ctx.simulation_time);
-        minfo.PVD->output();
+        std::filesystem::path filename_m = minfo.vtu_file_name + std::to_string(ctx.time_step) + ".vtp";
+        std::ofstream ofs(ctx.output_directory / filename_m);
+        vtkPolygonWrite(ofs, mooring->getLines());
+        ofs.close();
+        if (minfo.PVD) {
+          minfo.PVD->push(filename_m, ctx.simulation_time);
+          minfo.PVD->output();
+        }
       }
     }
   }

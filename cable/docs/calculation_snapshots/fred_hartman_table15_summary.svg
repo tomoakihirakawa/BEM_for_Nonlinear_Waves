@@ -1,0 +1,69 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="560" viewBox="0 0 1100 560">
+<rect width="100%" height="100%" fill="#f8fafc"/>
+<text x="35" y="42" font-family="Arial, sans-serif" font-size="24" fill="#111827" font-weight="700" text-anchor="start">Fred Hartman Table 15: 12-stay computation summary</text>
+<text x="35" y="68" font-family="Arial, sans-serif" font-size="13" fill="#475569" font-weight="400" text-anchor="start">Published values are used where available; geometry/EA/diameter are explicitly assumed or inferred.</text>
+<text x="35" y="96" font-family="Arial, sans-serif" font-size="13" fill="#334155" font-weight="700" text-anchor="start">Stay</text>
+<text x="250" y="96" font-family="Arial, sans-serif" font-size="13" fill="#334155" font-weight="700" text-anchor="start">Length [m]</text>
+<text x="690" y="96" font-family="Arial, sans-serif" font-size="13" fill="#334155" font-weight="700" text-anchor="start">Published f [Hz]</text>
+<text x="35" y="119" font-family="Arial, sans-serif" font-size="13" fill="#334155" font-weight="700" text-anchor="start">13S</text>
+<rect x="250" y="105" width="102.3" height="19" rx="4" fill="#2563eb" opacity="0.85"/>
+<text x="360.29025459066855" y="119" font-family="Arial, sans-serif" font-size="12" fill="#111827" font-weight="400" text-anchor="start">59.5</text>
+<rect x="690" y="105" width="260.0" height="19" rx="4" fill="#059669" opacity="0.85"/>
+<text x="958.0" y="119" font-family="Arial, sans-serif" font-size="12" fill="#111827" font-weight="400" text-anchor="start">1.893</text>
+<text x="35" y="153" font-family="Arial, sans-serif" font-size="13" fill="#334155" font-weight="700" text-anchor="start">14S</text>
+<rect x="250" y="139" width="115.7" height="19" rx="4" fill="#2563eb" opacity="0.85"/>
+<text x="373.7323588429443" y="153" font-family="Arial, sans-serif" font-size="12" fill="#111827" font-weight="400" text-anchor="start">67.3</text>
+<rect x="690" y="139" width="186.1" height="19" rx="4" fill="#059669" opacity="0.85"/>
+<text x="884.1067089276281" y="153" font-family="Arial, sans-serif" font-size="12" fill="#111827" font-weight="400" text-anchor="start">1.355</text>
+<text x="35" y="187" font-family="Arial, sans-serif" font-size="13" fill="#334155" font-weight="700" text-anchor="start">15S</text>
+<rect x="250" y="173" width="131.5" height="19" rx="4" fill="#2563eb" opacity="0.85"/>
+<text x="389.5494296097489" y="187" font-family="Arial, sans-serif" font-size="12" fill="#111827" font-weight="400" text-anchor="start">76.5</text>
+<rect x="690" y="173" width="178.6" height="19" rx="4" fill="#059669" opacity="0.85"/>
+<text x="876.5525620707871" y="187" font-family="Arial, sans-serif" font-size="12" fill="#111827" font-weight="400" text-anchor="start">1.300</text>
+<text x="35" y="221" font-family="Arial, sans-serif" font-size="13" fill="#334155" font-weight="700" text-anchor="start">16S</text>
+<rect x="250" y="207" width="150.1" height="19" rx="4" fill="#2563eb" opacity="0.85"/>
+<text x="408.08172982152877" y="221" font-family="Arial, sans-serif" font-size="12" fill="#111827" font-weight="400" text-anchor="start">87.3</text>
+<rect x="690" y="207" width="166.9" height="19" rx="4" fill="#059669" opacity="0.85"/>
+<text x="864.8779714738511" y="221" font-family="Arial, sans-serif" font-size="12" fill="#111827" font-weight="400" text-anchor="start">1.215</text>
+<text x="35" y="255" font-family="Arial, sans-serif" font-size="13" fill="#334155" font-weight="700" text-anchor="start">17S</text>
+<rect x="250" y="241" width="170.8" height="19" rx="4" fill="#2563eb" opacity="0.85"/>
+<text x="428.7793395906938" y="255" font-family="Arial, sans-serif" font-size="12" fill="#111827" font-weight="400" text-anchor="start">99.4</text>
+<rect x="690" y="241" width="147.1" height="19" rx="4" fill="#059669" opacity="0.85"/>
+<text x="845.0998415213946" y="255" font-family="Arial, sans-serif" font-size="12" fill="#111827" font-weight="400" text-anchor="start">1.071</text>
+<text x="35" y="289" font-family="Arial, sans-serif" font-size="13" fill="#334155" font-weight="700" text-anchor="start">18S</text>
+<rect x="250" y="275" width="193.0" height="19" rx="4" fill="#2563eb" opacity="0.85"/>
+<text x="450.953140558108" y="289" font-family="Arial, sans-serif" font-size="12" fill="#111827" font-weight="400" text-anchor="start">112.3</text>
+<rect x="690" y="275" width="139.0" height="19" rx="4" fill="#059669" opacity="0.85"/>
+<text x="836.9963021658743" y="289" font-family="Arial, sans-serif" font-size="12" fill="#111827" font-weight="400" text-anchor="start">1.012</text>
+<text x="35" y="323" font-family="Arial, sans-serif" font-size="13" fill="#334155" font-weight="700" text-anchor="start">19S</text>
+<rect x="250" y="309" width="216.2" height="19" rx="4" fill="#2563eb" opacity="0.85"/>
+<text x="474.1511673161584" y="323" font-family="Arial, sans-serif" font-size="12" fill="#111827" font-weight="400" text-anchor="start">125.8</text>
+<rect x="690" y="309" width="121.0" height="19" rx="4" fill="#059669" opacity="0.85"/>
+<text x="819.0036978341258" y="323" font-family="Arial, sans-serif" font-size="12" fill="#111827" font-weight="400" text-anchor="start">0.881</text>
+<text x="35" y="357" font-family="Arial, sans-serif" font-size="13" fill="#334155" font-weight="700" text-anchor="start">20S</text>
+<rect x="250" y="343" width="240.1" height="19" rx="4" fill="#2563eb" opacity="0.85"/>
+<text x="498.07611942561675" y="357" font-family="Arial, sans-serif" font-size="12" fill="#111827" font-weight="400" text-anchor="start">139.7</text>
+<rect x="690" y="343" width="107.4" height="19" rx="4" fill="#059669" opacity="0.85"/>
+<text x="805.4062334918119" y="357" font-family="Arial, sans-serif" font-size="12" fill="#111827" font-weight="400" text-anchor="start">0.782</text>
+<text x="35" y="391" font-family="Arial, sans-serif" font-size="13" fill="#334155" font-weight="700" text-anchor="start">21S</text>
+<rect x="250" y="377" width="264.8" height="19" rx="4" fill="#2563eb" opacity="0.85"/>
+<text x="522.7795518759444" y="391" font-family="Arial, sans-serif" font-size="12" fill="#111827" font-weight="400" text-anchor="start">154.1</text>
+<rect x="690" y="377" width="104.2" height="19" rx="4" fill="#059669" opacity="0.85"/>
+<text x="802.2472266244057" y="391" font-family="Arial, sans-serif" font-size="12" fill="#111827" font-weight="400" text-anchor="start">0.759</text>
+<text x="35" y="425" font-family="Arial, sans-serif" font-size="13" fill="#334155" font-weight="700" text-anchor="start">22S</text>
+<rect x="250" y="411" width="289.4" height="19" rx="4" fill="#2563eb" opacity="0.85"/>
+<text x="547.4004963431338" y="425" font-family="Arial, sans-serif" font-size="12" fill="#111827" font-weight="400" text-anchor="start">168.4</text>
+<rect x="690" y="411" width="91.7" height="19" rx="4" fill="#059669" opacity="0.85"/>
+<text x="789.7485472794506" y="425" font-family="Arial, sans-serif" font-size="12" fill="#111827" font-weight="400" text-anchor="start">0.668</text>
+<text x="35" y="459" font-family="Arial, sans-serif" font-size="13" fill="#334155" font-weight="700" text-anchor="start">23S</text>
+<rect x="250" y="445" width="314.6" height="19" rx="4" fill="#2563eb" opacity="0.85"/>
+<text x="572.5816716958053" y="459" font-family="Arial, sans-serif" font-size="12" fill="#111827" font-weight="400" text-anchor="start">183.1</text>
+<rect x="690" y="445" width="89.0" height="19" rx="4" fill="#059669" opacity="0.85"/>
+<text x="787.0015847860539" y="459" font-family="Arial, sans-serif" font-size="12" fill="#111827" font-weight="400" text-anchor="start">0.648</text>
+<text x="35" y="493" font-family="Arial, sans-serif" font-size="13" fill="#334155" font-weight="700" text-anchor="start">24S</text>
+<rect x="250" y="479" width="340.0" height="19" rx="4" fill="#2563eb" opacity="0.85"/>
+<text x="598.0" y="493" font-family="Arial, sans-serif" font-size="12" fill="#111827" font-weight="400" text-anchor="start">197.8</text>
+<rect x="690" y="479" width="84.7" height="19" rx="4" fill="#059669" opacity="0.85"/>
+<text x="782.743792921289" y="493" font-family="Arial, sans-serif" font-size="12" fill="#111827" font-weight="400" text-anchor="start">0.617</text>
+<text x="35" y="532" font-family="Arial, sans-serif" font-size="13" fill="#475569" font-weight="400" text-anchor="start">Trend check: longer stays have lower published frequency; all 12 solver runs converged.</text>
+</svg>

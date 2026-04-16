@@ -12,6 +12,7 @@
 # Build Artifacts (C++/CMake)
 # =========================
 build/
+build_solver/
 cmake-build-*/
 *.o
 *.a
@@ -31,12 +32,48 @@ Makefile
 compile_commands.json
 *.gch
 
+# Legacy cable binaries / artifacts
+cable/example_validation1
+cable/example_using_Network
+cable/example_rupture
+cable/cable_leapfrog_*.json
+cable/cable.mtl
+cable/cable.obj
+cable/cable.txt
+cable/clean
+cable/reference/
+cable/stylesheets/
+cable/workspace.code-workspace
+
+# Python test cache
+.pytest_cache/
+
 # =========================
 # Legacy directories (not part of public repo)
 # =========================
 builds/
 bem-freq/
 mathematica_utilities/
+
+# =========================
+# Private project data (NDA / friend's data — never commit, never sync)
+# =========================
+cable/example_yuri_bridge/
+cable/gui/examples/yuri_bridge/
+cable/研究テーマ案*.md
+cable/研究テーマ案*.pdf
+# yuri-related artifacts anywhere under cable/ (mirrors sync_all_public.sh --exclude='*yuri*')
+cable/**/*yuri*
+
+# =========================
+# Dev notes (mirrored in sync_all_public.sh excludes)
+# =========================
+DEVLOG_*.md
+REVIEW_NOTES_*.md
+discussion_*.md
+note.md
+log.md
+log.txt
 
 # =========================
 # TetGen source (AGPL — do not distribute)
@@ -58,8 +95,6 @@ __pycache__/
 *.vtk
 *.vtu
 *.vtp
-*.pvd
-*.mtl
 *.csv
 *.nb
 *.mov
@@ -101,36 +136,6 @@ ROBUSTNESS_*.md
 *.pptx
 *.docx
 *.xlsx
-
-# =========================
-# lib/include junk (test files, experiments, unrelated data)
-# =========================
-lib/include/clean
-lib/include/draft.md
-lib/include/precompile.sh
-lib/include/test.cpp
-lib/include/fundamentaltest.cpp
-lib/include/fundamental.js
-lib/include/fundamental.wasm
-lib/include/pumpkin_simplified.obj
-lib/include/ultrasonic_sensor_data1.csv
-lib/include/trash_*.hpp
-lib/include/README_ABSTRACT.md
-
-# =========================
-# Dev logs / notes
-# =========================
-DEVLOG_*.md
-log.md
-log.txt
-note.md
-build.sh
-計画.md
-
-# =========================
-# cable junk
-# =========================
-cable/clean
 
 # =========================
 # Misc

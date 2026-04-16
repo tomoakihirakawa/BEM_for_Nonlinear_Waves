@@ -71,21 +71,50 @@ struct NewtonRaphson<double> : public NewtonRaphson_Common<double> {
 template <>
 struct NewtonRaphson<Tdd> : public NewtonRaphson_Common<Tdd> {
   NewtonRaphson(const Tdd& Xinit) : NewtonRaphson_Common<Tdd>(Xinit) {};
+  // 2x2 直接解（クラメル）: スレッドセーフ、LAPACK 不要
+  // 特異時は dX = 0（呼び出し側で収束扱いになり停止する）
   void update(const Tdd& F, const T2Tdd& dFdx) {
-    lapack_svd(dX, dFdx, -F);
-    X += dX;
+    const double a = std::get<0>(std::get<0>(dFdx)), b = std::get<1>(std::get<0>(dFdx));
+    const double c = std::get<0>(std::get<1>(dFdx)), d = std::get<1>(std::get<1>(dFdx));
+    const double det = a * d - b * c;
+    if (std::abs(det) > 1e-20) {
+      const double inv = 1.0 / det;
+      const double f0 = -std::get<0>(F), f1 = -std::get<1>(F);
+      std::get<0>(dX) = (d * f0 - b * f1) * inv;
+      std::get<1>(dX) = (-c * f0 + a * f1) * inv;
+      X += dX;
+    } else {
+      std::get<0>(dX) = 0.;
+      std::get<1>(dX) = 0.;
+    }
   };
-  void update(const Tdd& F, const T2Tdd& dFdx, const double a) {
-    lapack_svd(dX, dFdx, -F);
-    X += a * dX;
+  void update(const Tdd& F, const T2Tdd& dFdx, const double scale) {
+    update(F, dFdx);
+    X += (scale - 1.0) * dX;
   };
 };
 template <>
 struct NewtonRaphson<Tddd> : public NewtonRaphson_Common<Tddd> {
   NewtonRaphson(const Tddd& Xinit) : NewtonRaphson_Common<Tddd>(Xinit) {};
+  // 3x3 直接解（クラメル）: スレッドセーフ、LAPACK 不要
+  // 特異時は dX = 0（呼び出し側で収束扱いになり停止する）
   void update(const Tddd& F, const T3Tddd& dFdx) {
-    lapack_svd(dX, dFdx, -F);
-    X += dX;
+    const double a = std::get<0>(std::get<0>(dFdx)), b = std::get<1>(std::get<0>(dFdx)), c = std::get<2>(std::get<0>(dFdx));
+    const double d = std::get<0>(std::get<1>(dFdx)), e = std::get<1>(std::get<1>(dFdx)), f = std::get<2>(std::get<1>(dFdx));
+    const double g = std::get<0>(std::get<2>(dFdx)), h = std::get<1>(std::get<2>(dFdx)), i = std::get<2>(std::get<2>(dFdx));
+    const double det = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
+    if (std::abs(det) > 1e-20) {
+      const double inv = 1.0 / det;
+      const double f0 = -std::get<0>(F), f1 = -std::get<1>(F), f2 = -std::get<2>(F);
+      std::get<0>(dX) = ((e * i - f * h) * f0 - (b * i - c * h) * f1 + (b * f - c * e) * f2) * inv;
+      std::get<1>(dX) = (-(d * i - f * g) * f0 + (a * i - c * g) * f1 - (a * f - c * d) * f2) * inv;
+      std::get<2>(dX) = ((d * h - e * g) * f0 - (a * h - b * g) * f1 + (a * e - b * d) * f2) * inv;
+      X += dX;
+    } else {
+      std::get<0>(dX) = 0.;
+      std::get<1>(dX) = 0.;
+      std::get<2>(dX) = 0.;
+    }
   };
 
   void constrains(const std::function<Tddd(const Tddd&)>& constraint) {
@@ -94,8 +123,7 @@ struct NewtonRaphson<Tddd> : public NewtonRaphson_Common<Tddd> {
   };
 
   void update(const Tddd& F, const T3Tddd& dFdx, const std::function<Tddd(const Tddd&)>& constraint) {
-    lapack_svd(dX, dFdx, -F);
-    X += dX;
+    update(F, dFdx);
     constraint(X);
   };
 };

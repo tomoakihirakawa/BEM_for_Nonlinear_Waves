@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1050" height="620" viewBox="0 0 1050 620">
+<rect width="100%" height="100%" fill="#f8fafc"/>
+<text x="35" y="42" font-family="Arial, sans-serif" font-size="24" fill="#111827" text-anchor="start" font-weight="700">Visible response ranking from direct output positions</text>
+<text x="35" y="68" font-family="Arial, sans-serif" font-size="13" fill="#475569" text-anchor="start" font-weight="400">Metric: mid-node sag range from VTP/SNAPSHOT positions, not tension back-calculation.</text>
+<text x="35" y="117" font-family="Arial, sans-serif" font-size="13" fill="#334155" text-anchor="start" font-weight="400">sutong_2008 / C_547m</text>
+<rect x="260" y="100" width="700.0" height="22" rx="4" fill="#dc2626" opacity="0.88"/>
+<text x="968.0" y="116" font-family="Arial, sans-serif" font-size="13" fill="#111827" text-anchor="start" font-weight="400">0.6117 m</text>
+<text x="35" y="155" font-family="Arial, sans-serif" font-size="13" fill="#334155" text-anchor="start" font-weight="400">sutong_2008 / C_454m</text>
+<rect x="260" y="138" width="384.3" height="22" rx="4" fill="#dc2626" opacity="0.88"/>
+<text x="652.2733366029099" y="154" font-family="Arial, sans-serif" font-size="13" fill="#111827" text-anchor="start" font-weight="400">0.3358 m</text>
+<text x="35" y="193" font-family="Arial, sans-serif" font-size="13" fill="#334155" text-anchor="start" font-weight="400">sutong_2008 / C_334m</text>
+<rect x="260" y="176" width="140.1" height="22" rx="4" fill="#dc2626" opacity="0.88"/>
+<text x="408.06866110838644" y="192" font-family="Arial, sans-serif" font-size="13" fill="#111827" text-anchor="start" font-weight="400">0.1224 m</text>
+<text x="35" y="231" font-family="Arial, sans-serif" font-size="13" fill="#334155" text-anchor="start" font-weight="400">stonecutters_2009 / C_long</text>
+<rect x="260" y="214" width="52.3" height="22" rx="4" fill="#2563eb" opacity="0.88"/>
+<text x="320.2968775543567" y="230" font-family="Arial, sans-serif" font-size="13" fill="#111827" text-anchor="start" font-weight="400">0.0457 m</text>
+<text x="35" y="269" font-family="Arial, sans-serif" font-size="13" fill="#334155" text-anchor="start" font-weight="400">east_china_sea_viv_2019 / CAC20</text>
+<rect x="260" y="252" width="46.6" height="22" rx="4" fill="#059669" opacity="0.88"/>
+<text x="314.5751185221514" y="268" font-family="Arial, sans-serif" font-size="13" fill="#111827" text-anchor="start" font-weight="400">0.0407 m</text>
+<text x="35" y="307" font-family="Arial, sans-serif" font-size="13" fill="#334155" text-anchor="start" font-weight="400">stonecutters_2009 / C_mid</text>
+<rect x="260" y="290" width="27.7" height="22" rx="4" fill="#2563eb" opacity="0.88"/>
+<text x="295.6933137158738" y="306" font-family="Arial, sans-serif" font-size="13" fill="#111827" text-anchor="start" font-weight="400">0.0242 m</text>
+<text x="35" y="345" font-family="Arial, sans-serif" font-size="13" fill="#334155" text-anchor="start" font-weight="400">dongting_lake_2007 / A12</text>
+<rect x="260" y="328" width="27.4" height="22" rx="4" fill="#059669" opacity="0.88"/>
+<text x="295.3500081739415" y="344" font-family="Arial, sans-serif" font-size="13" fill="#111827" text-anchor="start" font-weight="400">0.0239 m</text>
+<text x="35" y="383" font-family="Arial, sans-serif" font-size="13" fill="#334155" text-anchor="start" font-weight="400">fred_hartman_1995 / C_long</text>
+<rect x="260" y="366" width="26.7" height="22" rx="4" fill="#059669" opacity="0.88"/>
+<text x="294.66339709007684" y="382" font-family="Arial, sans-serif" font-size="13" fill="#111827" text-anchor="start" font-weight="400">0.0233 m</text>
+<text x="35" y="421" font-family="Arial, sans-serif" font-size="13" fill="#334155" text-anchor="start" font-weight="400">stavanger_city_2021 / C1E</text>
+<rect x="260" y="404" width="13.0" height="22" rx="4" fill="#059669" opacity="0.88"/>
+<text x="281.04561059342814" y="420" font-family="Arial, sans-serif" font-size="13" fill="#111827" text-anchor="start" font-weight="400">0.0114 m</text>
+<text x="35" y="459" font-family="Arial, sans-serif" font-size="13" fill="#334155" text-anchor="start" font-weight="400">stonecutters_2009 / C_short</text>
+<rect x="260" y="442" width="4.2" height="22" rx="4" fill="#2563eb" opacity="0.88"/>
+<text x="272.23410168383197" y="458" font-family="Arial, sans-serif" font-size="13" fill="#111827" text-anchor="start" font-weight="400">0.0037 m</text>
+<text x="35" y="497" font-family="Arial, sans-serif" font-size="13" fill="#334155" text-anchor="start" font-weight="400">nrc_rwiv_2023 / NRC_RWIV_30deg</text>
+<rect x="260" y="480" width="2.3" height="22" rx="4" fill="#059669" opacity="0.88"/>
+<text x="270.28870361288216" y="496" font-family="Arial, sans-serif" font-size="13" fill="#111827" text-anchor="start" font-weight="400">0.0020 m</text>
+<text x="35" y="535" font-family="Arial, sans-serif" font-size="13" fill="#334155" text-anchor="start" font-weight="400">fhwa_dry_inclined_2007 / FHWA_Dry_1B</text>
+<rect x="260" y="518" width="1.9" height="22" rx="4" fill="#059669" opacity="0.88"/>
+<text x="269.9453980709498" y="534" font-family="Arial, sans-serif" font-size="13" fill="#111827" text-anchor="start" font-weight="400">0.0017 m</text>
+<text x="35" y="585" font-family="Arial, sans-serif" font-size="13" fill="#475569" text-anchor="start" font-weight="400">Sutong C_547m is the clearest public demo case in the current settings.</text>
+</svg>

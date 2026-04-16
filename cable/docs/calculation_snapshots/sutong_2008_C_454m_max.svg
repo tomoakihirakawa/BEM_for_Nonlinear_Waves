@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="520" viewBox="0 0 900 520">
+<rect width="100%" height="100%" fill="#f8fafc"/>
+<text x="35" y="42" font-family="Arial, sans-serif" font-size="22" fill="#111827" text-anchor="start" font-weight="700">Sutong C_454m: max frame #00004</text>
+<text x="35" y="67" font-family="Arial, sans-serif" font-size="14" fill="#475569" text-anchor="start" font-weight="400">sag=3.585 m, sag range=0.336 m</text>
+<rect x="35" y="88" width="830" height="360" fill="#ffffff" stroke="#cbd5e1"/>
+<polyline points="106.54,410.00 129.77,399.01 152.98,387.97 176.17,376.88 199.33,365.74 222.47,354.56 245.59,343.33 268.68,332.05 291.75,320.72 314.80,309.35 337.83,297.93 360.83,286.46 383.81,274.95 406.77,263.40 429.70,251.79 452.61,240.14 475.50,228.45 498.36,216.71 521.20,204.92 544.02,193.09 566.81,181.22 589.58,169.30 612.33,157.33 635.06,145.32 657.76,133.27 680.43,121.17 703.09,109.02 725.71,96.83 748.32,84.60 770.90,72.32 793.46,60.00" fill="none" stroke="#64748b" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round" opacity="0.6" stroke-dasharray="6 5"/>
+<polyline points="106.54,410.00 129.79,399.04 153.01,388.03 176.21,376.97 199.39,365.86 222.54,354.71 245.67,343.50 268.77,332.24 291.85,320.94 314.91,309.58 337.94,298.18 360.95,286.73 383.93,275.23 406.89,263.68 429.82,252.08 452.73,240.43 475.62,228.73 498.48,216.98 521.31,205.19 544.12,193.35 566.91,181.46 589.67,169.52 612.41,157.53 635.12,145.50 657.80,133.43 680.47,121.30 703.10,109.13 725.72,96.92 748.31,84.66 770.87,72.35 793.41,60.00" fill="none" stroke="#059669" stroke-width="3.0" stroke-linecap="round" stroke-linejoin="round" opacity="1.0"/>
+<text x="45" y="485" font-family="Arial, sans-serif" font-size="13" fill="#475569" text-anchor="start" font-weight="400">Dashed gray = initial; colored = selected frame.</text>
+</svg>

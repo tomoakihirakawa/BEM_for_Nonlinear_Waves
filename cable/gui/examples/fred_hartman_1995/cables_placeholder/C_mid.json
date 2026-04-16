@@ -1,0 +1,17 @@
+{
+  "_comment": "Mid-length stay (~120 m) — placeholder representative. TODO: replace with FHWA-HRT-05-083 specific cable data.",
+  "name": "C_mid",
+  "end_a_position": [-90.0, 0.0, 0.0],
+  "end_a_body": "deck",
+  "end_b_position": [0.0, 0.0, 85.0],
+  "end_b_body": "tower",
+  "cable_length": 123.39,
+  "n_points": 31,
+  "line_density": 70.0,
+  "EA": 1500000000.0,
+  "damping": 0.5,
+  "diameter": 0.190,
+  "initial_condition": "tension",
+  "tension_top": 3500000.0,
+  "tension_bottom": 3400000.0
+}

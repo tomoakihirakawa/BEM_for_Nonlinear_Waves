@@ -1,0 +1,19 @@
+{
+  "name": "C01",
+  "end_a_position": [-104.1, 0.0, 0.0],
+  "end_a_body": "deck",
+  "end_b_position": [0.0, 0.0, 45.0],
+  "end_b_body": "tower",
+  "cable_length": 113.41,
+  "n_points": 31,
+  "line_density": 63.2514,
+  "EA": 1530925000.0,
+  "damping": 0.5,
+  "diameter": 0.10129,
+  "output_directory": "./output",
+  "gravity": 9.81,
+  "mode": "equilibrium",
+  "max_equilibrium_steps": 500000,
+  "equilibrium_tol": 0.01,
+  "snapshot_interval": 2000
+}

@@ -1,0 +1,28 @@
+{
+  "input_files": [
+    "tower.json",
+    "published_table15/13S.json",
+    "published_table15/14S.json",
+    "published_table15/15S.json",
+    "published_table15/16S.json",
+    "published_table15/17S.json",
+    "published_table15/18S.json",
+    "published_table15/19S.json",
+    "published_table15/20S.json",
+    "published_table15/21S.json",
+    "published_table15/22S.json",
+    "published_table15/23S.json",
+    "published_table15/24S.json"
+  ],
+  "output_directory": "./output",
+  "gravity": 9.81,
+  "mode": "dynamic",
+  "dt": 0.005,
+  "t_end": 10.0,
+  "output_interval": 0.05,
+  "max_equilibrium_steps": 500000,
+  "equilibrium_tol": 0.01,
+  "snapshot_interval": 10,
+  "fluid": "air",
+  "wind_type": "none"
+}

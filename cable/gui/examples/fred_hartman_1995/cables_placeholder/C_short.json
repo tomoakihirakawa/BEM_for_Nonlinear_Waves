@@ -1,0 +1,17 @@
+{
+  "_comment": "Short stay (~60 m) — placeholder representative. TODO: replace with FHWA-HRT-05-083 Table 3 specific cable (e.g. stay 5AJ or 7AJ).",
+  "name": "C_short",
+  "end_a_position": [-40.0, 0.0, 0.0],
+  "end_a_body": "deck",
+  "end_b_position": [0.0, 0.0, 45.0],
+  "end_b_body": "tower",
+  "cable_length": 60.21,
+  "n_points": 31,
+  "line_density": 55.0,
+  "EA": 1200000000.0,
+  "damping": 0.5,
+  "diameter": 0.160,
+  "initial_condition": "tension",
+  "tension_top": 2500000.0,
+  "tension_bottom": 2450000.0
+}

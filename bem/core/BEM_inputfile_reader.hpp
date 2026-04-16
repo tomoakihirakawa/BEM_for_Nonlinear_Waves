@@ -819,26 +819,31 @@ struct SimulationSettings {
           std::filesystem::copy_file(common.input_directory / input_file_name, common.output_directory / input_file_name, std::filesystem::copy_options::overwrite_existing);
           mk_vtu(common.output_directory / (object_name + "_init.vtu"), {net->getFaces()});
           /* -------------------------------------------------------------------------- */
+          // Phase 2 (2026-04-12): mooring input migrated from per-line raw
+          // `new MooringLine` + `setEquilibriumState` to `LumpedCableSystem`.
+          // The system is created lazily on the first mooring_* key, then
+          // every subsequent mooring_* key adds another cable. After the loop,
+          // a single `solveEquilibrium()` call relaxes all cables together
+          // with the fast cable_solver-style RK4 driver (no dt warmup ramp).
           for (auto& [key, value] : injson()) {
             if (key.contains("mooring")) {
               //$ ------------------------ MOORING ---------------------- */
-              //$ extract key the contains "mooring" as key name. extract them as vector
               std::cout << "/* ------------------------ MOORING ---------------------- */" << std::endl;
               std::cout << "initialize mooring" << std::endl;
 
-              //! check if the value contains 12 elements
-              if (value.size() != 13) //! show contents of the value nicely
-                throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "mooring line must have 12 elements");
+              //! check if the value contains 13 elements
+              if (value.size() != 13)
+                throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "mooring line must have 13 elements");
 
               const auto name = value[0];
-              const int n_points = std::stoi(value[8]); //$ number of points
+              const int n_points = std::stoi(value[8]);
               const std::array<double, 3> X_begin = {std::stod(value[1]), std::stod(value[2]), std::stod(value[3])};
               const std::array<double, 3> X_end = {std::stod(value[4]), std::stod(value[5]), std::stod(value[6])};
-              const double total_length = std::stod(value[7]); //! [m]
-              const double w = std::stod(value[9]);            //! [kg/m]
-              const double stiffness = std::stod(value[10]);   //! [N/m]
-              const double damp = std::stod(value[11]);        //! [N/(m/s^2)]
-              const double diam = std::stod(value[12]);        //! [m]
+              const double total_length = std::stod(value[7]);
+              const double w = std::stod(value[9]);
+              const double stiffness = std::stod(value[10]);
+              const double damp = std::stod(value[11]);
+              const double diam = std::stod(value[12]);
 
               std::cout << std::right << std::setw(15) << "name : " << name << std::endl;
               std::cout << std::right << std::setw(15) << "X_begin : " << X_begin << std::endl;
@@ -851,31 +856,40 @@ struct SimulationSettings {
               std::cout << std::right << std::setw(15) << "diam : " << diam << std::endl;
               std::cout << std::right << std::setw(15) << "total mass" << w * total_length << std::endl;
 
-              std::cout << std::right << std::setw(15) << "initialize MooringLine" << std::endl;
-              auto mooring_net = new MooringLine(X_begin, X_end, total_length, n_points);
-              mooring_net->setName(name);
+              if (!net->cable_system)
+                net->cable_system = std::make_unique<LumpedCableSystem>();
 
-              std::cout << std::right << std::setw(15) << "MooringLine->getPoints().size() = " << mooring_net->getPoints().size() << std::endl;
-              std::cout << std::right << std::setw(15) << "MooringLine->getName() = " << mooring_net->getName() << std::endl;
+              CableProperties props{w, stiffness, damp, diam};
 
-              std::cout << std::right << std::setw(15) << "MooringLine->setDensityStiffnessDampingDiameter" << std::endl;
-              mooring_net->setDensityStiffnessDampingDiameter(w, stiffness, damp, diam);
+              // X_begin = world-fixed anchor (seabed/tower).
+              // X_end   = fairlead, attached to this floating body. The
+              //          initial world position seeds the straight-line
+              //          discretisation; once attached the node's initialX
+              //          will be used by CableAttachment::currentWorldPosition()
+              //          for the rigid-body transform.
+              CableAttachment end_a = CableAttachment::worldFixed(X_begin);
+              CableAttachment end_b = CableAttachment::onBody(net, X_end);
 
-              net->mooringLines.emplace_back(mooring_net);
+              auto* cable = net->cable_system->addCable(name, end_a, end_b,
+                                                         total_length, n_points,
+                                                         props);
               setOutputInfo(name, common.output_directory);
 
-              std::cout << std::right << std::setw(15) << "MooringLine->setEquilibriumState" << std::endl;
-              auto boundary_condition = [&](networkPoint* p) {
-                if (p == mooring_net->lastPoint || p == mooring_net->firstPoint) {
-                  p->acceleration.fill(0.);
-                  p->velocity.fill(0.);
-                }
-              };
-
-              mooring_net->setEquilibriumState(boundary_condition);
-
+              std::cout << std::right << std::setw(15)
+                        << "LumpedCable->getPoints().size() = " << cable->getPoints().size() << std::endl;
+              std::cout << std::right << std::setw(15)
+                        << "LumpedCable->getName() = " << cable->getName() << std::endl;
               std::cout << "/* ------------------------------------------------------- */" << std::endl;
             }
+          }
+          //$ -- After all mooring_* keys parsed, run a single batch equilibrium --
+          if (net->cable_system && net->cable_system->size() > 0) {
+            std::cout << "[mooring] solving initial equilibrium for "
+                      << net->cable_system->size() << " cable(s) on body "
+                      << net->getName() << std::endl;
+            net->cable_system->solveEquilibrium(/*tol=*/0.01,
+                                                 /*max_steps=*/500000,
+                                                 /*snapshot_interval=*/10000);
           }
           //$ ------------------------------------------------------- */
         } else

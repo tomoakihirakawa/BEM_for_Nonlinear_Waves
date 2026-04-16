@@ -296,19 +296,10 @@ inline bool isDirichletBoundaryState(const auto* entity, const networkFace* f) {
   （実験で確認済み）。そのため、Neumann 面を持たない節点は棄却する。
 --------------------------------------------------------------------------- */
 
-inline bool hasSharpEdge(const auto* entity, double threshold = 20.0 * M_PI / 180.0) {
-  auto faces = entity->getBoundaryFaces();
-  Tddd n_avg = {0., 0., 0.};
-  for (auto* f : faces)
-    n_avg += f->area * f->normal;
-  n_avg = Normalize(n_avg);
-  return std::ranges::any_of(faces, [&](const auto* f) {
-    return !isFlat(n_avg, f->normal, threshold);
-  });
-}
+// hasSharpEdge は SharpQ() として Network.hpp (networkPoint, networkLine) に移動済み
 
 inline bool detectMultipleNode(const auto* entity) {
-  return hasSharpEdge(entity);
+  return entity->SharpQ();
 }
 
 inline void setMultipleNode(auto* entity) {

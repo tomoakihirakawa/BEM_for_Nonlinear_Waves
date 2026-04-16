@@ -1,0 +1,17 @@
+{
+  "_comment": "Mid-length stay (~290 m) — placeholder. TODO: replace with Stonecutters SHM specific data.",
+  "name": "C_mid",
+  "end_a_position": [-240.0, 0.0, 0.0],
+  "end_a_body": "deck",
+  "end_b_position": [0.0, 0.0, 165.0],
+  "end_b_body": "tower",
+  "cable_length": 291.23,
+  "n_points": 31,
+  "line_density": 85.0,
+  "EA": 1700000000.0,
+  "damping": 0.5,
+  "diameter": 0.150,
+  "initial_condition": "tension",
+  "tension_top": 5500000.0,
+  "tension_bottom": 5400000.0
+}

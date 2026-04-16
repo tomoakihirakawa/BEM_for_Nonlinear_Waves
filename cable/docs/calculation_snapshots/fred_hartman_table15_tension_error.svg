@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="640" viewBox="0 0 1120 640">
+<rect width="100%" height="100%" fill="#f8fafc"/>
+<text x="35" y="42" font-family="Arial, sans-serif" font-size="24" fill="#111827" font-weight="700" text-anchor="start">Fred Hartman Table 15: solver tension error</text>
+<text x="35" y="68" font-family="Arial, sans-serif" font-size="13" fill="#475569" font-weight="400" text-anchor="start">Reference = published T in FHWA-HRT-05-083 Appendix F Table 15; solver = equilibrium top_tension.</text>
+<line x1="380" y1="94" x2="380" y2="570" stroke="#334155" stroke-width="1.2"/>
+<text x="35" y="123" font-family="Arial, sans-serif" font-size="13" fill="#334155" font-weight="400" text-anchor="start">13S  Tref=1.650 MN</text>
+<rect x="380.0" y="108" width="143.2" height="21" rx="4" fill="#059669" opacity="0.9"/>
+<text x="764" y="123" font-family="Arial, sans-serif" font-size="13" fill="#111827" font-weight="400" text-anchor="start">+0.326%  (1.655 MN)</text>
+<text x="35" y="160" font-family="Arial, sans-serif" font-size="13" fill="#334155" font-weight="400" text-anchor="start">14S  Tref=1.600 MN</text>
+<rect x="380.0" y="145" width="244.4" height="21" rx="4" fill="#d97706" opacity="0.9"/>
+<text x="764" y="160" font-family="Arial, sans-serif" font-size="13" fill="#111827" font-weight="400" text-anchor="start">+0.556%  (1.609 MN)</text>
+<text x="35" y="197" font-family="Arial, sans-serif" font-size="13" fill="#334155" font-weight="400" text-anchor="start">15S  Tref=1.900 MN</text>
+<rect x="380.0" y="182" width="227.9" height="21" rx="4" fill="#d97706" opacity="0.9"/>
+<text x="764" y="197" font-family="Arial, sans-serif" font-size="13" fill="#111827" font-weight="400" text-anchor="start">+0.518%  (1.910 MN)</text>
+<text x="35" y="234" font-family="Arial, sans-serif" font-size="13" fill="#334155" font-weight="400" text-anchor="start">16S  Tref=2.160 MN</text>
+<rect x="380.0" y="219" width="223.4" height="21" rx="4" fill="#d97706" opacity="0.9"/>
+<text x="764" y="234" font-family="Arial, sans-serif" font-size="13" fill="#111827" font-weight="400" text-anchor="start">+0.508%  (2.171 MN)</text>
+<text x="35" y="271" font-family="Arial, sans-serif" font-size="13" fill="#334155" font-weight="400" text-anchor="start">17S  Tref=2.390 MN</text>
+<rect x="380.0" y="256" width="249.3" height="21" rx="4" fill="#d97706" opacity="0.9"/>
+<text x="764" y="271" font-family="Arial, sans-serif" font-size="13" fill="#111827" font-weight="400" text-anchor="start">+0.567%  (2.404 MN)</text>
+<text x="35" y="308" font-family="Arial, sans-serif" font-size="13" fill="#334155" font-weight="400" text-anchor="start">18S  Tref=2.730 MN</text>
+<rect x="380.0" y="293" width="242.7" height="21" rx="4" fill="#d97706" opacity="0.9"/>
+<text x="764" y="308" font-family="Arial, sans-serif" font-size="13" fill="#111827" font-weight="400" text-anchor="start">+0.552%  (2.745 MN)</text>
+<text x="35" y="345" font-family="Arial, sans-serif" font-size="13" fill="#334155" font-weight="400" text-anchor="start">19S  Tref=3.200 MN</text>
+<rect x="380.0" y="330" width="283.9" height="21" rx="4" fill="#d97706" opacity="0.9"/>
+<text x="764" y="345" font-family="Arial, sans-serif" font-size="13" fill="#111827" font-weight="400" text-anchor="start">+0.646%  (3.221 MN)</text>
+<text x="35" y="382" font-family="Arial, sans-serif" font-size="13" fill="#334155" font-weight="400" text-anchor="start">20S  Tref=3.350 MN</text>
+<rect x="380.0" y="367" width="321.1" height="21" rx="4" fill="#d97706" opacity="0.9"/>
+<text x="764" y="382" font-family="Arial, sans-serif" font-size="13" fill="#111827" font-weight="400" text-anchor="start">+0.730%  (3.374 MN)</text>
+<text x="35" y="419" font-family="Arial, sans-serif" font-size="13" fill="#334155" font-weight="400" text-anchor="start">21S  Tref=3.830 MN</text>
+<rect x="380.0" y="404" width="307.2" height="21" rx="4" fill="#d97706" opacity="0.9"/>
+<text x="764" y="419" font-family="Arial, sans-serif" font-size="13" fill="#111827" font-weight="400" text-anchor="start">+0.699%  (3.857 MN)</text>
+<text x="35" y="456" font-family="Arial, sans-serif" font-size="13" fill="#334155" font-weight="400" text-anchor="start">22S  Tref=3.550 MN</text>
+<rect x="380.0" y="441" width="360.0" height="21" rx="4" fill="#d97706" opacity="0.9"/>
+<text x="764" y="456" font-family="Arial, sans-serif" font-size="13" fill="#111827" font-weight="400" text-anchor="start">+0.819%  (3.579 MN)</text>
+<text x="35" y="493" font-family="Arial, sans-serif" font-size="13" fill="#334155" font-weight="400" text-anchor="start">23S  Tref=4.290 MN</text>
+<rect x="380.0" y="478" width="349.6" height="21" rx="4" fill="#d97706" opacity="0.9"/>
+<text x="764" y="493" font-family="Arial, sans-serif" font-size="13" fill="#111827" font-weight="400" text-anchor="start">+0.795%  (4.324 MN)</text>
+<text x="35" y="530" font-family="Arial, sans-serif" font-size="13" fill="#334155" font-weight="400" text-anchor="start">24S  Tref=4.530 MN</text>
+<rect x="380.0" y="515" width="356.3" height="21" rx="4" fill="#d97706" opacity="0.9"/>
+<text x="764" y="530" font-family="Arial, sans-serif" font-size="13" fill="#111827" font-weight="400" text-anchor="start">+0.810%  (4.567 MN)</text>
+<text x="35" y="610" font-family="Arial, sans-serif" font-size="13" fill="#475569" font-weight="400" text-anchor="start">Max abs error = 0.819%; mean abs error = 0.627%.</text>
+</svg>

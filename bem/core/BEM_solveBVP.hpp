@@ -1321,11 +1321,17 @@ struct BEM_BVP {
       if (body->isFloatingBody) {
         //$ ------------------------------ 係留索から受ける力とトルク ----------------------------- */
         //$ フェアリードの節点が隣の線要素から受けている張力ベクトル --> 浮体が受ける力とトルク
+        // Phase 2 (2026-04-12): replaced raw mooringLines loop with
+        // LumpedCableSystem::forceOnBody, which handles end_a/end_b symmetric
+        // lookup (matters when an end other than `lastPoint` is body-attached)
+        // and keeps the moment computed about body->COM with the same sign
+        // convention as the previous implementation.
         std::array<double, 3> F_mooring = {0., 0., 0.}, T_mooring = {0., 0., 0.};
         //! simulateはアップデートの際に行なっておく．
-        for (auto& mooring_line : body->mooringLines) {
-          F_mooring += mooring_line->lastPoint->getForce();
-          T_mooring += Cross(mooring_line->lastPoint->X - body->COM, mooring_line->lastPoint->getForce());
+        if (body->cable_system) {
+          auto [F_cable, T_cable] = body->cable_system->forceOnBody(body);
+          F_mooring = F_cable;
+          T_mooring = T_cable;
         }
 
         //@ ------------------------------ 浮体が流体力とトルク ----------------------------- */

@@ -1,0 +1,37 @@
+{
+  "name": "FHWA_Dry_1B",
+  "end_a_position": [
+    -4.7376,
+    0.0,
+    0.0
+  ],
+  "end_b_position": [
+    0.0,
+    0.0,
+    4.7376
+  ],
+  "cable_length": 6.7,
+  "n_points": 41,
+  "line_density": 60.8,
+  "EA": 4021238596.6,
+  "damping": 0.5,
+  "diameter": 0.16,
+  "gravity": 9.81,
+  "mode": "dynamic",
+  "dt": 0.002,
+  "t_end": 20.0,
+  "output_interval": 0.02,
+  "max_equilibrium_steps": 500000,
+  "equilibrium_tol": 0.01,
+  "snapshot_interval": 500,
+  "initial_condition": "tension",
+  "tension_top": 12296.7,
+  "tension_bottom": 9538.2,
+  "fluid": "air",
+  "wind_type": "uniform",
+  "wind_U_mean": [
+    20.0,
+    0.0,
+    0.0
+  ]
+}

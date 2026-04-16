@@ -7,6 +7,57 @@
 #include <cmath>
 #include <algorithm>
 
+// グリッド探索の初期値から、曲面上の真の最近点パラメタを Newton 法で精緻化
+// 勾配 g = {(X-P)·∂X/∂t0, (X-P)·∂X/∂t1} = 0 を解く
+// 2x2 Hessian をクラメルで直接解く（スレッドセーフ、LAPACK 不要）
+template <typename XFunc, typename DXFunc>
+inline Tdd refineNearestParam(const Tddd& P, Tdd param,
+                              XFunc X_func, DXFunc DX_func,
+                              int max_iter = 5, double tol = 1e-10) {
+  auto [t0, t1] = param;
+  for (int iter = 0; iter < max_iter; ++iter) {
+    Tddd X = X_func(t0, t1);
+    Tddd diff = X - P;
+
+    Tddd dXdt0 = DX_func(t0, t1, 1, 0);
+    Tddd dXdt1 = DX_func(t0, t1, 0, 1);
+
+    double g0 = Dot(diff, dXdt0);
+    double g1 = Dot(diff, dXdt1);
+
+    if (std::abs(g0) < tol && std::abs(g1) < tol)
+      break;
+
+    Tddd d2Xdt0dt0 = DX_func(t0, t1, 2, 0);
+    Tddd d2Xdt1dt1 = DX_func(t0, t1, 0, 2);
+    Tddd d2Xdt0dt1 = DX_func(t0, t1, 1, 1);
+
+    double H00 = Dot(dXdt0, dXdt0) + Dot(diff, d2Xdt0dt0);
+    double H11 = Dot(dXdt1, dXdt1) + Dot(diff, d2Xdt1dt1);
+    double H01 = Dot(dXdt0, dXdt1) + Dot(diff, d2Xdt0dt1);
+
+    double det = H00 * H11 - H01 * H01;
+    if (std::abs(det) < 1e-20)
+      break;
+    double dt0 = -(H11 * g0 - H01 * g1) / det;
+    double dt1 = -(H00 * g1 - H01 * g0) / det;
+
+    t0 += dt0;
+    t1 += dt1;
+
+    // 参照三角形内にクランプ: t0 >= 0, t1 >= 0, t0+t1 <= 1
+    t0 = std::max(0.0, t0);
+    t1 = std::max(0.0, t1);
+    if (t0 + t1 > 1.0) {
+      double s = t0 + t1;
+      t0 /= s;
+      t1 /= s;
+    }
+  }
+  return {t0, t1};
+}
+
+
 // ============================================================================
 // 曲面幾何に関する基本関数群
 //
@@ -101,12 +152,55 @@ inline QuadricFitResult fitQuadricLocal(const Tddd& origin,
     w_vals[i] = w;
   }
 
-  // SVD で解く
-  std::vector<double> coeffs(5, 0.0);
-  try {
-    lapack_svd_solve(A, coeffs, w_vals);
-  } catch (...) {
+  // 正規方程式 A^T A x = A^T b で解く（5×5、LAPACK 不要、スレッド安全）
+  std::array<std::array<double, 5>, 5> ATA = {};
+  std::array<double, 5> ATb = {};
+  for (int i = 0; i < N; ++i) {
+    for (int j = 0; j < 5; ++j) {
+      ATb[j] += A[i][j] * w_vals[i];
+      for (int k = j; k < 5; ++k)
+        ATA[j][k] += A[i][j] * A[i][k];
+    }
+  }
+  for (int j = 0; j < 5; ++j)
+    for (int k = 0; k < j; ++k)
+      ATA[j][k] = ATA[k][j];
+
+  // Cholesky 分解 (5×5)
+  std::array<std::array<double, 5>, 5> L = {};
+  bool cholesky_ok = true;
+  for (int i = 0; i < 5; ++i) {
+    for (int j = 0; j <= i; ++j) {
+      double s = ATA[i][j];
+      for (int k = 0; k < j; ++k)
+        s -= L[i][k] * L[j][k];
+      if (i == j) {
+        if (s <= 1e-20) { cholesky_ok = false; break; }
+        L[i][j] = std::sqrt(s);
+      } else {
+        L[i][j] = s / L[j][j];
+      }
+    }
+    if (!cholesky_ok) break;
+  }
+  if (!cholesky_ok)
     return result;
+
+  // 前進代入 L y = ATb
+  std::array<double, 5> y = {};
+  for (int i = 0; i < 5; ++i) {
+    double s = ATb[i];
+    for (int k = 0; k < i; ++k)
+      s -= L[i][k] * y[k];
+    y[i] = s / L[i][i];
+  }
+  // 後退代入 L^T x = y
+  std::array<double, 5> coeffs = {};
+  for (int i = 4; i >= 0; --i) {
+    double s = y[i];
+    for (int k = i + 1; k < 5; ++k)
+      s -= L[k][i] * coeffs[k];
+    coeffs[i] = s / L[i][i];
   }
 
   result.a = coeffs[0];

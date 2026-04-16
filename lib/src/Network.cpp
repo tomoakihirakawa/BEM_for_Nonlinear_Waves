@@ -1017,10 +1017,9 @@ void Network::setGeometricPropertiesImpl() {
     } else {
       CoordinateBounds::setBounds(Tddd{{0., 0., 0.}});
     }
-  } catch (const error_message&) {
-    throw;
-  } catch (const std::exception& e) {
-    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "Error in Network::setGeometricPropertiesForce(): " + std::string(e.what()));
+  } catch (...) {
+    // OMP 並列内で throw は禁止。エラーを無視して続行。
+    std::cerr << "[setGeometricPropertiesImpl] exception caught and suppressed" << std::endl;
   }
 };
 
@@ -2555,6 +2554,8 @@ void Network::computePrincipalCurvatures(const bool force_all) {
   }
 
   // --- 辺中点の曲率 ---
+  // 隣接2面の頂点(4点) + 隣接2面の他辺の X_mid(4点) = 計8点 で quadric fit
+  // sharp/非sharp の分岐は廃止（一時的に）
   for (auto* l : this->getBoundaryLines()) {
     if (!force_all && l->geom_curvature.valid)
       continue;
@@ -2566,176 +2567,135 @@ void Network::computePrincipalCurvatures(const bool force_all) {
 
     std::unordered_set<networkPoint*> point_set;
     std::unordered_set<networkLine*> line_set;
-    for (auto* q : p0->getNeighbors())
-      point_set.insert(q);
-    for (auto* q : p1->getNeighbors())
-      point_set.insert(q);
-    point_set.insert(p0);
-    point_set.insert(p1);
-    for (auto* q : point_set)
-      for (auto* ll : q->getLines())
-        if (ll != l && !ll->getBoundaryFaces().empty())
-          line_set.insert(ll);
-
+    for (auto* f : l->getBoundaryFaces()) {
+      if (!f) continue;
+      for (auto* p : f->getPoints())
+        if (p) point_set.insert(p);
+      for (auto* ll : f->getLines())
+        if (ll && ll != l) line_set.insert(ll);
+    }
     fitAndStore(l, point_set, line_set);
+  }
+
+  // --- sharp な頂点の曲率を隣接 sharp 辺から補完 ---
+  for (auto* p : this->getBoundaryPoints()) {
+    if (!p->SharpQ())
+      continue;
+    if (p->geom_curvature.valid) {
+      // quadric fit 結果があるが、隣接 sharp 辺の最大曲率のほうが大きければ置き換え
+      double kmax_from_edges = 0.0;
+      for (auto* ll : p->getLines()) {
+        if (ll && ll->geom_curvature.valid)
+          kmax_from_edges = std::max(kmax_from_edges, ll->geom_curvature.kmax);
+      }
+      if (kmax_from_edges > p->geom_curvature.kmax)
+        p->geom_curvature.kmax = kmax_from_edges;
+    }
   }
 }
 
 // ---------------------------------------------------------------------------
 // replacePatch: patchB の内容で this の対応領域を置き換える
 // ---------------------------------------------------------------------------
-// patchB 外周点と this 上の点を座標比較で対応づけ、
-// this 側の古い内部要素を削除し、patchB の要素を this に移植する。
+// フロー:
+//   1. patchB の外周を特定し、this 上の対応点・辺をマッチング
+//   2. 連結成分探索で this 側の古い領域（old patch）を特定
+//   3. 古い領域の内部面を削除（networkFace::Delete() は連鎖しないので安全）
+//   4. 古い領域の内部辺・内部点を削除（面が消えた後なので連鎖は空振り）
+//   5. patchB の外周コピーを this の境界要素に差し替え
+//   6. patchB の内部要素を this に移植
+//   7. patchB の外周コピーを削除
 
 bool Network::replacePatch(Network& patchB, double coord_eps) {
-  // 1. patchB の外周点を特定（面が < 2 の辺の端点）
-  std::unordered_set<networkPoint*> patch_boundary;
-  std::unordered_set<networkLine*> patch_boundary_lines;
+  // ======================================================================
+  // 1. patchB の外周を特定し、this 上の対応をマッチング
+  // ======================================================================
+
+  // patchB の外周点・外周辺（面が < 2 の辺とその端点）
+  std::unordered_set<networkPoint*> border_points;
+  std::unordered_set<networkLine*> border_lines;
   for (auto* l : patchB.Lines)
     if (l->getBoundaryFaces().size() < 2) {
-      patch_boundary_lines.insert(l);
+      border_lines.insert(l);
       auto [p0, p1] = l->getPoints();
-      if (p0) patch_boundary.insert(p0);
-      if (p1) patch_boundary.insert(p1);
+      if (p0)
+        border_points.insert(p0);
+      if (p1)
+        border_points.insert(p1);
     }
 
-  // 2. 座標マッチング: patchB 外周点 → this の点
+  // 座標マッチング: patchB 外周点 → this の点
   std::unordered_map<networkPoint*, networkPoint*> boundary_match; // copy → orig
   std::unordered_set<networkPoint*> used_orig_boundary;
-  for (auto* bp : patch_boundary) {
+  for (auto* bp : border_points) {
     networkPoint* found = nullptr;
     for (auto* wp : this->Points) {
       if (Norm(bp->X - wp->X) < coord_eps) {
         if (used_orig_boundary.count(wp))
-          return false; // patchB の複数境界点が同一点に潰れるのは reject
+          return false;
         found = wp;
         break;
       }
     }
-    if (!found) return false;
+    if (!found)
+      return false;
     boundary_match[bp] = found;
     used_orig_boundary.insert(found);
   }
 
-  // 3. this 側の古い内部要素を特定
+  // this 側の境界点を特定
   std::unordered_set<networkPoint*> orig_boundary;
   for (auto& [copy, orig] : boundary_match)
     orig_boundary.insert(orig);
 
-  // patchB の外周辺に対応する this 側の外周辺を特定
-  std::unordered_set<networkLine*> orig_boundary_lines;
-  std::unordered_set<networkFace*> boundary_adjacent_faces;
-  for (auto* copy_line : patch_boundary_lines) {
-    auto [cp0, cp1] = copy_line->getPoints();
-    if (!cp0 || !cp1)
-      return false;
-    auto it0 = boundary_match.find(cp0);
-    auto it1 = boundary_match.find(cp1);
-    if (it0 == boundary_match.end() || it1 == boundary_match.end())
-      return false;
-    auto* orig_line = Line(it0->second, it1->second);
-    if (!orig_line)
-      return false;
-    orig_boundary_lines.insert(orig_line);
-    for (auto* f : orig_line->getBoundaryFaces())
-      if (f)
-        boundary_adjacent_faces.insert(f);
+  // ======================================================================
+  // 2. copied_points から内部点を特定し、delete で連鎖削除
+  // ======================================================================
+  // networkPoint::Delete() は接続面→接続辺を連鎖削除する。
+  // 内部点（境界点でない点）の全ての面・辺は old 領域内にあるため、
+  // 連鎖は old 領域内で閉じる。境界点・境界辺・外部面は影響を受けない。
+  {
+    std::vector<networkPoint*> internal_points;
+    for (auto* p : patchB.copied_points)
+      if (!orig_boundary.count(p) && this->Points.count(p))
+        internal_points.push_back(p);
+    for (auto* p : internal_points)
+      delete p;
   }
-  if (orig_boundary_lines.empty() || boundary_adjacent_faces.empty())
-    return false;
-
-  // boundary line を跨がない面グラフの連結成分を作り，boundary に接する成分のうち
-  // 最小のものを old patch とみなす
-  std::unordered_set<networkFace*> visited;
-  std::vector<std::vector<networkFace*>> boundary_components;
-  for (auto* seed_face : boundary_adjacent_faces) {
-    if (!seed_face || visited.count(seed_face))
-      continue;
-    std::vector<networkFace*> comp;
-    std::deque<networkFace*> q = {seed_face};
-    visited.insert(seed_face);
-    while (!q.empty()) {
-      auto* f = q.front();
-      q.pop_front();
-      comp.push_back(f);
-      for (auto* l : f->getLines()) {
-        if (!l || orig_boundary_lines.count(l))
-          continue;
-        for (auto* nf : l->getBoundaryFaces()) {
-          if (!nf || visited.count(nf))
-            continue;
-          visited.insert(nf);
-          q.push_back(nf);
-        }
-      }
-    }
-    if (!comp.empty())
-      boundary_components.push_back(std::move(comp));
+  // 連鎖で消えなかった残りの old 面・辺を削除
+  // （全頂点が境界点の面、両端が境界点の内部辺）
+  {
+    std::vector<networkFace*> remaining_faces;
+    for (auto* f : patchB.copied_faces)
+      if (this->Faces.count(f))
+        remaining_faces.push_back(f);
+    if (!remaining_faces.empty())
+      for (auto* f : remaining_faces)
+        delete f;
   }
-  if (boundary_components.size() < 2)
-    return false;
-
-  auto best_it = std::min_element(boundary_components.begin(), boundary_components.end(),
-                                  [](const auto& a, const auto& b) {
-                                    return a.size() < b.size();
-                                  });
-  std::vector<networkFace*> old_faces = *best_it;
-  std::unordered_set<networkFace*> old_face_set(old_faces.begin(), old_faces.end());
-
-  // 古い辺: old_faces のみに属し，境界切断辺ではないものを削除対象にする
-  std::vector<networkLine*> old_lines;
-  for (auto* f : old_faces)
-    for (auto* l : f->getLines()) {
-      if (!l || orig_boundary_lines.count(l))
-        continue;
-      bool all_faces_inside = true;
-      for (auto* lf : l->getBoundaryFaces())
-        if (!old_face_set.count(lf)) {
-          all_faces_inside = false;
-          break;
-        }
-      if (all_faces_inside)
-        old_lines.push_back(l);
-    }
-  std::sort(old_lines.begin(), old_lines.end());
-  old_lines.erase(std::unique(old_lines.begin(), old_lines.end()), old_lines.end());
-  std::unordered_set<networkLine*> old_line_set(old_lines.begin(), old_lines.end());
-
-  // 古い内部点: old_faces のみからなる内部点だけを削除対象にする
-  std::unordered_set<networkPoint*> old_internal_points;
-  std::unordered_set<networkPoint*> old_face_points;
-  for (auto* f : old_faces)
-    for (auto* p : f->getPoints())
-      if (p && !orig_boundary.count(p))
-        old_face_points.insert(p);
-
-  for (auto* p : old_face_points) {
-    bool all_faces_inside = true;
-    for (auto* pf : p->getBoundaryFaces())
-      if (!old_face_set.count(pf)) {
-        all_faces_inside = false;
-        break;
-      }
-    if (!all_faces_inside)
-      continue;
-
-    bool all_lines_inside = true;
-    for (auto* pl : p->getLines())
-      if (!old_line_set.count(pl)) {
-        all_lines_inside = false;
-        break;
-      }
-    if (all_lines_inside)
-      old_internal_points.insert(p);
+  {
+    std::vector<networkLine*> remaining_lines;
+    for (auto* l : patchB.copied_lines)
+      if (this->Lines.count(l) && !orig_boundary.count(l->getPoints()[0]) && !orig_boundary.count(l->getPoints()[1]))
+        // 両端が境界点の辺でも、面が全て消えていれば孤立辺
+        if (l->getBoundaryFaces().empty())
+          remaining_lines.push_back(l);
+    if (!remaining_lines.empty())
+      for (auto* l : remaining_lines)
+        delete l;
   }
 
-  // 4. patchB の外周コピー点を this の元の点に差し替える
+
+  // ======================================================================
+  // 6. patchB の外周コピーを this の境界要素に差し替え
+  // ======================================================================
+
+  // 外周コピー点 → this の元の点
   std::unordered_set<networkFace*> affected_faces;
   for (auto& [copy, orig] : boundary_match) {
     auto copy_lines = copy->getLines();
     for (auto* l : copy_lines)
       dual_replace(l, copy, orig);
-
     auto copy_faces = copy->getBoundaryFaces();
     for (auto* f : copy_faces) {
       dual_replace(f, copy, orig);
@@ -2743,9 +2703,9 @@ bool Network::replacePatch(Network& patchB, double coord_eps) {
     }
   }
 
-  // 5. patchB の外周コピー辺を this の既存外周辺へ差し替える
-  std::vector<networkLine*> boundary_line_copies(patch_boundary_lines.begin(), patch_boundary_lines.end());
-  for (auto* copy_line : boundary_line_copies) {
+  // 外周コピー辺 → this の既存外周辺
+  std::vector<networkLine*> border_line_copies(border_lines.begin(), border_lines.end());
+  for (auto* copy_line : border_line_copies) {
     auto [cp0, cp1] = copy_line->getPoints();
     if (!cp0 || !cp1)
       return false;
@@ -2770,21 +2730,22 @@ bool Network::replacePatch(Network& patchB, double coord_eps) {
     }
   }
 
-  // 5b. replace で Points/Lines が変わった面の PLPLPL を再同期
+  // PLPLPL 再同期
   for (auto* f : affected_faces)
     f->syncPLPLPL();
-
-  // face::replace(point/line) は Lines/Points を更新するが，
-  // patch replacement では dodeca 用に参照される PLPLPL も確実に同期しておく。
   for (auto* f : patchB.Faces)
     f->syncPLPLPL();
 
-  // 6. patchB の内部要素を this に移植（network ポインタ変更 + add + patchB から erase）
-  //    古い要素を delete する前に移植し、外周点に新しい面/辺が接続された状態にする
+  // after_rewire: パッチ辺が orig 点に接続済みだが、まだ water.Lines に移植されていない
+
+  // ======================================================================
+  // 7. patchB の内部要素を this に移植
+  // ======================================================================
   {
     auto pts = std::vector(patchB.Points.begin(), patchB.Points.end());
     for (auto* p : pts) {
-      if (patch_boundary.count(p)) continue;
+      if (border_points.count(p))
+        continue;
       p->network = this;
       this->add(p);
       patchB.erase(p);
@@ -2793,7 +2754,8 @@ bool Network::replacePatch(Network& patchB, double coord_eps) {
   {
     auto lns = std::vector(patchB.Lines.begin(), patchB.Lines.end());
     for (auto* l : lns) {
-      if (patch_boundary_lines.count(l)) continue;
+      if (border_lines.count(l))
+        continue;
       l->network = this;
       this->add(l);
       patchB.erase(l);
@@ -2808,25 +2770,25 @@ bool Network::replacePatch(Network& patchB, double coord_eps) {
     }
   }
 
-  // 7. 古い要素を削除（面 → 辺 → 点の順、Delete() が参照解除 + Network::erase を自動で行う）
-  for (auto* f : old_faces)
-    delete f;
-  for (auto* l : old_lines)
-    delete l;
-  for (auto* p : old_internal_points)
-    delete p;
 
-  // 8. 置換済みの patchB 外周コピー辺/点を削除
-  for (auto* l : boundary_line_copies)
+  // ======================================================================
+  // 7. patchB の外周コピー辺/点を削除
+  // ======================================================================
+  // step 6 で接続を切り離し済み。Delete() は network->erase(this) で
+  // patchB から正しく除去される。patchB のデストラクタで二重削除されない。
+  for (auto* l : border_line_copies)
     delete l;
   for (auto& [copy, orig] : boundary_match)
     delete copy;
 
-  // 9. 幾何プロパティ更新 + 接続チェック
-  std::cout << Green << "[replacePatch] success: boundary=" << patch_boundary.size()
-            << " old_faces=" << old_faces.size()
-            << " old_lines=" << old_lines.size()
-            << " old_points=" << old_internal_points.size()
+
+  // ======================================================================
+  // 8. 後処理
+  // ======================================================================
+  std::cout << Green << "[replacePatch] success: boundary=" << border_points.size()
+            << " copied=" << patchB.copied_points.size() << "p/"
+            << patchB.copied_lines.size() << "l/"
+            << patchB.copied_faces.size() << "f"
             << colorReset << std::endl;
   this->setGeometricPropertiesForce();
   this->checkConnectivity();
@@ -2843,9 +2805,12 @@ networkLine* Network::copyLocalPatch(Network& patch, networkLine* l, int ring_de
   if (!p0 || !p1)
     return nullptr;
 
-  // 1. seed を構築（辺の隣接面の全頂点 + ring_depth 拡張）
+  // 1. seed を構築（辺の隣接境界面の全頂点 + ring_depth 拡張）
   std::unordered_set<networkPoint*> seed;
-  for (auto* f : l->getFaces()) {
+  auto faces = l->getBoundaryFaces();
+  for (auto* f : faces) {
+    if (!f)
+      continue;
     auto [fp0, fp1, fp2] = f->getPoints();
     seed.insert(fp0);
     seed.insert(fp1);
@@ -2861,6 +2826,9 @@ networkLine* Network::copyLocalPatch(Network& patch, networkLine* l, int ring_de
   }
 
   // 2. seed 内の全点をコピー
+  patch.copied_points.clear();
+  patch.copied_lines.clear();
+  patch.copied_faces.clear();
   std::unordered_map<networkPoint*, networkPoint*> orig2copy;
   for (auto* p : seed) {
     auto* cp = new networkPoint(&patch, p->X);
@@ -2871,14 +2839,18 @@ networkLine* Network::copyLocalPatch(Network& patch, networkLine* l, int ring_de
     cp->phiphin = p->phiphin;
     cp->phiphin_t = p->phiphin_t;
     orig2copy[p] = cp;
+    patch.copied_points.insert(p);
   }
 
   // 3. 3頂点が全て seed 内にある boundary face をコピー
   // （face コンストラクタ内の link() で line が自動生成される）
-  for (auto* f : this->getBoundaryFaces()) {
+  faces = this->getBoundaryFaces();
+  for (auto* f : faces) {
     auto [fp0, fp1, fp2] = f->getPoints();
-    if (orig2copy.count(fp0) && orig2copy.count(fp1) && orig2copy.count(fp2))
+    if (orig2copy.count(fp0) && orig2copy.count(fp1) && orig2copy.count(fp2)) {
       new networkFace(&patch, orig2copy[fp0], orig2copy[fp1], orig2copy[fp2]);
+      patch.copied_faces.insert(f);
+    }
   }
 
   // 3b. パッチの辺に元の辺のデータをコピー（X_mid, phiphin, phiphin_t, midpoint_index 等）
@@ -2893,12 +2865,15 @@ networkLine* Network::copyLocalPatch(Network& patch, networkLine* l, int ring_de
     networkPoint* orig_p0 = nullptr;
     networkPoint* orig_p1 = nullptr;
     for (auto& [copy_p, orig_p] : copy2orig) {
-      if (copy_p == copy_p0) orig_p0 = orig_p;
-      if (copy_p == copy_p1) orig_p1 = orig_p;
+      if (copy_p == copy_p0)
+        orig_p0 = orig_p;
+      if (copy_p == copy_p1)
+        orig_p1 = orig_p;
     }
     if (orig_p0 && orig_p1) {
       auto* orig_l = Line(orig_p0, orig_p1);
       if (orig_l) {
+        patch.copied_lines.insert(orig_l);
         copy_l->CORNER = orig_l->CORNER;
         copy_l->Neumann = orig_l->Neumann;
         copy_l->Dirichlet = orig_l->Dirichlet;
@@ -2964,8 +2939,10 @@ networkPoint* Network::copyLocalPatch(Network& patch, networkPoint* p, int ring_
     networkPoint* orig_p0 = nullptr;
     networkPoint* orig_p1 = nullptr;
     for (auto& [orig, copy] : orig2copy) {
-      if (copy == cp0) orig_p0 = orig;
-      if (copy == cp1) orig_p1 = orig;
+      if (copy == cp0)
+        orig_p0 = orig;
+      if (copy == cp1)
+        orig_p1 = orig;
     }
     if (orig_p0 && orig_p1) {
       auto* orig_line = Line(orig_p0, orig_p1);

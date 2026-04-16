@@ -3,7 +3,7 @@
 #include <fstream>
 #include <iostream>
 #include <vector>
-#include "MooringLine.hpp"
+#include "LumpedCable.hpp"
 #include "basic_IO.hpp"
 #include "basic_arithmetic_array_operations.hpp"
 #include "basic_vectors.hpp"
@@ -45,12 +45,12 @@ int main() {
    const double h = -58;
    const double r = 500.;
 
-   auto mooring0 = new MooringLine({r * std::cos(0.), r * std::sin(0.), h}, {0., 0., 0.}, total_length, n_points);
-   auto mooring1 = new MooringLine({r * std::cos(120 * M_PI / 180), r * std::sin(120 * M_PI / 180), h}, {0., 0., 0.}, total_length, n_points);
-   auto mooring2 = new MooringLine({r * std::cos(240 * M_PI / 180), r * std::sin(240 * M_PI / 180), h}, {0., 0., 0.}, total_length, n_points);
+   auto mooring0 = new LumpedCable({r * std::cos(0.), r * std::sin(0.), h}, {0., 0., 0.}, total_length, n_points);
+   auto mooring1 = new LumpedCable({r * std::cos(120 * M_PI / 180), r * std::sin(120 * M_PI / 180), h}, {0., 0., 0.}, total_length, n_points);
+   auto mooring2 = new LumpedCable({r * std::cos(240 * M_PI / 180), r * std::sin(240 * M_PI / 180), h}, {0., 0., 0.}, total_length, n_points);
 
-   std::map<MooringLine*, PVDWriter> pvd_line = {{mooring0, pvd_line0}, {mooring1, pvd_line1}, {mooring2, pvd_line2}};
-   std::map<MooringLine*, PVDWriter> pvd_points = {{mooring0, pvd_points0}, {mooring1, pvd_points1}, {mooring2, pvd_points2}};
+   std::map<LumpedCable*, PVDWriter> pvd_line = {{mooring0, pvd_line0}, {mooring1, pvd_line1}, {mooring2, pvd_line2}};
+   std::map<LumpedCable*, PVDWriter> pvd_points = {{mooring0, pvd_points0}, {mooring1, pvd_points1}, {mooring2, pvd_points2}};
 
    mooring0->setDensityStiffnessDampingDiameter(density, stiffness, damp, diam);
    mooring1->setDensityStiffnessDampingDiameter(density, stiffness, damp, diam);

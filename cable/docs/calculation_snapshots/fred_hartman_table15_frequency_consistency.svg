@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="640" viewBox="0 0 1120 640">
+<rect width="100%" height="100%" fill="#f8fafc"/>
+<text x="35" y="42" font-family="Arial, sans-serif" font-size="24" fill="#111827" font-weight="700" text-anchor="start">Fred Hartman Table 15: frequency consistency</text>
+<text x="35" y="68" font-family="Arial, sans-serif" font-size="13" fill="#475569" font-weight="400" text-anchor="start">Reference = published f; computed = (1 / 2L) sqrt(T / m) from the same published table.</text>
+<line x1="390" y1="94" x2="390" y2="570" stroke="#334155" stroke-width="1.2"/>
+<text x="35" y="123" font-family="Arial, sans-serif" font-size="13" fill="#334155" font-weight="400" text-anchor="start">13S  L=59.5 m</text>
+<rect x="347.2" y="108" width="42.8" height="21" rx="4" fill="#059669" opacity="0.9"/>
+<text x="774" y="123" font-family="Arial, sans-serif" font-size="13" fill="#111827" font-weight="400" text-anchor="start">-0.015%  (1.893 vs 1.893 Hz)</text>
+<text x="35" y="160" font-family="Arial, sans-serif" font-size="13" fill="#334155" font-weight="400" text-anchor="start">14S  L=67.3 m</text>
+<rect x="390.0" y="145" width="316.8" height="21" rx="4" fill="#d97706" opacity="0.9"/>
+<text x="774" y="160" font-family="Arial, sans-serif" font-size="13" fill="#111827" font-weight="400" text-anchor="start">+0.111%  (1.357 vs 1.355 Hz)</text>
+<text x="35" y="197" font-family="Arial, sans-serif" font-size="13" fill="#334155" font-weight="400" text-anchor="start">15S  L=76.5 m</text>
+<rect x="390.0" y="182" width="105.4" height="21" rx="4" fill="#059669" opacity="0.9"/>
+<text x="774" y="197" font-family="Arial, sans-serif" font-size="13" fill="#111827" font-weight="400" text-anchor="start">+0.037%  (1.300 vs 1.300 Hz)</text>
+<text x="35" y="234" font-family="Arial, sans-serif" font-size="13" fill="#334155" font-weight="400" text-anchor="start">16S  L=87.3 m</text>
+<rect x="390.0" y="219" width="91.1" height="21" rx="4" fill="#059669" opacity="0.9"/>
+<text x="774" y="234" font-family="Arial, sans-serif" font-size="13" fill="#111827" font-weight="400" text-anchor="start">+0.032%  (1.215 vs 1.215 Hz)</text>
+<text x="35" y="271" font-family="Arial, sans-serif" font-size="13" fill="#334155" font-weight="400" text-anchor="start">17S  L=99.4 m</text>
+<rect x="54.2" y="256" width="335.8" height="21" rx="4" fill="#d97706" opacity="0.9"/>
+<text x="774" y="271" font-family="Arial, sans-serif" font-size="13" fill="#111827" font-weight="400" text-anchor="start">-0.118%  (1.070 vs 1.071 Hz)</text>
+<text x="35" y="308" font-family="Arial, sans-serif" font-size="13" fill="#334155" font-weight="400" text-anchor="start">18S  L=112.3 m</text>
+<rect x="366.2" y="293" width="23.8" height="21" rx="4" fill="#059669" opacity="0.9"/>
+<text x="774" y="308" font-family="Arial, sans-serif" font-size="13" fill="#111827" font-weight="400" text-anchor="start">-0.008%  (1.012 vs 1.012 Hz)</text>
+<text x="35" y="345" font-family="Arial, sans-serif" font-size="13" fill="#334155" font-weight="400" text-anchor="start">19S  L=125.8 m</text>
+<rect x="282.9" y="330" width="107.1" height="21" rx="4" fill="#059669" opacity="0.9"/>
+<text x="774" y="345" font-family="Arial, sans-serif" font-size="13" fill="#111827" font-weight="400" text-anchor="start">-0.037%  (0.881 vs 0.881 Hz)</text>
+<text x="35" y="382" font-family="Arial, sans-serif" font-size="13" fill="#334155" font-weight="400" text-anchor="start">20S  L=139.7 m</text>
+<rect x="390.0" y="367" width="108.6" height="21" rx="4" fill="#059669" opacity="0.9"/>
+<text x="774" y="382" font-family="Arial, sans-serif" font-size="13" fill="#111827" font-weight="400" text-anchor="start">+0.038%  (0.782 vs 0.782 Hz)</text>
+<text x="35" y="419" font-family="Arial, sans-serif" font-size="13" fill="#334155" font-weight="400" text-anchor="start">21S  L=154.1 m</text>
+<rect x="174.2" y="404" width="215.8" height="21" rx="4" fill="#059669" opacity="0.9"/>
+<text x="774" y="419" font-family="Arial, sans-serif" font-size="13" fill="#111827" font-weight="400" text-anchor="start">-0.076%  (0.758 vs 0.759 Hz)</text>
+<text x="35" y="456" font-family="Arial, sans-serif" font-size="13" fill="#334155" font-weight="400" text-anchor="start">22S  L=168.4 m</text>
+<rect x="390.0" y="441" width="24.3" height="21" rx="4" fill="#059669" opacity="0.9"/>
+<text x="774" y="456" font-family="Arial, sans-serif" font-size="13" fill="#111827" font-weight="400" text-anchor="start">+0.009%  (0.668 vs 0.668 Hz)</text>
+<text x="35" y="493" font-family="Arial, sans-serif" font-size="13" fill="#334155" font-weight="400" text-anchor="start">23S  L=183.1 m</text>
+<rect x="390.0" y="478" width="360.0" height="21" rx="4" fill="#d97706" opacity="0.9"/>
+<text x="774" y="493" font-family="Arial, sans-serif" font-size="13" fill="#111827" font-weight="400" text-anchor="start">+0.126%  (0.649 vs 0.648 Hz)</text>
+<text x="35" y="530" font-family="Arial, sans-serif" font-size="13" fill="#334155" font-weight="400" text-anchor="start">24S  L=197.8 m</text>
+<rect x="332.1" y="515" width="57.9" height="21" rx="4" fill="#059669" opacity="0.9"/>
+<text x="774" y="530" font-family="Arial, sans-serif" font-size="13" fill="#111827" font-weight="400" text-anchor="start">-0.020%  (0.617 vs 0.617 Hz)</text>
+<text x="35" y="610" font-family="Arial, sans-serif" font-size="13" fill="#475569" font-weight="400" text-anchor="start">Max abs mismatch = 0.126%; this is table-rounding level consistency.</text>
+</svg>

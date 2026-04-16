@@ -1,0 +1,8 @@
+# Runtime dependencies for pycable on macOS, Python 3.12.
+# These pins are the same as in pyproject.toml but flattened for
+# `pip install -r requirements.txt` users who don't want editable install.
+numpy>=1.24
+PySide6>=6.8,<6.10
+pyvista==0.43.*
+pyvistaqt>=0.11
+vtk==9.3.1

@@ -1,0 +1,23 @@
+{
+  "_comment": "Representative 30 deg NRC RWIV test case. The real rig boundary condition is simplified as a cable span; see README.md.",
+  "name": "NRC_RWIV_30deg",
+  "end_a_position": [
+    -10.392,
+    0.0,
+    0.0
+  ],
+  "end_b_position": [
+    0.0,
+    0.0,
+    6.0
+  ],
+  "cable_length": 12.0,
+  "n_points": 41,
+  "line_density": 18.0833333333,
+  "EA": 7465052463.5,
+  "damping": 0.5,
+  "diameter": 0.218,
+  "initial_condition": "tension",
+  "tension_top": 16277.5,
+  "tension_bottom": 15239.5
+}

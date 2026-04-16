@@ -1,0 +1,15 @@
+{
+  "point_a": [0.0, 0.0, 30.0],
+  "point_b": [50.0, 0.0, 25.0],
+  "cable_length": 51.5,
+  "n_segments": 20,
+  "line_density": 80.0,
+  "EA": 2.0e9,
+  "damping": 0.5,
+  "diameter": 0.06,
+  "gravity": 9.81,
+  "mode": "equilibrium",
+  "max_equilibrium_steps": 500000,
+  "equilibrium_tol": 0.01,
+  "snapshot_interval": 5000
+}

@@ -19,7 +19,10 @@ void remesh_for_main_loop(Network& water, int time_step, double /*min_edge_lengt
                           bool skip_post_remesh_quality_rejects,
                           const std::string& patch_output_directory,
                           double simulation_time,
-                          PVDWriter* patch_pvd) {
+                          PVDWriter* patch_pvd,
+                          PVDWriter* split_candidate_pvd,
+                          PVDWriter* collapse_candidate_pvd,
+                          PVDWriter* edges_pvd) {
 
   // パッチ VTU デバッグ出力: 全パッチを蓄積し、time_step 終了時にまとめて出力
   struct PatchFaceRecord {
@@ -35,10 +38,31 @@ void remesh_for_main_loop(Network& water, int time_step, double /*min_edge_lengt
     }
   };
 
+  // 修正が必要と判断された辺の記録
+  // split reason: 0=global_max, 1=theta, 2=dihedral, 3=obtuse
+  // collapse reason: 0=global_min, 1=theta+grading, 2=dihedral+grading, 3=degenerate, 4=obtuse
+  struct CandidateEdgeRecord {
+    Tddd p0;
+    Tddd p1;
+    double reason;
+  };
+  std::vector<CandidateEdgeRecord> split_candidate_records;
+  std::vector<CandidateEdgeRecord> collapse_candidate_records;
+  auto collectSplitCandidate = [&](const networkLine* l, double reason_val) {
+    auto [p0, p1] = l->getPoints();
+    if (p0 && p1)
+      split_candidate_records.push_back({p0->X, p1->X, reason_val});
+  };
+  auto collectCollapseCandidate = [&](const networkLine* l, double reason_val) {
+    auto [p0, p1] = l->getPoints();
+    if (p0 && p1)
+      collapse_candidate_records.push_back({p0->X, p1->X, reason_val});
+  };
+
   auto flushPatchVTU = [&]() {
     if (!patch_pvd && patch_output_directory.empty())
       return;
-    const std::string vtu_name = water.getName() + "_patch_" + std::to_string(time_step) + ".vtu";
+    const std::string vtu_name = water.getName() + "_remeshed_" + std::to_string(time_step) + ".vtu";
     const std::string filename = patch_output_directory.empty()
                                      ? "/tmp/" + vtu_name
                                      : patch_output_directory + "/" + vtu_name;
@@ -95,20 +119,89 @@ void remesh_for_main_loop(Network& water, int time_step, double /*min_edge_lengt
     }
   };
 
+  // 候補辺の VTU 書き出し共通ヘルパ
+  auto writeCandidateEdgesVTU = [&](const std::string& tag, const std::vector<CandidateEdgeRecord>& records, PVDWriter* pvd) {
+    if (!pvd && patch_output_directory.empty())
+      return;
+    const std::string vtu_name = water.getName() + "_" + tag + "_" + std::to_string(time_step) + ".vtu";
+    const std::string filename = patch_output_directory + "/" + vtu_name;
+    FILE* fp = fopen(filename.c_str(), "wb");
+    if (!fp)
+      return;
+    int n_cells = records.size();
+    int n_points = n_cells * 2;
+    fprintf(fp, "<?xml version='1.0' encoding='UTF-8'?>\n");
+    fprintf(fp, "<VTKFile xmlns='VTK' byte_order='LittleEndian' version='0.1' type='UnstructuredGrid'>\n");
+    fprintf(fp, "<UnstructuredGrid>\n");
+    fprintf(fp, "<Piece NumberOfCells='%d' NumberOfPoints='%d'>\n", n_cells, n_points);
+    fprintf(fp, "<Points>\n");
+    fprintf(fp, "<DataArray NumberOfComponents='3' type='Float32' format='ascii'>\n");
+    for (auto& r : records) {
+      fprintf(fp, "%f %f %f\n", (float)std::get<0>(r.p0), (float)std::get<1>(r.p0), (float)std::get<2>(r.p0));
+      fprintf(fp, "%f %f %f\n", (float)std::get<0>(r.p1), (float)std::get<1>(r.p1), (float)std::get<2>(r.p1));
+    }
+    fprintf(fp, "</DataArray>\n");
+    fprintf(fp, "</Points>\n");
+    fprintf(fp, "<Cells>\n");
+    fprintf(fp, "<DataArray type='Int32' Name='connectivity' format='ascii'>\n");
+    for (int i = 0; i < n_cells; ++i)
+      fprintf(fp, "%d %d\n", i * 2, i * 2 + 1);
+    fprintf(fp, "</DataArray>\n");
+    fprintf(fp, "<DataArray type='Int32' Name='offsets' format='ascii'>\n");
+    for (int i = 0; i < n_cells; ++i)
+      fprintf(fp, "%d\n", (i + 1) * 2);
+    fprintf(fp, "</DataArray>\n");
+    fprintf(fp, "<DataArray type='UInt8' Name='types' format='ascii'>\n");
+    for (int i = 0; i < n_cells; ++i)
+      fprintf(fp, "3\n"); // VTK_LINE
+    fprintf(fp, "</DataArray>\n");
+    fprintf(fp, "</Cells>\n");
+    fprintf(fp, "<CellData>\n");
+    fprintf(fp, "<DataArray type='Float32' Name='reason' NumberOfComponents='1' format='ascii'>\n");
+    for (auto& r : records)
+      fprintf(fp, "%f\n", (float)r.reason);
+    fprintf(fp, "</DataArray>\n");
+    fprintf(fp, "</CellData>\n");
+    fprintf(fp, "</Piece>\n");
+    fprintf(fp, "</UnstructuredGrid>\n");
+    fprintf(fp, "</VTKFile>\n");
+    fclose(fp);
+    std::cout << "[patch debug] wrote " << filename << " (" << n_cells << " edges)" << std::endl;
+    if (pvd) {
+      pvd->push(vtu_name, simulation_time);
+      pvd->output();
+    }
+  };
+
+  auto flushCandidateEdgesVTU = [&]() {
+    writeCandidateEdgesVTU("split_candidate", split_candidate_records, split_candidate_pvd);
+    writeCandidateEdgesVTU("collapse_candidate", collapse_candidate_records, collapse_candidate_pvd);
+  };
+
   // ========================================================================
   // [1] パラメータ設定
   // ========================================================================
 
   const double rad = M_PI / 180.0;
   const double global_mean_len = Mean(extLength(water.getLines()));
-  const double global_min_len = global_mean_len * 0.3; // これ以下の辺は存在させない
-  const double global_max_len = global_mean_len * 3.0; // これ以上の辺は作らない
+  // 自由表面の目標辺長は水平方向（x,y）のメッシュスケールから決める
+  // free_surface_target_len = sqrt(dx^2 + dy^2) / 20（Dirichlet/CORNER 辺はこれに近づけたい）
+  double free_surface_target_len;
+  {
+    const auto bnds = water.getBounds();
+    double dx = std::get<1>(std::get<0>(bnds)) - std::get<0>(std::get<0>(bnds));
+    double dy = std::get<1>(std::get<1>(bnds)) - std::get<0>(std::get<1>(bnds));
+    double horiz_diag = std::sqrt(dx * dx + dy * dy);
+    free_surface_target_len = horiz_diag / 40.0;
+  }
+  const double global_min_len = free_surface_target_len * 0.2; // 絶対下限
+  const double global_max_len = free_surface_target_len * 3.0; // 絶対上限
   constexpr double min_local_face_area_ratio = 0.05;
 
   // 曲面忠実度（θ）: theta_target = 2π/N で円筒 N 分割が目標
   constexpr bool curvature_remesh_enabled = true;                   // TODO: move to settings
-  constexpr double theta_target = 2.0 * M_PI / 40.0;                // 円筒40分割
-  constexpr double a_theta = 0.25;                                  // ヒステリシス帯（a < 1/3 で振動回避）
+  constexpr double theta_target = 2.0 * M_PI / 60.0;                // 円筒40分割
+  constexpr double a_theta = 0.2;                                  // ヒステリシス帯（a < 1/3 で振動回避）
   constexpr double theta_split = (1.0 + a_theta) * theta_target;    // 32分割以下で split
   constexpr double theta_collapse = (1.0 - a_theta) * theta_target; // 53分割以上で collapse
 
@@ -196,60 +289,25 @@ void remesh_for_main_loop(Network& water, int time_step, double /*min_edge_lengt
   }
 
   // ========================================================================
-  // [TEST] copyLocalPatch のテスト（初回のみ実行）
-  // ========================================================================
-  {
-    auto* test_line = *water.getBoundaryLines().begin();
-    if (test_line) {
-      Network patch("file_name_is_not_given", "test_patch");
-      auto* copied_line = water.copyLocalPatch(patch, test_line, 2);
-      std::cout << "[copyLocalPatch test] original: Points=" << water.getPoints().size()
-                << " Lines=" << water.getLines().size()
-                << " Faces=" << water.getFaces().size() << std::endl;
-      std::cout << "[copyLocalPatch test] patch:    Points=" << patch.getPoints().size()
-                << " Lines=" << patch.getLines().size()
-                << " Faces=" << patch.getFaces().size() << std::endl;
-      if (copied_line) {
-        std::cout << "[copyLocalPatch test] copied_line length=" << copied_line->length() << std::endl;
-        // パッチ外周点（面が1つしかない辺の端点）
-        std::unordered_set<networkPoint*> patch_boundary;
-        for (auto* ll : patch.getLines()) {
-          if (ll->getBoundaryFaces().size() < 2) {
-            auto [pp0, pp1] = ll->getPoints();
-            if (pp0)
-              patch_boundary.insert(pp0);
-            if (pp1)
-              patch_boundary.insert(pp1);
-          }
-        }
-        std::cout << "[copyLocalPatch test] patch boundary=" << patch_boundary.size()
-                  << " internal=" << (patch.getPoints().size() - patch_boundary.size()) << std::endl;
-        // 品質スコアのテスト
-        double worst = 1.0;
-        for (auto* f : patch.getFaces()) {
-          if (!f->BoundaryQ())
-            continue;
-          auto [p0, p1, p2] = f->getPoints();
-          double q = InradiusToCircumradius(p0->X, p1->X, p2->X);
-          worst = std::min(worst, q);
-        }
-        std::cout << "[copyLocalPatch test] worst InradiusToCircumradius=" << worst << std::endl;
-        // Collapse テスト（commonPoints チェック）
-        auto [tp0, tp1] = copied_line->getPoints();
-        auto commonPts = Intersection(tp0->getNeighborPointsOnSurfaces(), tp1->getNeighborPointsOnSurfaces());
-        std::cout << "[copyLocalPatch test] commonPoints=" << commonPts.size() << " (should be 2)" << std::endl;
-      } else {
-        std::cout << "[copyLocalPatch test] ERROR: copied_line is null" << std::endl;
-      }
-    }
-  }
-
-  // ========================================================================
-  // [5] split / flip / collapse ループ（iter_divide_collapse 回繰り返し）
+  // [5] split / flip / collapse ループ（iter_split_collapse 回繰り返し）
   // ========================================================================
 
-  const int iter_divide_collapse = 10;
-  for (auto i = 0; i < iter_divide_collapse; i++) {
+  const int iter_split_collapse = 1;
+  // [profile] 各セクションの累積時間
+  double t_split = 0., t_collapse = 0., t_smooth_ir = 0., t_smooth_angle = 0., t_topo = 0., t_curv = 0.;
+  // runTrials の内訳
+  double t_rt_ref = 0., t_rt_copy = 0., t_rt_run = 0., t_rt_pick = 0.;
+  int rt_calls = 0;
+  // collapse 内訳
+  double t_c_needs = 0., t_c_runtrials = 0., t_c_replace = 0., t_c_postop = 0.;
+  // split 内訳
+  double t_s_needs = 0., t_s_runtrials = 0., t_s_replace = 0., t_s_postop = 0.;
+  using clk = std::chrono::high_resolution_clock;
+  auto sec_since = [](const clk::time_point& t0) {
+    return std::chrono::duration<double>(clk::now() - t0).count();
+  };
+
+  for (auto i = 0; i < iter_split_collapse; i++) {
     auto line_alive = [&](const networkLine* l) { return l && (water.Lines.find(const_cast<networkLine*>(l)) != water.Lines.end()); };
 
     // feature 保護の閾値（30° — これ以上の法線変化は feature として保護）
@@ -276,33 +334,159 @@ void remesh_for_main_loop(Network& water, int time_step, double /*min_edge_lengt
     //   2. θ（曲面忠実度）→ SplitCandidate なら split
     //   3. grading（メッシュ均一性）→ 周囲より突出して長い辺を split
     //   4. CurvatureInvalid → 二面角 fallback
-    auto needsSplit = [&](networkLine* l) -> bool {
-      auto len = l->length();
-
-      // global 上限を超える長辺は無条件で split 候補
-      if (len > global_max_len)
-        return true;
-
-      auto verdict = edgeThetaVerdict(l);
-
-      // 曲面忠実度
-      if (verdict == EdgeThetaVerdict::SplitCandidate)
-        return true;
-      if (verdict == EdgeThetaVerdict::CollapseCandidate)
-        return false;
-
-      // CurvatureInvalid → 二面角 fallback（非 CORNER のみ）
-      if (verdict == EdgeThetaVerdict::CurvatureInvalid && !l->CORNER) {
-        auto surfaces = l->getBoundaryFaces();
-        if (surfaces.size() == 2 && surfaces[0] && surfaces[1]) {
-          double alpha = std::acos(std::clamp(
-              Dot(surfaces[0]->normal, surfaces[1]->normal), -1.0, 1.0));
-          if (alpha >= theta_split)
-            return true;
+    // 辺の隣接面に鈍角（閾値超え）の内角があるか
+    auto hasObtuseAngle = [](const networkLine* l, double angle_threshold = M_PI / 2.) -> bool {
+      for (auto* f : l->getBoundaryFaces()) {
+        if (!f) continue;
+        auto [p0, p1, p2] = f->getPoints();
+        for (auto& [a, b, c] : std::vector<std::tuple<Tddd, Tddd, Tddd>>{{p0->X, p1->X, p2->X}, {p1->X, p2->X, p0->X}, {p2->X, p0->X, p1->X}}) {
+          Tddd v1 = b - a, v2 = c - a;
+          double len1 = Norm(v1), len2 = Norm(v2);
+          if (len1 > 1e-20 && len2 > 1e-20) {
+            double cos_angle = std::clamp(Dot(v1, v2) / (len1 * len2), -1.0, 1.0);
+            if (std::acos(cos_angle) > angle_threshold)
+              return true;
+          }
         }
       }
       return false;
     };
+
+    // --- needsSplit: この辺を split すべきか ---
+    // 自由表面 (Dirichlet/CORNER) は free_surface_target_len のヒステリシス上限を満たさない限り却下
+    // それ以外の辺は曲率忠実度 / 絶対長さで判定
+    auto needsSplit = [&](networkLine* l) -> bool {
+      auto len = l->length();
+
+      // 自由表面辺: len > 1.1 * fs_target を満たさないと split しない
+      if (l->Dirichlet || l->CORNER) {
+        return len > 1.1 * free_surface_target_len;
+      }
+
+      // 一般辺: 絶対長さ上限超過
+      if (len > global_max_len)
+        return true;
+
+      // 一般辺: 曲率忠実度
+      auto verdict = edgeThetaVerdict(l);
+      if (verdict == EdgeThetaVerdict::SplitCandidate)
+        return true;
+
+      return false;
+    };
+
+    // --- needsCollapse: この辺を collapse すべきか ---
+    // 自由表面 (Dirichlet/CORNER) は free_surface_target_len のヒステリシス下限を下回らない限り却下
+    // それ以外の辺は曲率忠実度 / 絶対長さで判定
+    auto needsCollapse = [&](networkLine* l) -> bool {
+      auto len = l->length();
+
+      // 自由表面辺: len < 0.55 * fs_target を満たさないと collapse しない
+      if (l->Dirichlet || l->CORNER) {
+        return len < 0.55 * free_surface_target_len;
+      }
+
+      // 一般辺: 絶対長さ下限未満
+      if (len < global_min_len)
+        return true;
+
+      // 一般辺: 曲率忠実度
+      auto verdict = edgeThetaVerdict(l);
+      if (verdict == EdgeThetaVerdict::CollapseCandidate)
+        return true;
+
+      return false;
+    };
+
+    // ------ 全辺の幾何/曲率情報を VTU 出力（i==0 のみ） ------
+    auto writeEdgesVTU = [&]() {
+      if (!edges_pvd && patch_output_directory.empty())
+        return;
+      const std::string vtu_name = water.getName() + "_edges_" + std::to_string(time_step) + ".vtu";
+      const std::string filename = patch_output_directory + "/" + vtu_name;
+      FILE* fp = fopen(filename.c_str(), "wb");
+      if (!fp)
+        return;
+      const auto lines = water.getBoundaryLines();
+      int n_cells = (int)lines.size();
+      int n_points = n_cells * 2;
+      fprintf(fp, "<?xml version='1.0' encoding='UTF-8'?>\n");
+      fprintf(fp, "<VTKFile xmlns='VTK' byte_order='LittleEndian' version='0.1' type='UnstructuredGrid'>\n");
+      fprintf(fp, "<UnstructuredGrid>\n");
+      fprintf(fp, "<Piece NumberOfCells='%d' NumberOfPoints='%d'>\n", n_cells, n_points);
+      fprintf(fp, "<Points>\n");
+      fprintf(fp, "<DataArray NumberOfComponents='3' type='Float32' format='ascii'>\n");
+      for (auto* l : lines) {
+        auto [p0, p1] = l->getPoints();
+        fprintf(fp, "%f %f %f\n", (float)std::get<0>(p0->X), (float)std::get<1>(p0->X), (float)std::get<2>(p0->X));
+        fprintf(fp, "%f %f %f\n", (float)std::get<0>(p1->X), (float)std::get<1>(p1->X), (float)std::get<2>(p1->X));
+      }
+      fprintf(fp, "</DataArray>\n");
+      fprintf(fp, "</Points>\n");
+      fprintf(fp, "<Cells>\n");
+      fprintf(fp, "<DataArray type='Int32' Name='connectivity' format='ascii'>\n");
+      for (int i = 0; i < n_cells; ++i) fprintf(fp, "%d %d\n", i * 2, i * 2 + 1);
+      fprintf(fp, "</DataArray>\n");
+      fprintf(fp, "<DataArray type='Int32' Name='offsets' format='ascii'>\n");
+      for (int i = 0; i < n_cells; ++i) fprintf(fp, "%d\n", (i + 1) * 2);
+      fprintf(fp, "</DataArray>\n");
+      fprintf(fp, "<DataArray type='UInt8' Name='types' format='ascii'>\n");
+      for (int i = 0; i < n_cells; ++i) fprintf(fp, "3\n"); // VTK_LINE
+      fprintf(fp, "</DataArray>\n");
+      fprintf(fp, "</Cells>\n");
+      fprintf(fp, "<CellData>\n");
+
+      auto write_scalar = [&](const char* name, auto extractor) {
+        fprintf(fp, "<DataArray type='Float32' Name='%s' NumberOfComponents='1' format='ascii'>\n", name);
+        for (auto* l : lines) fprintf(fp, "%f\n", (float)extractor(l));
+        fprintf(fp, "</DataArray>\n");
+      };
+      auto write_vec3 = [&](const char* name, auto extractor) {
+        fprintf(fp, "<DataArray type='Float32' Name='%s' NumberOfComponents='3' format='ascii'>\n", name);
+        for (auto* l : lines) {
+          auto v = extractor(l);
+          fprintf(fp, "%f %f %f\n", (float)std::get<0>(v), (float)std::get<1>(v), (float)std::get<2>(v));
+        }
+        fprintf(fp, "</DataArray>\n");
+      };
+
+      write_scalar("k1", [](networkLine* l) { return l->geom_curvature.valid ? l->geom_curvature.k1 : 0.0; });
+      write_scalar("k2", [](networkLine* l) { return l->geom_curvature.valid ? l->geom_curvature.k2 : 0.0; });
+      write_scalar("kmax", [](networkLine* l) { return l->geom_curvature.valid ? l->geom_curvature.kmax : 0.0; });
+      write_scalar("len", [](networkLine* l) { return l->length(); });
+      write_scalar("theta", [](networkLine* l) {
+        if (!l->geom_curvature.valid) return 0.0;
+        auto [p0, p1] = l->getPoints();
+        Tddd edge = p1->X - p0->X;
+        return surface_geometry::edgeCurvatureAngle(edge, l->geom_curvature.k1, l->geom_curvature.k2, l->geom_curvature.PD1, l->geom_curvature.PD2);
+      });
+      write_scalar("valid", [](networkLine* l) { return l->geom_curvature.valid ? 1.0 : 0.0; });
+      write_scalar("is_sharp", [](networkLine* l) { return l->SharpQ() ? 1.0 : 0.0; });
+      write_scalar("is_split_target", [&](networkLine* l) { return needsSplit(l) ? 1.0 : 0.0; });
+      write_scalar("is_collapse_target", [&](networkLine* l) { return needsCollapse(l) ? 1.0 : 0.0; });
+      write_vec3("PD1", [](networkLine* l) -> Tddd { return l->geom_curvature.valid ? l->geom_curvature.PD1 : Tddd{0., 0., 0.}; });
+      write_vec3("PD2", [](networkLine* l) -> Tddd { return l->geom_curvature.valid ? l->geom_curvature.PD2 : Tddd{0., 0., 0.}; });
+      write_vec3("n_avg", [](networkLine* l) -> Tddd {
+        auto faces = l->getBoundaryFaces();
+        Tddd n = {0., 0., 0.};
+        for (auto* f : faces) if (f) n += f->area * f->normal;
+        double nn = Norm(n);
+        return (nn > 1e-20) ? (n / nn) : Tddd{0., 0., 0.};
+      });
+
+      fprintf(fp, "</CellData>\n");
+      fprintf(fp, "</Piece>\n");
+      fprintf(fp, "</UnstructuredGrid>\n");
+      fprintf(fp, "</VTKFile>\n");
+      fclose(fp);
+      std::cout << "[edges debug] wrote " << filename << " (" << n_cells << " edges)" << std::endl;
+      if (edges_pvd) {
+        edges_pvd->push(vtu_name, simulation_time);
+        edges_pvd->output();
+      }
+    };
+
+    if (i == 0) writeEdgesVTU();
 
     // ------ 共通ヘルパー（split / collapse 共用） ------
 
@@ -394,35 +578,12 @@ void remesh_for_main_loop(Network& water, int time_step, double /*min_edge_lengt
       int best_idx = -1;
       for (int i = 0; i < (int)old_faces.size(); ++i) {
         // 1. linear Nearest_ で初期 t0t1
-        auto [t0, t1, near_linear, normal] = Nearest_(X, old_faces[i].tri);
-        // 2. Newton 反復で2次曲面上の正確な t0t1
-        for (int iter = 0; iter < 5; ++iter) {
-          Tddd Xq = evalQuad(t0, t1, old_faces[i]);
-          Tddd diff = Xq - X;
-          Tddd dXdt0 = evalQuadDeriv(t0, t1, 1, 0, old_faces[i]);
-          Tddd dXdt1 = evalQuadDeriv(t0, t1, 0, 1, old_faces[i]);
-          double g0 = Dot(diff, dXdt0), g1 = Dot(diff, dXdt1);
-          if (std::abs(g0) < 1e-10 && std::abs(g1) < 1e-10)
-            break;
-          Tddd d2Xdt00 = evalQuadDeriv(t0, t1, 2, 0, old_faces[i]);
-          Tddd d2Xdt11 = evalQuadDeriv(t0, t1, 0, 2, old_faces[i]);
-          Tddd d2Xdt01 = evalQuadDeriv(t0, t1, 1, 1, old_faces[i]);
-          double H00 = Dot(dXdt0, dXdt0) + Dot(diff, d2Xdt00);
-          double H11 = Dot(dXdt1, dXdt1) + Dot(diff, d2Xdt11);
-          double H01 = Dot(dXdt0, dXdt1) + Dot(diff, d2Xdt01);
-          double det = H00 * H11 - H01 * H01;
-          if (std::abs(det) < 1e-20)
-            break;
-          t0 += -(H11 * g0 - H01 * g1) / det;
-          t1 += -(H00 * g1 - H01 * g0) / det;
-          t0 = std::max(0.0, t0);
-          t1 = std::max(0.0, t1);
-          if (t0 + t1 > 1.0) {
-            double s = t0 + t1;
-            t0 /= s;
-            t1 /= s;
-          }
-        }
+        auto [t0_init, t1_init, near_linear, normal] = Nearest_(X, old_faces[i].tri);
+        // 2. refineNearestParam で曲面上の正確な t0t1（共通 Newton ヘルパ）
+        auto [t0, t1] = refineNearestParam(
+            X, Tdd{t0_init, t1_init},
+            [&](double a, double b) { return evalQuad(a, b, old_faces[i]); },
+            [&](double a, double b, int di, int dj) { return evalQuadDeriv(a, b, di, dj, old_faces[i]); });
         Tddd near_quad = evalQuad(t0, t1, old_faces[i]);
         double dist = Norm(near_quad - X);
         if (dist < min_dist) {
@@ -491,14 +652,54 @@ void remesh_for_main_loop(Network& water, int time_step, double /*min_edge_lengt
       }
     };
 
-    auto worstScore = [](const Network& net) {
-      double worst = 1.0;
-      for (auto* f : net.getBoundaryFaces()) {
-        auto [p0, p1, p2] = f->getPoints();
-        double q = InradiusToCircumradius(p0->X, p1->X, p2->X);
-        worst = std::min(worst, q);
+    // 三角形の内角の 60° からの最大偏差 [rad]（0 が最良、π/3 が最悪）
+    auto maxAngleDeviation = [](const Tddd& a, const Tddd& b, const Tddd& c) -> double {
+      constexpr double ideal = M_PI / 3.;
+      double max_dev = 0.;
+      for (auto& [p, q, r] : std::vector<std::tuple<Tddd, Tddd, Tddd>>{{a, b, c}, {b, c, a}, {c, a, b}}) {
+        Tddd v1 = q - p, v2 = r - p;
+        double l1 = Norm(v1), l2 = Norm(v2);
+        if (l1 > 1e-20 && l2 > 1e-20) {
+          double angle = std::acos(std::clamp(Dot(v1, v2) / (l1 * l2), -1.0, 1.0));
+          max_dev = std::max(max_dev, std::abs(angle - ideal));
+        }
       }
-      // 反転チェック: 隣接面の法線が反転していれば -1 を返す
+      return max_dev;
+    };
+
+    // ============================================================
+    // patchQuality: パッチの品質を 1 つの数値で評価する複合スコア
+    // ============================================================
+    //
+    // ★ 高いほど良い（HIGHER IS BETTER）
+    //   - 最良（理想状態）= 各項が最大値を取る
+    //   - 最悪（メッシュ反転）= -1.0（即却下）
+    //   - trial 評価ではこの値を比較し、「操作後の値 > 操作前の値」なら改善とみなす
+    //
+    // 含まれる項:
+    //   (1) worst_ir         — 最悪三角形の形状品質 (InradiusToCircumradius)
+    //                          正三角形 = 1, 退化 = 0
+    //                          Shewchuk/Knupp が推奨する形状品質指標
+    //   (2) local_cv_mean    — 各節点の隣接辺長 CV (= σ/μ) の平均
+    //                          local grading の指標。局所的に辺長が揃っているほど 0 に近い
+    //                          1/(1+local_cv_mean) を掛ける → 揃っているほどスコア上昇
+    //   (3) worst_fs_excess  — 自由表面 (Dirichlet/CORNER) 辺の長さ超過の最大値
+    //                          free_surface_target_len を超えた割合 = (len/target - 1)
+    //                          1/(1+10*worst_fs_excess) で強く罰する
+    //   (4) worst_theta_excess — 曲率解像度の超過（粗すぎ罰）
+    //                            1/(1+worst_theta_excess) を掛ける
+    //
+    // 計算するが現状スコアには加えていない（参照用）:
+    //   - worst_angle_dev    — 60° からの最大角度偏差（worst_ir で代替されるため省略）
+    //
+    // 致命的不適合 (return -1.0):
+    //   - 隣接面の法線内積 < -0.3（おおよそ 110° 以上の折れ） → メッシュ反転
+    //
+    // 注意:
+    //   - スコアの絶対値より、操作前後の差分が意味を持つ（trial 比較で改善判定）
+    auto patchQuality = [&](const Network& net) {
+
+      // ----- 反転チェック: 隣接面の法線が逆を向いていれば即却下 -----
       for (auto* l : net.getLines()) {
         auto faces = l->getBoundaryFaces();
         if (faces.size() == 2 && faces[0] && faces[1]) {
@@ -506,43 +707,80 @@ void remesh_for_main_loop(Network& water, int time_step, double /*min_edge_lengt
             return -1.0;
         }
       }
-      return worst;
+
+      // ----- 面ループ: 形状品質と角度偏差 -----
+      double worst_ir = 1.0;
+      double worst_angle_dev = 0.;
+      for (auto* f : net.getBoundaryFaces()) {
+        auto [p0, p1, p2] = f->getPoints();
+        worst_ir = std::min(worst_ir, InradiusToCircumradius(p0->X, p1->X, p2->X));
+        worst_angle_dev = std::max(worst_angle_dev, maxAngleDeviation(p0->X, p1->X, p2->X));
+      }
+
+      // ----- 辺ループ: 自由表面の長さ超過 + 曲率解像度 -----
+      double worst_fs_excess = 0.;     // (3) 自由表面辺の target_len 超過
+      double worst_theta_excess = 0.;  // 曲率解像度の超過（参照用、現状未使用）
+      for (auto* l : net.getBoundaryLines()) {
+        // (3) 自由表面（Dirichlet 辺 or CORNER 辺）が free_surface_target_len を超える分を罰する
+        //     ratio = len / target, ratio > 1 のときだけペナルティ
+        if ((l->Dirichlet || l->CORNER) && free_surface_target_len > 1e-20) {
+          double ratio = l->length() / free_surface_target_len;
+          if (ratio > 1.0)
+            worst_fs_excess = std::max(worst_fs_excess, ratio - 1.0);
+        }
+
+        // 曲率項（粗すぎる辺のみ罰する。theta = edgeCurvatureAngle）
+        // theta / theta_target > 1 → ratio - 1 を蓄積
+        if (!l->geom_curvature.valid)
+          continue;
+        auto [p0, p1] = l->getPoints();
+        if (!p0 || !p1)
+          continue;
+        Tddd edge = p1->X - p0->X;
+        double theta = surface_geometry::edgeCurvatureAngle(
+            edge, l->geom_curvature.k1, l->geom_curvature.k2,
+            l->geom_curvature.PD1, l->geom_curvature.PD2);
+        if (!std::isfinite(theta) || theta_target < 1e-10 || theta / theta_target < 1.)
+          continue;
+        worst_theta_excess = std::max(worst_theta_excess, theta / theta_target - 1.0);
+      }
+
+      // ----- 節点ループ: local CV (local grading) -----
+      // 各点の隣接辺長の CV を平均する。揃っているほど 0 に近い。
+      double local_cv_mean = 0.;
+      {
+        double cv_sum = 0.;
+        int cv_count = 0;
+        for (auto* p : net.getBoundaryPoints()) {
+          if (!p) continue;
+          cv_sum += p->localEdgeLengthCV();
+          ++cv_count;
+        }
+        if (cv_count > 0)
+          local_cv_mean = cv_sum / cv_count;
+      }
+
+      // 角度偏差を [0,1] に正規化（参照用）: 0° → 0, 60° → 1
+      double angle_penalty = worst_angle_dev / (M_PI / 3.);
+
+      // ----- スコア合成 -----
+      // 各項は概ね [0, 1]。すべて理想に近ければ 3.0 程度が上限。
+      // double base = worst_ir                       // (1) 形状品質
+      //             + 0.1 / (1. + local_cv_mean)     // (2) local grading
+      //             + 10 / (1. + worst_theta_excess) // (4) 曲率解像度
+      //             + 100. / (1. + worst_fs_excess);  // (3) 自由表面 target len 超過
+
+      //高いほどよい
+      double base = worst_ir;
+      base += 1. / (1. + local_cv_mean);
+      base += 1. / (1. + worst_theta_excess);
+      base += 1. / (1. + worst_fs_excess);
+      return base;
     };
 
-    auto patchBoundaryPoints = [](const Network& net) {
-      std::unordered_set<networkPoint*> bpts;
-      for (auto* l : net.getLines()) {
-        if (l->getBoundaryFaces().size() < 2) {
-          auto [p0, p1] = l->getPoints();
-          if (p0)
-            bpts.insert(p0);
-          if (p1)
-            bpts.insert(p1);
-        }
-      }
-      return bpts;
-    };
 
-    auto computeHdLimit = [](networkLine* l) -> double {
-      double kmax_sum = 0.;
-      int kmax_count = 0;
-      std::unordered_set<networkPoint*> face_verts;
-      for (auto* f : l->getFaces()) {
-        auto [fp0, fp1, fp2] = f->getPoints();
-        face_verts.insert(fp0);
-        face_verts.insert(fp1);
-        face_verts.insert(fp2);
-      }
-      for (auto* p : face_verts) {
-        if (p->geom_curvature.valid) {
-          kmax_sum += p->geom_curvature.kmax;
-          ++kmax_count;
-        }
-      }
-      double kmax_avg = (kmax_count > 0) ? (kmax_sum / kmax_count) : 0.;
-      double curvature_radius_R = (kmax_avg > 1e-10) ? (1.0 / kmax_avg) : std::numeric_limits<double>::infinity();
-      return std::min(0.1 * curvature_radius_R, 0.1 * l->length());
-    };
+
+    // computeHdLimit はパッチ版を runTrials 直前に定義（重複を避けるためここからは削除）
 
     // --- TrialResult: 1シナリオの試行結果（best パッチを保持） ---
     struct TrialResult {
@@ -580,12 +818,14 @@ void remesh_for_main_loop(Network& water, int time_step, double /*min_edge_lengt
         }
       };
 
+      // ops 開始前の border を記憶（操作でトポロジが変わっても初期状態を参照）
+      const auto initial_border = net.getBorderPoints();
+
       auto doSmooth = [&]() {
-        auto bset = patchBoundaryPoints(net);
         auto pos_of = [](const networkPoint* q) -> Tddd { return q->X; };
         for (int si = 0; si < 3; ++si) {
           for (auto* p : net.getPoints()) {
-            if (bset.count(p))
+            if (p->BorderQ())
               continue;
             Tddd V = qualitySmoothingVector(p, p->X, pos_of);
             if (!isFlat(p, feature_angle)) {
@@ -632,7 +872,10 @@ void remesh_for_main_loop(Network& water, int time_step, double /*min_edge_lengt
               p->setXSingle(p->X + std::min(vn, limit) * Normalize(V));
             }
           }
-          net.setGeometricPropertiesForce();
+          // setDodecaPoints を除外した軽量版
+          for (const auto& l : net.getLines()) l->setBoundsSingle();
+          for (const auto& p : net.getPoints()) p->setFaces();
+          for (const auto& f : net.getFaces()) f->setGeometricProperties(ToX(f->getPoints()));
         }
       };
 
@@ -644,58 +887,77 @@ void remesh_for_main_loop(Network& water, int time_step, double /*min_edge_lengt
             if (cl->getBoundaryFaces().size() != 2)
               return false;
             auto [cp0, cp1] = cl->getPoints();
-            if (!cl->Collapse(0.5 * (cp0->X + cp1->X)))
+            bool cp0_border = initial_border.count(cp0);
+            bool cp1_border = initial_border.count(cp1);
+            if (cp0_border && cp1_border)
+              return false; // 両端が border → collapse 不可
+            Tddd targetX = 0.5 * (cp0->X + cp1->X);
+            if (cp0_border)
+              targetX = cp0->X; // border 点は移動させない
+            else if (cp1_border)
+              targetX = cp1->X;
+            if (!cl->Collapse(targetX))
               return false;
           } catch (...) {
             return false;
           }
         } else if (op == 'S') {
-          net.setGeometricPropertiesForce();
+          // setDodecaPoints を除外した軽量版 setGeometricPropertiesForce
+          // DodecaPoints はパッチ border 辺を通じてパッチ外面を参照するため OMP 並列で不安全
+          for (const auto& l : net.getLines()) l->setBoundsSingle();
+          for (const auto& p : net.getPoints()) p->setFaces();
+          for (const auto& f : net.getFaces()) f->setGeometricProperties(ToX(f->getPoints()));
           net.computePrincipalCurvatures(false);
           doSmooth();
         } else if (op == 'P') {
-          if (!cl->Split())
+          if (!cl->Split(cl->X_mid))
             return false;
         }
       }
       return true;
     };
 
-    // --- runTrial: パッチ上で1シナリオを試行、パッチを保持して返す ---
-    auto runTrial = [&](const std::string& ops, networkLine* target_line,
+    // --- runTrial: 事前コピー済みパッチ上で操作+評価（並列実行される） ---
+    auto runTrial = [&](const std::string& ops, std::shared_ptr<Network> patch, networkLine* cl,
+                        const std::vector<OldFaceData>& orig_faces,
                         const V_netFp& ref_faces) -> TrialResult {
       TrialResult result;
       result.ops = ops;
-      auto patch = std::make_shared<Network>("file_name_is_not_given", ops);
-      auto* cl = water.copyLocalPatch(*patch, target_line, 1);
       if (!cl)
         return result;
-      patch->computePrincipalCurvatures(true);
 
-      // ops 実行前の patch 面データを保存
-      auto orig_faces = collectOldFaceData(*patch);
-
+      try {
       if (!runPatchOps(ops, *patch, cl))
         return result;
 
-      // 頂点→辺節点の順に投影 + phi/phi_t 補間
+      // 外周保存チェック
+      {
+        auto bset = patch->getBorderPoints();
+        for (auto* bp : bset) {
+          bool found = false;
+          for (auto* orig_p : patch->copied_points) {
+            if (Norm(bp->X - orig_p->X) < 1e-12) {
+              found = true;
+              break;
+            }
+          }
+          if (!found)
+            return result;
+        }
+      }
+
       projectOntoOldSurface(*patch, orig_faces);
 
-      patch->setGeometricPropertiesForce();
+      // setDodecaPoints を除外した軽量版（パッチ border 辺がパッチ外面を参照する問題を回避）
+      for (const auto& l : patch->getLines()) l->setBoundsSingle();
+      for (const auto& p : patch->getPoints()) p->setFaces();
+      for (const auto& f : patch->getFaces()) f->setGeometricProperties(ToX(f->getPoints()));
+      patch->computePrincipalCurvatures();
+
       V_netFp modified_faces = patch->getBoundaryFaces();
       result.hd = std::max(DirectedHausdorffDistance(ref_faces, modified_faces, 3),
                            DirectedHausdorffDistance(modified_faces, ref_faces, 3));
 
-      // 辺中点 X_mid を面上サンプルとは独立に HD 評価に加える。
-      //
-      // 面上の均等サンプル点による HD では、flip で頂点位置が変わらない場合に
-      // HD ≈ 0 となり検出できない。しかし flip で面の接続が変わると、
-      // 面の頂点は元の曲面に接しているが辺の中点が曲面から浮くケースがある。
-      // 特に CORNER（構造物の角）を跨ぐ flip では、新辺の X_mid が角を跨いだ
-      // 位置になり、元の曲面のどの面からも離れる。
-      //
-      // 各 X_mid を独立なサンプル点として target 面集合への最小距離を求め、
-      // その最大を HD に加算することで、このような異常パッチを却下できる。
       {
         auto midpointMaxDist = [](const V_netFp& node_faces, const V_netFp& target_faces) -> double {
           double max_d = 0.;
@@ -722,40 +984,103 @@ void remesh_for_main_loop(Network& water, int time_step, double /*min_edge_lengt
         result.hd = std::max(result.hd, midpointMaxDist(ref_faces, modified_faces));
         result.hd = std::max(result.hd, midpointMaxDist(modified_faces, ref_faces));
       }
-      result.score = worstScore(*patch);
+
+      result.score = patchQuality(*patch);
       result.valid = true;
-      result.patch = patch; // パッチを保持
+      result.patch = patch;
+      } catch (...) {
+        // OMP 並列内で例外を伝播させない
+      }
       return result;
     };
 
-    // --- runTrials: 複数シナリオを並列実行し、best の TrialResult を返す ---
-    auto runTrials = [&](networkLine* target_line,
-                         const std::vector<std::string>& scenarios,
-                         double hd_limit) -> TrialResult {
+
+
+    // --- computeHdLimit: パッチ上で許容 Hausdorff 距離を計算 ---
+    // 形状忠実度の上限を決める。2 つの制約の min を取る:
+    //   (a) bbox 対角の 10% — パッチ全体のスケール制限
+    //   (b) 曲率半径 R の 20% — 角の近傍ではより厳しく
+    // 呼び出し前提: patch の geometric properties と curvature が最新であること
+    auto computeHdLimit = [](const Network& patch) -> double {
+      auto bnds = patch.getBounds();
+      double dx = std::get<1>(std::get<0>(bnds)) - std::get<0>(std::get<0>(bnds));
+      double dy = std::get<1>(std::get<1>(bnds)) - std::get<0>(std::get<1>(bnds));
+      double dz = std::get<1>(std::get<2>(bnds)) - std::get<0>(std::get<2>(bnds));
+      double diag = std::sqrt(dx * dx + dy * dy + dz * dz);
+      // 曲率半径制限: パッチ内最大 kmax から R = 1/kmax_max
+      double kmax_max = 0.;
+      for (auto* p : patch.getBoundaryPoints())
+        if (p->geom_curvature.valid)
+          kmax_max = std::max(kmax_max, p->geom_curvature.kmax);
+      double R = (kmax_max > 1e-10) ? (1.0 / kmax_max) : std::numeric_limits<double>::infinity();
+      return std::min(0.1 * diag, 0.2 * R);
+    };
+
+    // --- runTrials: copy は逐次、操作+評価は並列 ---
+    auto runTrials = [&](networkLine* target_line, const std::vector<std::string>& scenarios) -> TrialResult {
+      ++rt_calls;
+      auto t_ref_begin = clk::now();
       Network patch0("file_name_is_not_given", "ref");
-      water.copyLocalPatch(patch0, target_line, 1);
+      water.copyLocalPatch(patch0, target_line, 2);
+      patch0.computePrincipalCurvatures();
       V_netFp ref_faces = patch0.getBoundaryFaces();
-      double score_before = worstScore(patch0);
+      double score_before = patchQuality(patch0);
 
+      patch0.setGeometricPropertiesForce();
+      double hd_limit = computeHdLimit(patch0);
+      t_rt_ref += sec_since(t_ref_begin);
+
+      // 各シナリオ用のパッチをコピー + 旧面データ保存
+      auto t_copy_begin = clk::now();
+      std::vector<std::shared_ptr<Network>> patches(scenarios.size());
+      std::vector<networkLine*> copied_lines(scenarios.size(), nullptr);
+      std::vector<std::vector<OldFaceData>> orig_faces_vec(scenarios.size());
+      _Pragma("omp parallel for") for (std::size_t i = 0; i < scenarios.size(); ++i) {
+        patches[i] = std::make_shared<Network>("file_name_is_not_given", scenarios[i]);
+        copied_lines[i] = water.copyLocalPatch(*patches[i], target_line, 2);
+        orig_faces_vec[i] = collectOldFaceData(*patches[i]);
+      }
+      t_rt_copy += sec_since(t_copy_begin);
+
+      // 並列: 操作 + 評価
+      auto t_run_begin = clk::now();
       std::vector<TrialResult> results(scenarios.size());
-#pragma omp parallel for schedule(dynamic)
-      for (std::size_t i = 0; i < scenarios.size(); ++i)
-        results[i] = runTrial(scenarios[i], target_line, ref_faces);
+      _Pragma("omp parallel for") for (std::size_t i = 0; i < scenarios.size(); ++i)
+          results[i] = runTrial(scenarios[i], patches[i], copied_lines[i], orig_faces_vec[i], ref_faces);
+      t_rt_run += sec_since(t_run_begin);
 
+      // スコア表出力（デバッグ時のみ有効化）
+      // {
+      //   std::cout << "  [trials] before=" << std::setprecision(3) << score_before
+      //             << " hd_lim=" << hd_limit << std::endl;
+      //   for (std::size_t i = 0; i < results.size(); ++i) {
+      //     auto& r = results[i];
+      //     std::cout << "    " << std::setw(8) << std::left << scenarios[i]
+      //               << " valid=" << r.valid
+      //               << " score=" << std::setprecision(3) << std::setw(7) << r.score
+      //               << " hd=" << std::setprecision(3) << std::setw(9) << r.hd
+      //               << (r.valid && r.hd <= hd_limit && r.score > score_before && r.score >= 0.05 ? " *" : "")
+      //               << std::endl;
+      //   }
+      // }
+
+      auto t_pick_begin = clk::now();
       TrialResult best;
       double best_score = score_before;
       for (auto& r : results) {
         if (!r.valid || r.hd > hd_limit)
           continue;
-        if (r.score > best_score && r.score >= 0.05) {
+        if (r.score > best_score) {
           best_score = r.score;
           best = std::move(r);
         }
       }
-      return best; // .valid == false なら no-op
+      t_rt_pick += sec_since(t_pick_begin);
+      return best;
     };
 
     // ------ [5a] split パス ------
+    auto t_split_begin = clk::now();
     if (surface_split) {
       int total_splits = 0;
       const int max_splits_per_step = std::clamp(static_cast<int>(water.getBoundaryLines().size()) / 50, 10, 10);
@@ -763,17 +1088,39 @@ void remesh_for_main_loop(Network& water, int time_step, double /*min_edge_lengt
       for (auto* l : water.getBoundaryLines())
         dirty.insert(l);
       for (auto iter = 0; iter < 20 && total_splits < max_splits_per_step; iter++) {
+        auto t_needs_begin = clk::now();
         std::vector<networkLine*> candidates;
         candidates.reserve(dirty.size());
         for (auto* l : dirty) {
           if (!line_alive(l))
             continue;
-          if (needsSplit(l))
+          if (needsSplit(l)) {
             candidates.emplace_back(l);
+            if (iter == 0) {
+              // reason を分類: 0=global_max, 1=theta, 2=dihedral, 3=obtuse
+              double reason = 1.0;
+              if (l->length() > global_max_len) reason = 0.0;
+              else {
+                auto v = edgeThetaVerdict(l);
+                if (v == EdgeThetaVerdict::SplitCandidate) reason = 1.0;
+                else if (v == EdgeThetaVerdict::CurvatureInvalid) reason = 2.0;
+                else if (hasObtuseAngle(l)) reason = 3.0;
+              }
+              collectSplitCandidate(l, reason);
+            }
+          }
         }
-        if (candidates.empty())
-          break;
+        if (candidates.empty()) { t_s_needs += sec_since(t_needs_begin); break; }
+        // CORNER 辺を優先 → 次に Dirichlet → 最後に Neumann
+        // 同じ種別内では辺長の長い順
+        std::ranges::sort(candidates, [](const networkLine* a, const networkLine* b) {
+          int ka = a->CORNER ? 0 : (a->Dirichlet ? 1 : 2);
+          int kb = b->CORNER ? 0 : (b->Dirichlet ? 1 : 2);
+          if (ka != kb) return ka < kb;
+          return a->length() > b->length();
+        });
         auto batch = remesh_detail::collect_non_adjacent(candidates);
+        t_s_needs += sec_since(t_needs_begin);
         if (batch.empty())
           break;
         bool divided_any = false;
@@ -796,24 +1143,29 @@ void remesh_for_main_loop(Network& water, int time_step, double /*min_edge_lengt
           }
 
           // trial 評価（並列）→ best パッチを replacePatch で適用
-          const double hd_limit = computeHdLimit(l);
-          auto trial = runTrials(l, {"P", "PF", "PS", "PFS", "PSF", "PSFS", "PSFSFS"}, hd_limit);
+          auto t_rt_begin = clk::now();
+          auto trial = runTrials(l, {"P","PS","PF","PFS","PFSFS","PFSFSFS"});
+          t_s_runtrials += sec_since(t_rt_begin);
 
           if (!trial.valid)
             continue;
 
           std::cout << Red << "time_step " << time_step << ": split" << " reason=" << split_reason << " len=" << len << " best_ops=" << trial.ops << colorReset << std::endl;
+          auto t_rep_begin = clk::now();
           collectPatchFaces(*trial.patch, 0.0);
-          if (water.replacePatch(*trial.patch)) {
+          bool replaced = water.replacePatch(*trial.patch);
+          t_s_replace += sec_since(t_rep_begin);
+          if (replaced) {
             divided_any = true;
             ++total_splits;
-            break; // メッシュが変わったのでバッチを捨てて再収集
+            break;
           }
           if (total_splits >= max_splits_per_step)
             break;
         }
         if (!divided_any)
           break;
+        auto t_post_begin = clk::now();
         water.setGeometricPropertiesForce();
         water.checkConnectivity();
         if (curvature_remesh_enabled)
@@ -823,6 +1175,7 @@ void remesh_for_main_loop(Network& water, int time_step, double /*min_edge_lengt
             split_topo_error = true;
             break;
           }
+        t_s_postop += sec_since(t_post_begin);
         if (split_topo_error) {
           std::cerr << Red << "[remesh] time_step " << time_step << ": topology error after split batch, stopping further splits" << colorReset << std::endl;
           break;
@@ -834,6 +1187,8 @@ void remesh_for_main_loop(Network& water, int time_step, double /*min_edge_lengt
       }
     }
 
+
+    
     water.setGeometricPropertiesForce();
     water.checkConnectivity();
     {
@@ -847,12 +1202,17 @@ void remesh_for_main_loop(Network& water, int time_step, double /*min_edge_lengt
         throw step_failure("topology error after division at time_step " + std::to_string(time_step));
     }
 
+    t_split += sec_since(t_split_begin);
+
     // [5b] 削除: flipIfBatched は2次曲面投影なしで X_mid がずれるため廃止。
     // flip はパッチ内の ops（PF, PFS, CF, CFS 等）で実行され、projectOntoOldSurface で投影される。
+    auto t_curv_begin = clk::now();
     if (curvature_remesh_enabled)
       water.computePrincipalCurvatures(false);
+    t_curv += sec_since(t_curv_begin);
 
     // ------ [5c] collapse パス ------
+    auto t_collapse_begin = clk::now();
     std::unordered_set<networkLine*> rejected_collapse;
     if (surface_collapse)
       for (auto iter = 0; iter < 20; iter++) {
@@ -862,85 +1222,21 @@ void remesh_for_main_loop(Network& water, int time_step, double /*min_edge_lengt
         // if (surface_flip) { ... tiny_flip ... }
         // for (auto tiny_iter ...) { ... tiny_collapse ... }
 
-        // --- needsCollapse: この辺を collapse する理由があるか？ ---
-        // 以下のいずれかに該当すれば collapse 候補（OR 条件）:
-        //   A. 極短辺（dt 保護）
-        //   B. 曲面忠実度 AND grading の両方が要求
-        //   C. 品質トリガー: 隣接面が既に潰れている（既存の悪い面を修復）
-        auto needsCollapse = [&](networkLine* l) -> bool {
-          auto len = l->length();
-
-          // A. 極端に短い辺は無条件で collapse（dt 保護）
-          if (len < global_min_len)
-            return true;
-
-          // B. 曲面忠実度 AND grading
-          {
-            auto verdict = edgeThetaVerdict(l);
-
-            // SplitCandidate → 曲率的に粗い → collapse しない
-            if (verdict != EdgeThetaVerdict::SplitCandidate) {
-              bool curvature_wants_collapse = false;
-              if (verdict == EdgeThetaVerdict::CollapseCandidate) {
-                curvature_wants_collapse = true;
-              } else if (verdict == EdgeThetaVerdict::CurvatureInvalid) {
-                auto surfaces = l->getBoundaryFaces();
-                if (surfaces.size() == 2 && surfaces[0] && surfaces[1]) {
-                  double alpha = std::acos(std::clamp(
-                      Dot(surfaces[0]->normal, surfaces[1]->normal), -1.0, 1.0));
-                  curvature_wants_collapse = (alpha < theta_collapse);
-                }
-              }
-
-              bool grading_wants_collapse = false;
-              auto local_mean = localEdgeLength(l);
-              if (local_mean > 0. && len < grading_collapse * local_mean)
-                grading_wants_collapse = true;
-
-              if (curvature_wants_collapse && grading_wants_collapse)
-                return true;
-            }
-          }
-
-          // C. 品質トリガー: 隣接面が既に潰れている → 修復のために collapse
-          {
-            auto surfaces = l->getBoundaryFaces();
-            if (surfaces.size() == 2 && surfaces[0] && surfaces[1]) {
-              auto local_mean_len_val = localEdgeLength(l);
-              if (local_mean_len_val > 0.) {
-                for (auto* f : surfaces) {
-                  auto pts = f->getPoints();
-                  double area = TriangleArea(pts[0]->X, pts[1]->X, pts[2]->X);
-                  double max_edge = std::max({Norm(pts[0]->X - pts[1]->X),
-                                              Norm(pts[1]->X - pts[2]->X),
-                                              Norm(pts[2]->X - pts[0]->X)});
-                  double alt = (max_edge > 1e-20) ? 2.0 * area / max_edge : 0.0;
-                  // 低高度: 隣接面の高度が local_mean の 3% 未満（本当に潰れた面のみ）
-                  if (alt < 0.03 * local_mean_len_val)
-                    return true;
-                }
-              }
-            }
-          }
-
-          return false;
-        };
-
         // ログ用 theta 値取得
         auto getEdgeThetaForLog = [](const networkLine* l) -> double {
           if (!l->geom_curvature.valid)
             return -1.0;
           auto [p0, p1] = l->getPoints();
           Tddd edge = p1->X - p0->X;
-          return surface_geometry::edgeCurvatureAngle(
-              edge, l->geom_curvature.k1, l->geom_curvature.k2,
-              l->geom_curvature.PD1, l->geom_curvature.PD2);
+          return surface_geometry::edgeCurvatureAngle(edge, l->geom_curvature.k1, l->geom_curvature.k2,l->geom_curvature.PD1, l->geom_curvature.PD2);
         };
 
         std::unordered_set<networkLine*> dirty;
         for (auto* l : water.getBoundaryLines())
           dirty.insert(l);
+        bool first_collapse_iter = true;
         while (!dirty.empty()) {
+          auto t_needs_begin = clk::now();
           std::vector<networkLine*> candidates;
           candidates.reserve(dirty.size());
           for (auto* l : dirty) {
@@ -948,14 +1244,30 @@ void remesh_for_main_loop(Network& water, int time_step, double /*min_edge_lengt
               continue;
             if (rejected_collapse.count(l))
               continue;
-            if (needsCollapse(l))
+            if (needsCollapse(l)) {
               candidates.emplace_back(l);
+              if (first_collapse_iter) {
+                // reason 分類: 0=global_min, 1=theta+grading, 2=dihedral+grading, 3=degenerate, 4=obtuse
+                double reason = 1.0;
+                double len_l = l->length();
+                if (len_l < global_min_len) reason = 0.0;
+                else if (hasObtuseAngle(l)) reason = 4.0;
+                else {
+                  auto v = edgeThetaVerdict(l);
+                  if (v == EdgeThetaVerdict::CollapseCandidate) reason = 1.0;
+                  else if (v == EdgeThetaVerdict::CurvatureInvalid) reason = 2.0;
+                  else reason = 3.0; // degenerate face trigger
+                }
+                collectCollapseCandidate(l, reason);
+              }
+            }
           }
-          if (candidates.empty())
-            break;
+          first_collapse_iter = false;
+          if (candidates.empty()) { t_c_needs += sec_since(t_needs_begin); break; }
           // Sort by length ascending — collapse shortest first
           std::ranges::sort(candidates, [](const auto* a, const auto* b) { return a->length() < b->length(); });
           auto batch = remesh_detail::collect_non_adjacent(candidates);
+          t_c_needs += sec_since(t_needs_begin);
           if (batch.empty())
             break;
           bool changed_in_batch = false;
@@ -966,43 +1278,42 @@ void remesh_for_main_loop(Network& water, int time_step, double /*min_edge_lengt
             if (!p0_orig || !p1_orig)
               continue;
 
-            const double hd_limit = computeHdLimit(l);
             double len = l->length();
             double theta = getEdgeThetaForLog(l);
 
-            auto trial = runTrials(l, {"C", "CS", "CF", "CFS", "FC", "FCS", "F", "FS", "CSFS", "CSFSFS"}, hd_limit);
+            auto t_rt_begin = clk::now();
+            auto trial = runTrials(l, {"C","CS","CF","CFS","CFSFS","CFSFSFS"});
+            t_c_runtrials += sec_since(t_rt_begin);
 
             if (!trial.valid) {
-              std::cout << Yellow << "time_step " << time_step
-                        << ": collapse REJECTED len=" << len
-                        << " hausdorff_distance_limit=" << hd_limit
-                        << colorReset << std::endl;
               rejected_collapse.insert(l);
               continue;
             }
 
-            std::cout << "time_step " << time_step
-                      << ": collapse len=" << len
-                      << " theta=" << theta
-                      << " best_ops=" << trial.ops << std::endl;
+            std::cout << "time_step " << time_step << ": collapse len=" << len << " theta=" << theta << " best_ops=" << trial.ops << std::endl;
 
+            auto t_rep_begin = clk::now();
             collectPatchFaces(*trial.patch, 1.0);
-            if (water.replacePatch(*trial.patch)) {
+            bool replaced = water.replacePatch(*trial.patch);
+            t_c_replace += sec_since(t_rep_begin);
+            if (replaced) {
               changed_in_batch = true;
               if (trial.ops.find('C') != std::string::npos)
                 found_small_line = true;
               else
                 rejected_collapse.insert(l);
-              break; // メッシュが変わったのでバッチを捨てて再収集
+              break;
             } else {
               rejected_collapse.insert(l);
             }
           }
           if (changed_in_batch) {
+            auto t_post_begin = clk::now();
             water.setGeometricPropertiesForce();
             water.checkConnectivity();
             if (curvature_remesh_enabled)
               water.computePrincipalCurvatures(false);
+            t_c_postop += sec_since(t_post_begin);
           }
           if (!changed_in_batch)
             break;
@@ -1026,12 +1337,88 @@ void remesh_for_main_loop(Network& water, int time_step, double /*min_edge_lengt
       if (!post_merge_ok)
         throw step_failure("topology error after merge at time_step " + std::to_string(time_step));
     }
+    t_collapse += sec_since(t_collapse_begin);
+
+
+    // smoothing 共通: 面の最長辺を target line として返す
+    auto longestEdgeOf = [](networkFace* f) -> networkLine* {
+      networkLine* best = nullptr;
+      double best_len = 0.;
+      for (auto* l : f->getLines()) {
+        if (!l) continue;
+        double len = l->length();
+        if (len > best_len) { best_len = len; best = l; }
+      }
+      return best;
+    };
+
+    auto runSmoothingPass = [&](const std::string& tag, std::function<bool(networkFace*)> face_predicate) {
+      std::unordered_set<networkLine*> seen;
+      std::vector<networkLine*> candidates;
+      for (auto* f : water.getBoundaryFaces()) {
+        if (!f || !face_predicate(f))
+          continue;
+        auto* l = longestEdgeOf(f);
+        if (l && seen.insert(l).second)
+          candidates.push_back(l);
+      }
+      if (candidates.empty())
+        return;
+      auto batch = remesh_detail::collect_non_adjacent(candidates);
+      int total = 0;
+      const int max_per_step = std::clamp(static_cast<int>(water.getBoundaryLines().size()) / 50, 10, 30);
+      for (auto* l : batch) {
+        if (!line_alive(l))
+          continue;
+        auto trial = runTrials(l, {"S","FS","FSFS","FSFSFS"});
+        if (!trial.valid)
+          continue;
+        std::cout << Magenta << "time_step " << time_step << ": smooth(" << tag << ") best_ops=" << trial.ops << colorReset << std::endl;
+        collectPatchFaces(*trial.patch, 0.0);
+        if (water.replacePatch(*trial.patch)) {
+          ++total;
+          if (total >= max_per_step) break;
+        }
+      }
+      if (total > 0) {
+        water.setGeometricPropertiesForce();
+        water.checkConnectivity();
+        if (curvature_remesh_enabled)
+          water.computePrincipalCurvatures(false);
+      }
+    };
+
+    // InradiusToCircumradius が低い面を対象
+    auto t_smooth_ir_begin = clk::now();
+    // if (surface_smoothing) {
+    //   constexpr double ir_threshold = 0.5;
+    //   runSmoothingPass("ir", [](networkFace* f) {
+    //     auto [p0, p1, p2] = f->getPoints();
+    //     return InradiusToCircumradius(p0->X, p1->X, p2->X) < ir_threshold;
+    //   });
+    // }
+    t_smooth_ir += sec_since(t_smooth_ir_begin);
+
+    // // 60° からのズレが大きい面を対象
+    auto t_smooth_angle_begin = clk::now();
+    // if (surface_smoothing) {
+    //   constexpr double angle_dev_threshold = M_PI / 6.; // 30°
+    //   runSmoothingPass("angle", [&](networkFace* f) {
+    //     auto [p0, p1, p2] = f->getPoints();
+    //     return maxAngleDeviation(p0->X, p1->X, p2->X) > angle_dev_threshold;
+    //   });
+    // }
+    t_smooth_angle += sec_since(t_smooth_angle_begin);
+
 
     // [5d] 削除: flipIfBatched は廃止（5b と同じ理由）。
+    auto t_curv2_begin = clk::now();
     if (curvature_remesh_enabled)
       water.computePrincipalCurvatures(false);
+    t_curv += sec_since(t_curv2_begin);
 
     // ------ [5e] topology チェック ------
+    auto t_topo_begin = clk::now();
     water.setGeometricPropertiesForce();
     water.checkConnectivity();
     {
@@ -1044,6 +1431,37 @@ void remesh_for_main_loop(Network& water, int time_step, double /*min_edge_lengt
       if (!post_flip_ok)
         throw step_failure("topology error after flip at time_step " + std::to_string(time_step));
     }
+    t_topo += sec_since(t_topo_begin);
+  }
+
+  // [profile] セクション別累積時間サマリ
+  {
+    double t_total = t_split + t_collapse + t_smooth_ir + t_smooth_angle + t_topo + t_curv;
+    std::cout << "[remesh profile] step=" << time_step
+              << " split=" << t_split << "s"
+              << " collapse=" << t_collapse << "s"
+              << " smooth_ir=" << t_smooth_ir << "s"
+              << " smooth_angle=" << t_smooth_angle << "s"
+              << " curv=" << t_curv << "s"
+              << " topo=" << t_topo << "s"
+              << " total=" << t_total << "s" << std::endl;
+    double t_rt_total = t_rt_ref + t_rt_copy + t_rt_run + t_rt_pick;
+    std::cout << "[remesh profile] runTrials calls=" << rt_calls
+              << " ref=" << t_rt_ref << "s"
+              << " copy=" << t_rt_copy << "s"
+              << " run=" << t_rt_run << "s"
+              << " pick=" << t_rt_pick << "s"
+              << " total=" << t_rt_total << "s" << std::endl;
+    std::cout << "[remesh profile] split parts:"
+              << " needs=" << t_s_needs << "s"
+              << " runTrials=" << t_s_runtrials << "s"
+              << " replace=" << t_s_replace << "s"
+              << " postop=" << t_s_postop << "s" << std::endl;
+    std::cout << "[remesh profile] collapse parts:"
+              << " needs=" << t_c_needs << "s"
+              << " runTrials=" << t_c_runtrials << "s"
+              << " replace=" << t_c_replace << "s"
+              << " postop=" << t_c_postop << "s" << std::endl;
   }
 
   // ========================================================================
@@ -1096,6 +1514,7 @@ void remesh_for_main_loop(Network& water, int time_step, double /*min_edge_lengt
 
   // パッチ VTU をまとめて出力
   flushPatchVTU();
+  flushCandidateEdgesVTU();
 }
 
 // computePrincipalCurvatures is now Network::computePrincipalCurvatures() in Network.cpp

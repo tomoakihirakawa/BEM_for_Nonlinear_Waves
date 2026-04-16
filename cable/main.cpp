@@ -48,7 +48,7 @@ cmake -DCMAKE_BUILD_TYPE=Release ../
 make
 ```
 
-\insert{1_MooringLine}
+\insert{1_LumpedCable}
 
 */
 

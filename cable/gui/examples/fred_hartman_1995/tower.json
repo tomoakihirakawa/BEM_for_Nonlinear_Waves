@@ -1,0 +1,13 @@
+{
+  "name": "tower",
+  "type": "RigidBody",
+  "_comment": "Fred Hartman H-pylon, 134 m from deck. Placeholder cantilever — replace with tower modal analysis data from FHWA-HRT-05-083 Ch. 3.",
+  "velocity": [
+    "cantilever",
+    0.0, 0.05, 3.0,
+    0, 0, 0,
+    0, 0, 1,
+    1, 0, 0,
+    134.0
+  ]
+}
