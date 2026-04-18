@@ -1,9 +1,11 @@
 #ifndef BEM_H
 #define BEM_H
 
+#include "BEM_legacy_globals.hpp"
 #include "BEM_BoundaryValues.hpp"
-#include "BEM_calculateVelocities.hpp"
+#include "BEM_output_info.hpp"
 #include "BEM_setBoundaryTypes.hpp"
+#include "BEM_calculateVelocities.hpp"
 #include "BEM_solveBVP.hpp"
 #include "Network.hpp"
 #include "dunavant_rules.hpp"
@@ -108,15 +110,16 @@ std::unordered_map<networkPoint*, V> init_map(const Network* network, const V& v
   return m;
 }
 
-// DOF-keyed init: includes both points and (optionally) boundary line midpoints
+// DOF-keyed init: includes both points and boundary line midpoints.
+// Line entries are always included so edge-node BC and contact state can be
+// visualized even in linear mode (where lines aren't BIE DOFs).
 template <typename V>
 std::unordered_map<BEM_DOF_Base*, V> init_dof_map(const Network* network, const V& value) {
   std::unordered_map<BEM_DOF_Base*, V> m;
   for (auto* p : network->getPoints())
     m[p] = value;
-  if (use_true_quadratic_element)
-    for (auto* l : network->getBoundaryLines())
-      m[l] = value;
+  for (auto* l : network->getBoundaryLines())
+    m[l] = value;
   return m;
 }
 
@@ -488,8 +491,12 @@ VV_VarForOutput dataForOutput(const Network* water, const double dt) {
       throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, e.what());
     };
 
-    // --- Line midpoint data (true quadratic elements) ---
-    if (use_true_quadratic_element) {
+    // --- Line midpoint data ---
+    // Always populate per-line output (BC, contact state, etc.) so that linear
+    // runs can visualize edge-node BC. Fields that are only meaningful when
+    // lines are BIE DOFs (phi, phin, ...) may hold stale/default values in
+    // linear mode — the edge-node BC itself is computed for every line.
+    {
       for (auto* l : water->getBoundaryLines()) {
         auto [pA, pB] = l->getPoints();
         // Direct midpoint values
@@ -834,15 +841,6 @@ void show_info(const Network& net) {
   std::cout << "Total CORNER faces : " << total_c_face << std::endl;
   std::cout << "Neumann : " << n << std::endl;
   std::cout << "Dirichlet : " << d << std::endl;
-};
-
-// b! ------------------------------------------------------ */
-
-struct outputInfo {
-  std::string pvd_file_name;
-  std::string vtu_file_name;
-  PVDWriter* PVD = nullptr;
-  outputInfo() {};
 };
 
 // b! ------------------------------------------------------ */

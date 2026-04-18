@@ -103,11 +103,10 @@ std::vector<Network*> penetrationCandidateSolids(const std::vector<Network*>& fl
       }
     }
     if (check_midpoints) {
-      // Midpoint DOFs exist only on true-quadratic elements.
+      // 要素タイプに依らず midpoint (l->X_mid) で貫入チェック。
+      // linear では X_mid は端点平均なので端点がクリアされていれば実質無害だが、
+      // 要素タイプによらず一貫した検査を行うため guard を外している。
       for (const auto* l : water->getBoundaryLines()) {
-        const bool has_true_quad = std::ranges::any_of(l->getBoundaryFaces(), [](const auto* f) { return f->isTrueQuadraticElement; });
-        if (!has_true_quad)
-          continue;
         const double h_local = localEdgeLength(l);
         const double tolerance = penetrationTolerance(h_local);
         for (const auto* solid : solids) {

@@ -361,23 +361,30 @@ inline std::size_t setNodeFaceIndices(const std::vector<Network*>& objects) {
   for (auto* p : points)
     assignDofIndices(p, i);
 
-  // ---- line midpoints (true quadratic only) ----
+  // ---- line housekeeping + multiple-node flag (要素タイプに依らず実行) ----
+  // pruneStaleDofs / setMultipleNode は BIE DOF 割当とは独立:
+  //   - pruneStaleDofs: remesh 後の dangling face ポインタを dofs から除去
+  //     （linear でも contact_opponent_faces 参照や出力で使われるため必要）
+  //   - setMultipleNode: l->isMultipleNode を確定させる。この flag は
+  //     boundaryConditionValue() の可視化エンコーディングで使用される。
+  std::unordered_set<networkLine*> unique_lines;
+  for (const auto* water : objects)
+    for (auto* l : water->getBoundaryLines())
+      unique_lines.emplace(l);
+  std::vector<networkLine*> lines(unique_lines.begin(), unique_lines.end());
+  auto midpoint_pos = [](const networkLine* l) { auto [pA, pB] = l->getPoints(); return 0.5 * (pA->X + pB->X); };
+  std::stable_sort(lines.begin(), lines.end(), [&](const auto* a, const auto* b) {
+    return dist_sq(midpoint_pos(a)) < dist_sq(midpoint_pos(b));
+  });
+
+  for (auto* l : lines)
+    pruneStaleDofs(l, alive_faces);
+  for (auto* l : lines)
+    setMultipleNode(l);
+
+  // ---- line midpoint BIE DOF assignment (true_quadratic のみ) ----
+  // linear / pseudo_quadratic では (edge, face) を BIE 未知数にしない仕様
   if (use_true_quadratic_element) {
-    std::unordered_set<networkLine*> unique_lines;
-    for (const auto* water : objects)
-      for (auto* l : water->getBoundaryLines())
-        unique_lines.emplace(l);
-    std::vector<networkLine*> lines(unique_lines.begin(), unique_lines.end());
-    auto midpoint_pos = [](const networkLine* l) { auto [pA, pB] = l->getPoints(); return 0.5 * (pA->X + pB->X); };
-    std::stable_sort(lines.begin(), lines.end(), [&](const auto* a, const auto* b) {
-      return dist_sq(midpoint_pos(a)) < dist_sq(midpoint_pos(b));
-    });
-
-    for (auto* l : lines)
-      pruneStaleDofs(l, alive_faces);
-    for (auto* l : lines)
-      setMultipleNode(l);
-
     for (auto* l : lines) {
       // hybrid: skip lines not touching any quadratic face
       if (use_quadratic_linear_hybrid) {
@@ -771,6 +778,18 @@ inline void setBoundaryTypes(Network* water, const std::vector<Network*>& object
             << std::chrono::duration<double, std::milli>(_t1 - _t0).count() << " ms" << std::endl;
 
   //@ ------------------------------------------ */
+  // step5: isMultipleNode フラグを確定（BC 分類が終わってから）。
+  // 以前は setNodeFaceIndices 内でのみ呼ばれており、GUI の
+  // refreshBoundaryStatesAndTypes 経由パスでは更新されず、
+  // boundaryConditionValue の multi Neumann / multi Dirichlet エンコーディングが
+  // 出なかった。setBoundaryTypes 内に移すことで全呼び出し経路で一貫する。
+  std::cout << __FILE__ << ":" << __LINE__ << " step5 setMultipleNode (point/line)" << std::endl;
+  for (auto* p : water->getPoints())
+    setMultipleNode(p);
+  for (auto* l : water->getBoundaryLines())
+    setMultipleNode(l);
+
+  //@ ------------------------------------------ */
 
   for (const auto& f : faces) {
     if (use_quadratic_linear_hybrid) {
@@ -816,7 +835,24 @@ inline void setBoundaryTypes(Network* water, const std::vector<Network*>& object
 /*  initializeNodeFaceStates → setContactFaces → setBoundaryTypes を一括実行  */
 /* -------------------------------------------------------------------------- */
 
+// Ensure line X_mid is at least at the geometric midpoint. OBJ loading and
+// GUI's load_mesh leave X_mid at {0,0,0}; without this, setContactFaces'
+// broad phase measures distance from the origin and rejects all candidates
+// for lines whose real midpoint is far from origin (→ everything becomes
+// Dirichlet). Matches the safety already in BEM_remesh_main.hpp:1027.
+inline void ensureLineXmidInitialized(Network* water) {
+  for (auto* l : water->getBoundaryLines()) {
+    if (l->X_mid[0] == 0. && l->X_mid[1] == 0. && l->X_mid[2] == 0.) {
+      auto [pA, pB] = l->getPoints();
+      const Tddd mid = 0.5 * (pA->X + pB->X);
+      if (mid[0] != 0. || mid[1] != 0. || mid[2] != 0.)
+        l->setXSingle(mid);
+    }
+  }
+}
+
 inline void refreshBoundaryStatesAndTypes(Network* water, const std::vector<Network*>& objects) {
+  ensureLineXmidInitialized(water);
   initializeNodeFaceStates(water);
   water->setContactFaces(objects);
   setBoundaryTypes(water, objects);
@@ -824,6 +860,7 @@ inline void refreshBoundaryStatesAndTypes(Network* water, const std::vector<Netw
 
 inline void refreshBoundaryStatesAndTypes(std::vector<Network*>& fluid_objects, const std::vector<Network*>& contact_objects) {
   for (auto& water : fluid_objects) {
+    ensureLineXmidInitialized(water);
     initializeNodeFaceStates(water);
     water->setContactFaces(contact_objects);
     setBoundaryTypes(water, contact_objects);
@@ -1197,7 +1234,7 @@ inline void setPhiPhin_t(std::vector<Network*> WATERS) {
 /* -------------------------------------------------------------------------- */
 
 // mode: false = phi/phin, true = phi_t/phin_t
-void storePhiPhinCommon(const std::vector<Network*>& WATERS, const V_d& ans, bool time_derivative_mode) {
+inline void storePhiPhinCommon(const std::vector<Network*>& WATERS, const V_d& ans, bool time_derivative_mode) {
 
   // Accessors to select phi/phin vs phi_t/phin_t in dofs and phiphin
   auto get_phi_from_dof = [&](const NodeFaceState& d) -> double { return time_derivative_mode ? d.phi_t : d.phi; };

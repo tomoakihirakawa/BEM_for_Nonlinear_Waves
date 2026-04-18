@@ -646,7 +646,7 @@ $\frac{D\phi}{Dt}=\frac{\partial\phi}{\partial t}+\frac{d{\mathbfit\chi}}{dt} \c
 */
 
 // \label{BEM:calculateVecToSurface}
-Tddd DistorsionMeasureWeightedSmoothingVector_modified(const networkPoint* p, const std::array<double, 3>& current_pX, std::function<Tddd(const networkPoint*)> position) {
+inline Tddd DistorsionMeasureWeightedSmoothingVector_modified(const networkPoint* p, const std::array<double, 3>& current_pX, std::function<Tddd(const networkPoint*)> position) {
   const int max_sum_depth = 20;
   auto faces = p->CORNER ? p->getFacesDirichlet() : p->getBoundaryFaces();
   thread_local std::vector<double> weights;
@@ -749,10 +749,10 @@ Tddd DistorsionMeasureWeightedSmoothingVector_modified(const networkPoint* p, co
 
 /* -------------------------------------------------------------------------- */
 
-void calculateVecToSurface(const Network& net,
-                           const int loop,
-                           const double coefIN,
-                           const std::filesystem::path* debug_output_directory = nullptr) {
+inline void calculateVecToSurface(const Network& net,
+                                  const int loop,
+                                  const double coefIN,
+                                  const std::filesystem::path* debug_output_directory = nullptr) {
   auto points = ToVector(net.getPoints());
   const std::size_t n_points = points.size();
   const bool enable_stage_debug = loop > 0 && debug_output_directory && !debug_output_directory->empty();
@@ -1187,9 +1187,10 @@ inline void setNodeVelocity(const Network& net,
   for (const auto& p : net.getPoints())
     setRelocFromVecToSurface(p);
 
+  // 要素タイプに依らず全 line の X_reloc を計算（可視化・接触判定・非貫入
+  // チェックで使われる幾何位置は BIE DOF 有無と独立に保つ）。
   for (auto* l : net.getBoundaryLines())
-    if (l->hasActiveBieDof())
-      setRelocFromVecToSurface(l);
+    setRelocFromVecToSurface(l);
 
   dumpDebugMidpointLineState(&net, "post-ale-relocation", -1, -1);
 }

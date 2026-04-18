@@ -1,5 +1,7 @@
 #pragma once
 
+#include "BEM_legacy_globals.hpp"
+#include "BEM_setBoundaryTypes.hpp"
 #include "basic_linear_systems.hpp"
 #include <algorithm>
 #include <cctype>
@@ -416,7 +418,7 @@ NOTE: ちなみに，$\frac{1-\xi_0}{{\| {{\bf{x}}\left( \pmb{\xi } \right) - {{
 
 */
 
-std::array<double, 3> weight(double t0, double t1) {
+inline std::array<double, 3> weight(double t0, double t1) {
   auto shape = [](double t0, double t1) -> std::array<double, 3> { return {t0, t1, 1 - t0 - t1}; };
 
   static const std::array<std::array<double, 2>, 3> vertex = {{{std::cos(M_PI / 2), std::sin(M_PI / 2)}, {std::cos(7 * M_PI / 6), std::sin(7 * M_PI / 6)}, {std::cos(11 * M_PI / 6), std::sin(11 * M_PI / 6)}}};

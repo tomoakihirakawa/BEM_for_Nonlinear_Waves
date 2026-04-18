@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "BEM_collision.hpp"
+#include "BEM_inputfile_reader.hpp"
 #include "BEM_node_face_state.hpp"
 
 struct SubsurfaceAltitudeCheckResult {
@@ -928,16 +929,14 @@ inline bool flipIfBatched(Network& water, const Tdd& limit_Dirichlet, const Tdd&
   return false;
 }
 
-void remesh_for_main_loop(Network& water, int time_step, double min_edge_length, bool tetrahedralize, bool surface_flip,
-                          const CollisionSettings& collision_settings = {},
-                          bool surface_split = true, bool surface_collapse = true,
-                          bool surface_smoothing = true,
+void remesh_for_main_loop(Network& water, int time_step,
+                          const SimulationSettings::RemeshingSettings& rs,
                           bool skip_post_remesh_quality_rejects = false,
                           const std::string& patch_output_directory = "",
                           double simulation_time = 0.0,
-                          PVDWriter* patch_pvd = nullptr,
-                          PVDWriter* split_candidate_pvd = nullptr,
-                          PVDWriter* collapse_candidate_pvd = nullptr,
+                          PVDWriter* candidate_patches_pvd = nullptr,
+                          PVDWriter* remeshed_patches_pvd = nullptr,
+                          PVDWriter* trigger_edges_pvd = nullptr,
                           PVDWriter* edges_pvd = nullptr);
 
 // ---------------------------------------------------------------------------

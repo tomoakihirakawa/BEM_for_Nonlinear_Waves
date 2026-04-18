@@ -1038,9 +1038,8 @@ public:
       auto boundary_lines = water->getBoundaryLines();
       _Pragma("omp parallel for") for (size_t il = 0; il < boundary_lines.size(); ++il) {
         auto *l = boundary_lines[il];
-        bool has_true_quad = std::ranges::any_of(l->getBoundaryFaces(), [](const auto *f) { return f->isTrueQuadraticElement; });
-        if (has_true_quad)
-          l->u_omega_VPM = computeVelocity(l->X_mid);
+        // 要素タイプに依らず midpoint で VPM 速度を評価（可視化・デバッグ整合性）
+        l->u_omega_VPM = computeVelocity(l->X_mid);
         if (!l->Neumann)
           continue;
         for (auto &[face, dd] : l->dofs) {

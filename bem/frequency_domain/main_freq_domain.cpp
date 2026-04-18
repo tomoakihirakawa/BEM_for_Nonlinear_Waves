@@ -14,18 +14,15 @@
 #include <unordered_set>
 #include <vector>
 
+#include "BEM_time_domain_types.hpp"
+
 // Global variables expected by legacy headers.
 bool use_linear_element = false;
 bool use_pseudo_quadratic_element = false;
 bool use_true_quadratic_element = false;
-enum class NodeRelocationMethod { none,
-                                  ALE,
-                                  interpolation };
-enum class NodeRelocationSurface { linear,
-                                   pseudo_quadratic,
-                                   true_quadratic };
 NodeRelocationMethod node_relocation_method = NodeRelocationMethod::none;
 NodeRelocationSurface node_relocation_surface = NodeRelocationSurface::pseudo_quadratic;
+InterpolationMidpointMode interpolation_midpoint_mode = InterpolationMidpointMode::nearest;
 std::string solver_type = "GMRES";
 std::string coupling_type = "NONE";
 double coupling_tol = 1e-10;

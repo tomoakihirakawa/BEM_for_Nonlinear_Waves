@@ -12,6 +12,8 @@ cmake -DCMAKE_BUILD_TYPE=Release ../ -DSOURCE_FILE=main_time_domain.cpp
 #include <string>
 #include <unistd.h>
 
+#include "BEM_time_domain_types.hpp"
+
 /*DOC_EXTRACT 0_0_BEM
 
 # BEM-MEL
@@ -32,13 +34,6 @@ bool use_linear_element = false;
 bool use_pseudo_quadratic_element = false;
 bool use_true_quadratic_element = false;
 bool use_quadratic_linear_hybrid = false;
-enum class NodeRelocationMethod { none,
-                                  ALE,
-                                  interpolation };
-enum class NodeRelocationSurface { linear,
-                                   pseudo_quadratic,
-                                   true_quadratic };
-enum class InterpolationMidpointMode { nearest };
 NodeRelocationMethod node_relocation_method = NodeRelocationMethod::none;
 NodeRelocationSurface node_relocation_surface = NodeRelocationSurface::pseudo_quadratic;
 InterpolationMidpointMode interpolation_midpoint_mode = InterpolationMidpointMode::nearest;
@@ -89,7 +84,7 @@ int detachment_consecutive_steps = 3;
 
 JSONoutput jsonout;
 
-#include "BEM.hpp"                  // Core BEM: BoundaryValues, calculateVelocities, setBoundaryTypes, solveBVP
+#include "../core/BEM.hpp"          // Core BEM: BoundaryValues, calculateVelocities, setBoundaryTypes, solveBVP
 #include "BEM_inputfile_reader.hpp" // JSON settings parser
 #include "OutputCommon.hpp"         // Output context
 #include "OutputJSON.hpp"           // JSON output writer
@@ -317,9 +312,9 @@ int main(int argc, char** argv) {
   PVDWriter vpm_pvd(output_directory / "vpm.pvd");
   // patch PVD は FluidObject ごとに1つ。v1 では最初の FluidObject の名前を使う。
   const std::string water_name = FluidObject.empty() ? "" : FluidObject[0]->getName() + "_";
-  PVDWriter patch_pvd((output_directory / (water_name + "remeshed.pvd")).string());
-  PVDWriter split_candidate_pvd((output_directory / (water_name + "split_candidate.pvd")).string());
-  PVDWriter collapse_candidate_pvd((output_directory / (water_name + "collapse_candidate.pvd")).string());
+  PVDWriter candidate_patches_pvd((output_directory / (water_name + "candidate_patches.pvd")).string());
+  PVDWriter remeshed_patches_pvd((output_directory / (water_name + "remeshed_patches.pvd")).string());
+  PVDWriter trigger_edges_pvd((output_directory / (water_name + "trigger_edges.pvd")).string());
   PVDWriter edges_pvd((output_directory / (water_name + "edges.pvd")).string());
   Print("setting done");
 
@@ -613,11 +608,10 @@ int main(int argc, char** argv) {
             std::cout << Yellow << "[pre-remesh penetration] " << e.what() << colorReset << std::endl;
           }
           for (auto& water : FluidObject) {
-            remesh_for_main_loop(*water, time_step, min_edge_length, tetrahedralize, surface_flip, setting.remeshing.collision,
-                                 setting.remeshing.surface_split, setting.remeshing.surface_collapse,
-                                 setting.remeshing.surface_smoothing,
+            remesh_for_main_loop(*water, time_step, setting.remeshing,
                                  retry_state.degraded_mode,
-                                 output_directory.string(), simulation_time, &patch_pvd, &split_candidate_pvd, &collapse_candidate_pvd, &edges_pvd);
+                                 output_directory.string(), simulation_time,
+                                 &candidate_patches_pvd, &remeshed_patches_pvd, &trigger_edges_pvd, &edges_pvd);
             retry_state.collapse_repeatedly_rejected_faces(*water, step_retry);
             if (!retry_state.degraded_mode) {
               refreshFaceBadQualityHistory(*water, time_step, std::nullopt, 0.1, subsurface_altitude_reject);
@@ -732,13 +726,14 @@ int main(int argc, char** argv) {
           };
 
           auto rebuild_fluid_nodes = [&]() {
+            // 要素タイプに依らず全ての boundary line を含める。
+            // BIE DOF か否かによる区別は phi push 内で行う（位置の update は常時）。
             fluid_nodes.clear();
             for (auto* water : FluidObject) {
               for (auto* p : water->getPoints())
                 fluid_nodes.push_back(p);
               for (auto* l : water->getBoundaryLines())
-                if (l->hasActiveBieDof())
-                  fluid_nodes.push_back(l);
+                fluid_nodes.push_back(l);
             }
           };
 
@@ -782,11 +777,12 @@ int main(int argc, char** argv) {
               /* -------------------------------------------------------------------------- */
 
               //& --- 3c-2d. RK initialization ---
+              // X の積分は要素タイプに依らず全 entity で必要（linear でも X_mid は
+              // RK で進化させるべき）。phi は BIE DOF を持つものだけ。
               auto RK_init = [&](auto entity) {
-                if (entity->hasActiveBieDof()) {
+                entity->RK_X.initialize(dt, simulation_time, entity->getPosition(), RK_order);
+                if (entity->hasActiveBieDof())
                   entity->RK_phi.initialize(dt, simulation_time, std::get<0>(entity->phiphin), RK_order);
-                  entity->RK_X.initialize(dt, simulation_time, entity->getPosition(), RK_order);
-                }
               };
               for (auto& water : FluidObject) {
                 for (auto* p : water->getPoints())
@@ -1043,17 +1039,14 @@ int main(int argc, char** argv) {
             applyAbsorptionAndPush(fluid_nodes, mean_phi,
                                    node_relocation_method == NodeRelocationMethod::ALE);
 
-            //& --- Inactive line: 頂点の線形補間で値を維持 + 壁スナッピング ---
+            //& --- Inactive line (BIE DOF なし): phi_mid のみ端点平均で代入 ---
+            // 位置 X_mid は BIE DOF 有無に依らず applyAbsorptionAndPush で push され、
+            // 後段の interpolation relocation で X_reloc に移動する。ここでは
+            // phi_mid が BIE 未知数でない場合に端点平均で妥当な値を与えるだけ。
             for (auto* water : FluidObject)
               for (auto* l : water->getBoundaryLines())
                 if (!l->hasActiveBieDof()) {
                   auto [pA, pB] = l->getPoints();
-                  Tddd X_mid_linear = 0.5 * (pA->X + pB->X);
-                  // node relocation で計算された clungSurface を反映
-                  // (凸壁で端点平均が貫入するのを防止)
-                  if (isFinite(l->clungSurface) && Norm(l->clungSurface) > 1e-16)
-                    X_mid_linear = X_mid_linear + l->clungSurface;
-                  l->setXSingle(X_mid_linear);
                   l->phiphin[0] = 0.5 * (std::get<0>(pA->phiphin) + std::get<0>(pB->phiphin));
                 }
 
