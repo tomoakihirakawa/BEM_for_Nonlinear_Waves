@@ -353,7 +353,7 @@ inline Tddd gradPhiQuadElement(const networkPoint* p, networkFace* f) {
   try {
     //* p will be set as node 4
 
-    // DodecaPoints dodecapoint(f, p, [](const networkLine *line) -> bool { return !line->CORNER; });
+    // DodecaPoints dodecapoint(f, p, [](const networkLine *line) -> bool { return !line->BCInterface; });
 
     int index = -1;
     for (auto i = 0; i < 3; ++i)
@@ -363,6 +363,7 @@ inline Tddd gradPhiQuadElement(const networkPoint* p, networkFace* f) {
       }
     if (index == -1)
       throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "error");
+    f->ensureDodecaPoints();
 
     auto ToPhi = [&](const networkPoint* p) -> double { return std::get<0>(p->phiphin); };
     auto ToX = [&](const networkPoint* p) -> Tddd { return p->X; };
@@ -550,7 +551,7 @@ inline Tddd gradPhi(const networkPoint* const p, std::array<double, 3>& converge
   double meanW = std::accumulate(W.begin(), W.end(), 0.) / W.size();
 
   /*
-  このようなCORNERが必要なのは，水面の喫水線において，接線方向に流れが大きくなり，構造物にめり込んでしまうことが生じるため．
+  このようなBCInterfaceが必要なのは，水面の喫水線において，接線方向に流れが大きくなり，構造物にめり込んでしまうことが生じるため．
   構造物にはめり込まないような，phinが与えられているはずだが，最小値問題において，めり込む方が最小になるのだろう．
   以下を加えれば，めり込まない流れの方が最小となりやすくはなるだろう，
   接線流速の精度が良くないとい，ということもできるだろう．
@@ -561,7 +562,7 @@ inline Tddd gradPhi(const networkPoint* const p, std::array<double, 3>& converge
   下をつけると，運動しないが，phinを与えたい境界条件のphinが０になる．
   */
 
-  if (p->CORNER) {
+  if (p->BCInterface) {
     for (const auto& f : faces) {
       if (!f || !isNeumannBoundaryState(p, f))
         continue;
@@ -617,7 +618,7 @@ inline Tddd gradPhi(const networkLine* const l) {
   }
 
   double meanW = std::accumulate(W.begin(), W.end(), 0.) / W.size();
-  if (l->CORNER) {
+  if (l->BCInterface) {
     for (const auto& f : faces) {
       if (!f || !isNeumannBoundaryState(l, f))
         continue;

@@ -139,32 +139,24 @@ inline QuadricFitResult fitQuadricLocal(const Tddd& origin,
 
   result.frame = {u_axis, v_axis, n_axis, true};
 
-  // 近傍点を局所座標系へ写し，最小二乗系 A x = b を作る
-  std::vector<std::vector<double>> A(N, std::vector<double>(5, 0.0));
-  std::vector<double> w_vals(N, 0.0);
-
-  for (int i = 0; i < N; ++i) {
-    Tddd dX = neighbor_positions[i] - origin;
-    double u = Dot(dX, u_axis);
-    double v = Dot(dX, v_axis);
-    double w = Dot(dX, n_axis);
-    A[i] = {u * u, u * v, v * v, u, v};
-    w_vals[i] = w;
-  }
-
-  // 正規方程式 A^T A x = A^T b で解く（5×5、LAPACK 不要、スレッド安全）
+  // 正規方程式 A^T A x = A^T b に直接累積する（5×5 固定、ヒープ割当無し、スレッド安全）
+  // A は各行が [u², uv, v², u, v]、未知数は 5 個。行列 A を明示的に保持する必要はなく、
+  // 1 点処理するたびに対応する row を stack 上の array に作って A^T A / A^T b に加算すればよい。
+  // Cholesky が下三角しか参照しないので、対称行列は下三角 (k ≤ j) だけ埋める。
   std::array<std::array<double, 5>, 5> ATA = {};
   std::array<double, 5> ATb = {};
   for (int i = 0; i < N; ++i) {
+    const Tddd dX = neighbor_positions[i] - origin;
+    const double u = Dot(dX, u_axis);
+    const double v = Dot(dX, v_axis);
+    const double w = Dot(dX, n_axis);
+    const std::array<double, 5> row = {u * u, u * v, v * v, u, v};
     for (int j = 0; j < 5; ++j) {
-      ATb[j] += A[i][j] * w_vals[i];
-      for (int k = j; k < 5; ++k)
-        ATA[j][k] += A[i][j] * A[i][k];
+      ATb[j] += row[j] * w;
+      for (int k = 0; k <= j; ++k)
+        ATA[j][k] += row[j] * row[k];
     }
   }
-  for (int j = 0; j < 5; ++j)
-    for (int k = 0; k < j; ++k)
-      ATA[j][k] = ATA[k][j];
 
   // Cholesky 分解 (5×5)
   std::array<std::array<double, 5>, 5> L = {};
@@ -208,6 +200,123 @@ inline QuadricFitResult fitQuadricLocal(const Tddd& origin,
   result.c = coeffs[2];
   result.d = coeffs[3];
   result.e = coeffs[4];
+  result.valid = true;
+  return result;
+}
+
+// ---------------------------------------------------------------------------
+// fitQuadricLocal_unroll: 完全手動展開バージョン
+// ---------------------------------------------------------------------------
+//
+// fitQuadricLocal と数学的に等価だが、5 行列の全ループを展開し、配列アクセスを
+// 全て スカラ変数 (register) に置き換えた版。N についての外側ループだけが残る。
+//
+// 効果の源:
+//   - A^T A 下三角の 15 要素、ATb の 5 要素、Cholesky L の 15 要素、forward / backward
+//     の y, x をすべて独立スカラにしているので、コンパイラがレジスタに載せやすい
+//   - fma を明示 (row 累積部) し、FPU スループット向上
+//   - 配列索引の読み替え・境界判定が消えて命令数が減る
+//   - 元コードと同じ "Cholesky 失敗時は invalid を返す" セマンティクスを維持
+//
+// 数値的に同一結果を期待するが、fma / 非 fma の違いによる丸め差が出うる。
+
+inline QuadricFitResult fitQuadricLocal_unroll(const Tddd& origin,
+                                                const Tddd& u_axis, const Tddd& v_axis, const Tddd& n_axis,
+                                                const std::vector<Tddd>& neighbor_positions) {
+  QuadricFitResult result;
+  const int N = static_cast<int>(neighbor_positions.size());
+  if (N < 5)
+    return result;
+  result.frame = {u_axis, v_axis, n_axis, true};
+
+  // A^T A 下三角 (15 要素) + A^T b (5 要素) をスカラで累積
+  double A00 = 0.0;
+  double A10 = 0.0, A11 = 0.0;
+  double A20 = 0.0, A21 = 0.0, A22 = 0.0;
+  double A30 = 0.0, A31 = 0.0, A32 = 0.0, A33 = 0.0;
+  double A40 = 0.0, A41 = 0.0, A42 = 0.0, A43 = 0.0, A44 = 0.0;
+  double b0 = 0.0, b1 = 0.0, b2 = 0.0, b3 = 0.0, b4 = 0.0;
+
+  for (int i = 0; i < N; ++i) {
+    const Tddd dX = neighbor_positions[i] - origin;
+    const double u = Dot(dX, u_axis);
+    const double v = Dot(dX, v_axis);
+    const double w = Dot(dX, n_axis);
+    // row = [u², uv, v², u, v]
+    const double r0 = u * u;
+    const double r1 = u * v;
+    const double r2 = v * v;
+    const double r3 = u;
+    const double r4 = v;
+
+    // A^T A 下三角の 15 要素を累積 (すべて fma)
+    A00 = std::fma(r0, r0, A00);
+    A10 = std::fma(r1, r0, A10); A11 = std::fma(r1, r1, A11);
+    A20 = std::fma(r2, r0, A20); A21 = std::fma(r2, r1, A21); A22 = std::fma(r2, r2, A22);
+    A30 = std::fma(r3, r0, A30); A31 = std::fma(r3, r1, A31); A32 = std::fma(r3, r2, A32); A33 = std::fma(r3, r3, A33);
+    A40 = std::fma(r4, r0, A40); A41 = std::fma(r4, r1, A41); A42 = std::fma(r4, r2, A42); A43 = std::fma(r4, r3, A43); A44 = std::fma(r4, r4, A44);
+
+    // A^T b
+    b0 = std::fma(r0, w, b0);
+    b1 = std::fma(r1, w, b1);
+    b2 = std::fma(r2, w, b2);
+    b3 = std::fma(r3, w, b3);
+    b4 = std::fma(r4, w, b4);
+  }
+
+  // Cholesky 分解 A = L L^T (下三角)
+  //   L[i][i] = sqrt(A[i][i] - Σ_{k<i} L[i][k]²)
+  //   L[i][j] = (A[i][j] - Σ_{k<j} L[i][k]·L[j][k]) / L[j][j]   (j<i)
+  // 対角が非正 or 極小なら fit 失敗として早期 return (元コードと同一セマンティクス)
+  constexpr double kMinPivot = 1e-20;
+  if (A00 <= kMinPivot) return result;
+  const double L00 = std::sqrt(A00);
+
+  const double L10 = A10 / L00;
+  const double d11 = A11 - L10 * L10;
+  if (d11 <= kMinPivot) return result;
+  const double L11 = std::sqrt(d11);
+
+  const double L20 = A20 / L00;
+  const double L21 = (A21 - L20 * L10) / L11;
+  const double d22 = A22 - L20 * L20 - L21 * L21;
+  if (d22 <= kMinPivot) return result;
+  const double L22 = std::sqrt(d22);
+
+  const double L30 = A30 / L00;
+  const double L31 = (A31 - L30 * L10) / L11;
+  const double L32 = (A32 - L30 * L20 - L31 * L21) / L22;
+  const double d33 = A33 - L30 * L30 - L31 * L31 - L32 * L32;
+  if (d33 <= kMinPivot) return result;
+  const double L33 = std::sqrt(d33);
+
+  const double L40 = A40 / L00;
+  const double L41 = (A41 - L40 * L10) / L11;
+  const double L42 = (A42 - L40 * L20 - L41 * L21) / L22;
+  const double L43 = (A43 - L40 * L30 - L41 * L31 - L42 * L32) / L33;
+  const double d44 = A44 - L40 * L40 - L41 * L41 - L42 * L42 - L43 * L43;
+  if (d44 <= kMinPivot) return result;
+  const double L44 = std::sqrt(d44);
+
+  // 前進代入: L y = ATb
+  const double y0 = b0 / L00;
+  const double y1 = (b1 - L10 * y0) / L11;
+  const double y2 = (b2 - L20 * y0 - L21 * y1) / L22;
+  const double y3 = (b3 - L30 * y0 - L31 * y1 - L32 * y2) / L33;
+  const double y4 = (b4 - L40 * y0 - L41 * y1 - L42 * y2 - L43 * y3) / L44;
+
+  // 後退代入: L^T x = y
+  const double x4 = y4 / L44;
+  const double x3 = (y3 - L43 * x4) / L33;
+  const double x2 = (y2 - L42 * x4 - L32 * x3) / L22;
+  const double x1 = (y1 - L41 * x4 - L31 * x3 - L21 * x2) / L11;
+  const double x0 = (y0 - L40 * x4 - L30 * x3 - L20 * x2 - L10 * x1) / L00;
+
+  result.a = x0;
+  result.b = x1;
+  result.c = x2;
+  result.d = x3;
+  result.e = x4;
   result.valid = true;
   return result;
 }
@@ -282,7 +391,7 @@ inline PrincipalCurvatureResult principalCurvaturesFromQuadric(const QuadricFitR
     } else {
       PD1_3d = u_axis; // 等方的で方向が決めにくいので任意に u 軸を返す
     }
-    PD2_3d = Cross(n_w, PD1_3d);
+    PD2_3d = CrossDouble(n_w, PD1_3d);
   }
 
   // |k1| >= |k2| となるように並べ替える
@@ -309,7 +418,11 @@ inline PrincipalCurvatureResult principalCurvaturesFromQuadric(const QuadricFitR
 inline PrincipalCurvatureResult computePrincipalCurvatures(const Tddd& origin,
                                                            const Tddd& u_axis, const Tddd& v_axis, const Tddd& n_axis,
                                                            const std::vector<Tddd>& neighbor_positions) {
-  auto qf = fitQuadricLocal(origin, u_axis, v_axis, n_axis, neighbor_positions);
+  // 完全手動展開版 (15 スカラの Cholesky + fma) を使用。
+  // 元の fitQuadricLocal と数学的に等価だが、A^T A / Cholesky / 前進後退代入の
+  // 全ループを展開してレジスタ割当と fma 発行を最大化している。
+  // remesh scenarios ループの内側で頂点ごとに呼ばれるため、この単位での高速化が効く。
+  auto qf = fitQuadricLocal_unroll(origin, u_axis, v_axis, n_axis, neighbor_positions);
   return principalCurvaturesFromQuadric(qf);
 }
 

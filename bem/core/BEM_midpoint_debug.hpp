@@ -122,7 +122,7 @@ inline void dumpDebugMidpointLineState(const Network* water, const char* stage, 
             << " line_ptr=" << l
             << " endpts={" << (pA ? pA->index : -1) << "," << (pB ? pB->index : -1) << "}"
             << " X_mid=" << l->X_mid
-            << " flags={D:" << l->Dirichlet << ",N:" << l->Neumann << ",C:" << l->CORNER << ",M:" << l->isMultipleNode << "}"
+            << " flags={D:" << l->Dirichlet << ",N:" << l->Neumann << ",C:" << l->BCInterface << ",M:" << l->isMultipleNode << "}"
             << " midpoint_index=" << l->midpoint_index
             << " face_count=" << boundary_faces.size()
             << " phiphin={" << l->phiphin[0] << "," << l->phiphin[1] << "}"

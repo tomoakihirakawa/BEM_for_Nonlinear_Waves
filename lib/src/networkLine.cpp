@@ -129,7 +129,8 @@ inline bool isLinkedDoubly(const netFp f, const netLp l) { return isLinkedDoubly
 //%                          辺の分割                      */
 //% ------------------------------------------------------ */
 
-netPp networkLine::Split(const Tddd& midX) {
+netPp networkLine::Split(const Tddd& midX,
+                         bool update_midpoints_after) {
 
   /*
               p2
@@ -191,18 +192,6 @@ p0, q1--this---(P)---(LC)---- p1, q0
     phiphin /= (fA->area + fB->area);
     phiphin_t /= (fA->area + fB->area);
 
-    // Save old face geometry for Nearest projection of X_mid/phi_mid after split
-    const T3Tddd old_fA_tri = {p0->X, p1->X, p2->X};
-    const T3Tddd old_fB_tri = {p0->X, p1->X, q2->X};
-    // Old phi_mid values: fA lines={this(p0-p1), l1(p1-p2), l2(p2-p0)}
-    const double old_this_phi_mid = this->phiphin[0];
-    const double old_l1_phi_mid = l1->phiphin[0];
-    const double old_l2_phi_mid = l2->phiphin[0];
-    // fB lines={this(p0-p1), e2(p1-q2), e1(q2-p0)}
-    const double old_e1_phi_mid = e1->phiphin[0];
-    const double old_e2_phi_mid = e2->phiphin[0];
-    /* --------------------------------------------------------------- */
-
     /* ------------------------------------- */
     const Tddd splitPos = (midX[0] < 1E+79) ? midX : (p0->X + p1->X) / 2.;
     auto P = new networkPoint(this->network, splitPos);
@@ -253,10 +242,28 @@ p0, q1--this---(P)---(LC)---- p1, q0
     p->phiphin_t = phiphin_t;
 
 #if defined(BEM)
-    // Project X_mid onto old surface using Nearest_, interpolate phi_mid using TriShape<6>.
-    // this: p0-P, LC: P-p1, LA: P-p2, LB: P-q2
-    // Old faces: fA_tri={old_p0, old_p1, old_p2}, fB_tri={old_p0, old_p1, old_q2}
-    {
+    auto set_linear_line_node = [](networkLine* edge) {
+      if (!edge)
+        return;
+      auto [pA, pB] = edge->getPoints();
+      if (!pA || !pB)
+        return;
+      edge->setXSingle(0.5 * (pA->X + pB->X));
+      edge->corner_midpoint_offset = {0., 0., 0.};
+      edge->phiphin[0] = 0.5 * (std::get<0>(pA->phiphin) + std::get<0>(pB->phiphin));
+      edge->phiphin_t[0] = 0.5 * (std::get<0>(pA->phiphin_t) + std::get<0>(pB->phiphin_t));
+    };
+    if (update_midpoints_after) {
+      // Project X_mid onto old surface using Nearest_, interpolate phi_mid using TriShape<6>.
+      // this: p0-P, LC: P-p1, LA: P-p2, LB: P-q2
+      // Old faces: fA_tri={old_p0, old_p1, old_p2}, fB_tri={old_p0, old_p1, old_q2}
+      const T3Tddd old_fA_tri = {p0->X, p1->X, p2->X};
+      const T3Tddd old_fB_tri = {p0->X, p1->X, q2->X};
+      const double old_this_phi_mid = this->phiphin[0];
+      const double old_l1_phi_mid = l1->phiphin[0];
+      const double old_l2_phi_mid = l2->phiphin[0];
+      const double old_e1_phi_mid = e1->phiphin[0];
+      const double old_e2_phi_mid = e2->phiphin[0];
       // Helper: project edge midpoint onto nearest old face and interpolate phi_mid
       auto project_edge = [&](networkLine* edge,
                               const T3Tddd& fA_tri, const T3Tddd& fB_tri,
@@ -289,6 +296,11 @@ p0, q1--this---(P)---(LC)---- p1, q0
       project_edge(LC, old_fA_tri, old_fB_tri, fA_phi6, fB_phi6);
       project_edge(LA, old_fA_tri, old_fB_tri, fA_phi6, fB_phi6);
       project_edge(LB, old_fA_tri, old_fB_tri, fA_phi6, fB_phi6);
+    } else {
+      set_linear_line_node(this);
+      set_linear_line_node(LC);
+      set_linear_line_node(LA);
+      set_linear_line_node(LB);
     }
 #endif
 
@@ -363,7 +375,8 @@ bool networkLine::isMergeable() const {
 
 /* -------------------------------------------------------------------------- */
 
-netPp networkLine::Collapse(const Tddd& externalTargetX) {
+netPp networkLine::Collapse(const Tddd& externalTargetX,
+                            bool update_midpoints_after) {
 
   /*
                  p2
@@ -409,16 +422,16 @@ netPp networkLine::Collapse(const Tddd& externalTargetX) {
   if ((p0->getLines().size() + p1->getLines().size() - 3) <= 3 || p2->getLines().size() <= 3 || q2->getLines().size() <= 3) {
     // p2->getLines().size() <=2となるため，マージ不可
     // q2->getLines().size() <=2となるため，マージ不可
-    std::cout << "p0 or p1 has less than 4 lines. merge is not allowed." << std::endl;
+    // std::cout << "p0 or p1 has less than 4 lines. merge is not allowed." << std::endl;
     return nullptr;
   }
 
   /* ------------------------------------- */
-  const bool preserve_p0 = p0->CORNER && !p1->CORNER;
-  const bool preserve_p1 = p1->CORNER && !p0->CORNER;
+  const bool preserve_p0 = p0->BCInterface && !p1->BCInterface;
+  const bool preserve_p1 = p1->BCInterface && !p0->BCInterface;
   Tddd targetX;
   if (externalTargetX[0] < 1E+79) {
-    targetX = externalTargetX;  // 外部指定
+    targetX = externalTargetX; // 外部指定
   } else {
     targetX = 0.5 * (p0->X + p1->X);
     if (preserve_p0)
@@ -464,7 +477,7 @@ netPp networkLine::Collapse(const Tddd& externalTargetX) {
     std::array<double, 6> phi6;
   };
   std::vector<OldFaceData> old_faces;
-  {
+  if (update_midpoints_after) {
     std::unordered_set<networkFace*> face_set;
     for (auto* f : p0->getBoundaryFaces())
       face_set.insert(f);
@@ -530,18 +543,18 @@ netPp networkLine::Collapse(const Tddd& externalTargetX) {
     f->syncPLPLPL();
 
   // Interpolate phiphin for surviving vertex before moving it.
-  // If one endpoint is CORNER, preserve that endpoint's state and position;
+  // If one endpoint is BCInterface, preserve that endpoint's state and position;
   // otherwise use midpoint/average as before.
 #if defined(BEM)
   {
     if (preserve_p1) {
       p0->phiphin = p1->phiphin;
       p0->phiphin_t = p1->phiphin_t;
-      p0->CORNER = p1->CORNER;
+      p0->BCInterface = p1->BCInterface;
       p0->Dirichlet = p1->Dirichlet;
       p0->Neumann = p1->Neumann;
-      p0->minDepthFromCORNER = p1->minDepthFromCORNER;
-      p0->minDepthFromCORNER_ = p1->minDepthFromCORNER_;
+      p0->minDepthFromBCInterface = p1->minDepthFromBCInterface;
+      p0->minDepthFromBCInterface_ = p1->minDepthFromBCInterface_;
       p0->minDepthFromMultipleNode = p1->minDepthFromMultipleNode;
       p0->minDepthFromMultipleNode_ = p1->minDepthFromMultipleNode_;
       p0->isMultipleNode = p1->isMultipleNode;
@@ -590,29 +603,31 @@ netPp networkLine::Collapse(const Tddd& externalTargetX) {
 #if defined(BEM)
   // Update X_mid/phi_mid for all surviving edges connected to p0 after collapse.
   // Project each edge's X_mid onto nearest old face and interpolate phi_mid.
-  for (auto* edge : p0->getLines()) {
-    auto [pA, pB] = edge->getPoints();
-    Tddd X_mid_candidate = 0.5 * (pA->X + pB->X);
-    double min_dist = 1E+20;
-    int best_idx = -1;
-    Tddd best_near = X_mid_candidate;
-    double best_t0 = 0, best_t1 = 0;
-    for (int i = 0; i < (int)old_faces.size(); ++i) {
-      auto [t0, t1, near_pt, normal] = Nearest_(X_mid_candidate, old_faces[i].tri);
-      double d = Norm(near_pt - X_mid_candidate);
-      if (d < min_dist) {
-        min_dist = d;
-        best_idx = i;
-        best_near = near_pt;
-        best_t0 = t0;
-        best_t1 = t1;
+  if (update_midpoints_after) {
+    for (auto* edge : p0->getLines()) {
+      auto [pA, pB] = edge->getPoints();
+      Tddd X_mid_candidate = 0.5 * (pA->X + pB->X);
+      double min_dist = 1E+20;
+      int best_idx = -1;
+      Tddd best_near = X_mid_candidate;
+      double best_t0 = 0, best_t1 = 0;
+      for (int i = 0; i < (int)old_faces.size(); ++i) {
+        auto [t0, t1, near_pt, normal] = Nearest_(X_mid_candidate, old_faces[i].tri);
+        double d = Norm(near_pt - X_mid_candidate);
+        if (d < min_dist) {
+          min_dist = d;
+          best_idx = i;
+          best_near = near_pt;
+          best_t0 = t0;
+          best_t1 = t1;
+        }
       }
-    }
-    if (best_idx >= 0) {
-      edge->setXSingle(best_near);
-      auto N = TriShape<6>(best_t0, best_t1);
-      const auto& phi6 = old_faces[best_idx].phi6;
-      edge->phiphin[0] = N[0] * phi6[0] + N[1] * phi6[1] + N[2] * phi6[2] + N[3] * phi6[3] + N[4] * phi6[4] + N[5] * phi6[5];
+      if (best_idx >= 0) {
+        edge->setXSingle(best_near);
+        auto N = TriShape<6>(best_t0, best_t1);
+        const auto& phi6 = old_faces[best_idx].phi6;
+        edge->phiphin[0] = N[0] * phi6[0] + N[1] * phi6[1] + N[2] * phi6[2] + N[3] * phi6[3] + N[4] * phi6[4] + N[5] * phi6[5];
+      }
     }
   }
 #endif
@@ -662,7 +677,8 @@ bool networkLine::checkTopology() const {
   return true;
 }
 
-bool networkLine::Flip(bool force = false) {
+bool networkLine::Flip(bool force,
+                       bool update_midpoints_after) {
   try {
 
     auto AB = this->getBoundaryFaces();
@@ -709,7 +725,7 @@ bool networkLine::Flip(bool force = false) {
     if (p0->getLines().size() <= 3 || p1->getLines().size() <= 3) {
       // p0->getLines().size() <=2となるため，フリップ不可
       // p1->getLines().size() <=2となるため，フリップ不可
-      std::cout << "p0 or p1 has less than 4 lines. flip is not allowed." << std::endl;
+      // std::cout << "p0 or p1 has less than 4 lines. flip is not allowed." << std::endl;
       return false;
     }
 
@@ -742,9 +758,6 @@ bool networkLine::Flip(bool force = false) {
     }
 
 #if defined(BEM)
-    // Save old face geometry for Nearest projection of X_mid/phi_mid after flip
-    // Old fA: {p0, p1, p2}, lines: {this(p0-p1), l1(p1-p2), l2(p2-p0)}
-    // Old fB: {p0, p1, q2}, lines: {this(p0-p1), e2(p1-q2), e1(q2-p0)}
     const T3Tddd old_fA_tri = {p0->X, p1->X, p2->X};
     const T3Tddd old_fB_tri = {p0->X, p1->X, q2->X};
     const std::array<double, 6> old_fA_phi6 = {
@@ -832,9 +845,9 @@ bool networkLine::Flip(bool force = false) {
     // b% 点と面の接続関係については入れ替え終了
 
 #if defined(BEM)
-    // Project X_mid of flipped edge onto old surface using Nearest_, interpolate phi_mid
-    // After flip: this connects (p2, q2). X_mid should be on old surface.
-    {
+    if (update_midpoints_after) {
+      // Project X_mid of flipped edge onto old surface using Nearest_, interpolate phi_mid.
+      // After flip: this connects (p2, q2). X_mid should be on old surface.
       Tddd X_mid_candidate = 0.5 * (p2->X + q2->X);
       auto [wa, wb, nearA, normalA] = Nearest_(X_mid_candidate, old_fA_tri);
       auto [wc, wd, nearB, normalB] = Nearest_(X_mid_candidate, old_fB_tri);
@@ -849,6 +862,11 @@ bool networkLine::Flip(bool force = false) {
         auto N = TriShape<6>(wc, wd);
         this->phiphin[0] = N[0] * old_fB_phi6[0] + N[1] * old_fB_phi6[1] + N[2] * old_fB_phi6[2] + N[3] * old_fB_phi6[3] + N[4] * old_fB_phi6[4] + N[5] * old_fB_phi6[5];
       }
+    } else {
+      this->setXSingle(0.5 * (p2->X + q2->X));
+      this->corner_midpoint_offset = {0., 0., 0.};
+      this->phiphin[0] = 0.5 * (std::get<0>(p2->phiphin) + std::get<0>(q2->phiphin));
+      this->phiphin_t[0] = 0.5 * (std::get<0>(p2->phiphin_t) + std::get<0>(q2->phiphin_t));
     }
 #endif
 
@@ -1017,7 +1035,7 @@ bool networkLine::flipIfBetter(const double n_diff_tagert_face, const double acc
       // 	return true;
       // }
       // else
-      if (min_init <= min_later && (next_s0 >= min_n || p0->CORNER /*min_nよりも小さくても，角ならOK*/) && (next_s1 >= min_n || p1->CORNER /*min_nよりも小さくても，角ならOK*/) && (next_s2 >= min_n || p2->CORNER /*min_nよりも小さくても，角ならOK*/) && (next_s3 >= min_n || p3->CORNER /*min_nよりも小さくても，角ならOK*/)) {
+      if (min_init <= min_later && (next_s0 >= min_n || p0->BCInterface /*min_nよりも小さくても，角ならOK*/) && (next_s1 >= min_n || p1->BCInterface /*min_nよりも小さくても，角ならOK*/) && (next_s2 >= min_n || p2->BCInterface /*min_nよりも小さくても，角ならOK*/) && (next_s3 >= min_n || p3->BCInterface /*min_nよりも小さくても，角ならOK*/)) {
         this->Flip();
         return true;
       } else
@@ -1049,8 +1067,8 @@ bool networkLine::flipIfTopologicallyBetter(const double n_diff_tagert_face, con
       double v_init = Norm(std::array<int, 4>{s0, s1, s2, s3} - s_mean);
       double v_next = Norm(std::array<int, 4>{s0 - 1, s1 - 1, s2 + 1, s3 + 1} - s_mean);
       // ただし，例えばs0が角であった場合，角が多くの線を持つことは問題ないため，考慮に入れない．つまり辺の数は変わっても変わらないものとして，v_nextを考える．
-      // v_next = Norm(std::array<int, 4>{p0->CORNER || p0->isMultipleNode ? s0 : s0 - 1, p1->CORNER || p1->isMultipleNode ? s1 : s1 - 1,
-      //                                  p2->CORNER || p2->isMultipleNode ? s2 : s2 + 1, p3->CORNER || p3->isMultipleNode ? s3 : s3 + 1} -
+      // v_next = Norm(std::array<int, 4>{p0->BCInterface || p0->isMultipleNode ? s0 : s0 - 1, p1->BCInterface || p1->isMultipleNode ? s1 : s1 - 1,
+      //                                  p2->BCInterface || p2->isMultipleNode ? s2 : s2 + 1, p3->BCInterface || p3->isMultipleNode ? s3 : s3 + 1} -
       //               s_mean);
       if (v_init > v_next || s0 >= 8 || s1 >= 8 || s2 <= 4 || s3 <= 4) {
         this->Flip();
@@ -1074,14 +1092,14 @@ void networkLine::divideIfIllegal() {
 /* -------------------------------------------------------------------------- */
 
 void networkLine::setContactRange() {
-  this->contact_range = 0.5 * localEdgeLength(this);
+  this->contact_range = 0.4 * localEdgeLength(this);
 }
 
-// CORNER lines at triple points only have 2 faces (1 Dirichlet + 1 Neumann).
+// BCInterface lines at triple points only have 2 faces (1 Dirichlet + 1 Neumann).
 // To detect contact with all nearby body surfaces, also include endpoint vertices' boundary faces.
 std::vector<networkFace*> networkLine::getFacesForContactCheck() const {
   auto faces = this->getBoundaryFaces();
-  if (this->CORNER) {
+  if (this->BCInterface) {
     auto [pA, pB] = this->getPoints();
     for (const auto* endpoint : {pA, pB}) {
       for (const auto& f : endpoint->getBoundaryFaces()) {

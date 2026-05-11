@@ -279,12 +279,12 @@ inline bool isDirichletBoundaryState(const auto* entity, const networkFace* f) {
    Multiple node detection and assignment
 
    isMultipleNode = true の節点には per-face DOF が割り当てられる。
-   判定基準は**隣接面の法線角度のみ**:
+   判定基準は**SharpQ と同じ幾何 crease**:
 
-     隣接面の法線が平均法線から閾値角度以上ずれている → multiple
+     境界辺の隣接面法線同士の最大角が閾値角度を超える → multiple
 
-   CORNER (D-N接合) であるかどうかは判定に使わない。
-   CORNER は必然的に鋭角（壁面と自由表面の接合）なので、
+   BCInterface (D-N接合) であるかどうかは判定に使わない。
+   BCInterface は必然的に鋭角（壁面と自由表面の接合）なので、
    法線角度の判定だけで自然に multiple になる。
 
    ただし、Dirichlet のみの節点は現在の実装では multiple にできない。
@@ -296,10 +296,12 @@ inline bool isDirichletBoundaryState(const auto* entity, const networkFace* f) {
   （実験で確認済み）。そのため、Neumann 面を持たない節点は棄却する。
 --------------------------------------------------------------------------- */
 
-// hasSharpEdge は SharpQ() として Network.hpp (networkPoint, networkLine) に移動済み
+inline bool hasSharpEdge(const auto* entity, double threshold = 60.0 * M_PI / 180.0) {
+  return entity && entity->SharpQ(threshold);
+}
 
 inline bool detectMultipleNode(const auto* entity) {
-  return entity->SharpQ();
+  return hasSharpEdge(entity);
 }
 
 inline void setMultipleNode(auto* entity) {

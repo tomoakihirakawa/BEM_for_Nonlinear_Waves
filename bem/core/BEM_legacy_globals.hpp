@@ -9,6 +9,7 @@ extern bool use_linear_element;
 extern bool use_pseudo_quadratic_element;
 extern bool use_true_quadratic_element;
 extern bool use_quadratic_linear_hybrid;
+extern bool output_force_quadratic;
 
 extern NodeRelocationMethod node_relocation_method;
 extern NodeRelocationSurface node_relocation_surface;
@@ -37,6 +38,8 @@ extern int solver_restart;
 
 extern std::string nearfield_mode;
 extern int g_p2m_quadrature_points;
+extern int g_lu_far_dunavant_points;
+extern int g_lu_near_dunavant_points;
 extern double g_mac_theta;
 extern int fmm_max_level;
 extern int fmm_bucket_max_points;

@@ -171,16 +171,38 @@ void setIGIGn() {
                   std::get<0>(ig_ign2) += ig * std::get<2>(shape3);
                 }
               } else {
-                for (const auto &[t0t1, ww, shape3, X, cross, J_det] : integ_f->map_Point_LinearIntegrationInfo_vector[how_far].at(closest_p_to_origin)) {
-                  ig = J_det * (ww_nr = ww / (nr = Norm(R = (X - origin->X))));
-                  ign = Dot(R, cross) * ww_nr / (nr * nr);
-                  std::get<0>(ig_ign0) += ig * std::get<0>(shape3);
-                  std::get<1>(ig_ign0) -= ign * std::get<0>(shape3);
-                  std::get<0>(ig_ign1) += ig * std::get<1>(shape3);
-                  std::get<1>(ig_ign1) -= ign * std::get<1>(shape3);
-                  std::get<0>(ig_ign2) += ig * std::get<2>(shape3);
-                  std::get<1>(ig_ign2) -= ign * std::get<2>(shape3);
-                  origin_ign_rigid_mode += ign;
+                const int dunavant_points = how_far == 1 ? g_lu_near_dunavant_points : g_lu_far_dunavant_points;
+                if (dunavant_points > 0) {
+                  const auto &rule = getDunavantP2MRule(dunavant_points);
+                  const std::array<networkPoint *, 3> ordered_points = {p0, p1, p2};
+                  const auto X012_linear = ToX(ordered_points);
+                  const auto cross_linear = Cross(X012_linear[1] - X012_linear[0], X012_linear[2] - X012_linear[0]);
+                  const double J_det_linear = Norm(cross_linear);
+                  for (const auto &[b0, b1, b2, ww] : rule) {
+                    const std::array<double, 3> shape3 = {b0, b1, b2};
+                    const auto X = b0 * X012_linear[0] + b1 * X012_linear[1] + b2 * X012_linear[2];
+                    ig = J_det_linear * (ww_nr = ww / (nr = Norm(R = (X - origin->X))));
+                    ign = Dot(R, cross_linear) * ww_nr / (nr * nr);
+                    std::get<0>(ig_ign0) += ig * shape3[0];
+                    std::get<1>(ig_ign0) -= ign * shape3[0];
+                    std::get<0>(ig_ign1) += ig * shape3[1];
+                    std::get<1>(ig_ign1) -= ign * shape3[1];
+                    std::get<0>(ig_ign2) += ig * shape3[2];
+                    std::get<1>(ig_ign2) -= ign * shape3[2];
+                    origin_ign_rigid_mode += ign;
+                  }
+                } else {
+                  for (const auto &[t0t1, ww, shape3, X, cross, J_det] : integ_f->map_Point_LinearIntegrationInfo_vector[how_far].at(closest_p_to_origin)) {
+                    ig = J_det * (ww_nr = ww / (nr = Norm(R = (X - origin->X))));
+                    ign = Dot(R, cross) * ww_nr / (nr * nr);
+                    std::get<0>(ig_ign0) += ig * std::get<0>(shape3);
+                    std::get<1>(ig_ign0) -= ign * std::get<0>(shape3);
+                    std::get<0>(ig_ign1) += ig * std::get<1>(shape3);
+                    std::get<1>(ig_ign1) -= ign * std::get<1>(shape3);
+                    std::get<0>(ig_ign2) += ig * std::get<2>(shape3);
+                    std::get<1>(ig_ign2) -= ign * std::get<2>(shape3);
+                    origin_ign_rigid_mode += ign;
+                  }
                 }
               }
               IGIGn_Row[pf2Index(p0, integ_f)] += ig_ign0;
@@ -614,7 +636,7 @@ void generateBIEMatrix() {
         fill_columns(i, surfacePoints, water);
 
         //^ 多重節点の場合，Neumann面上のphiの値は，同じ場所のDirichlet面のphiと一致する
-        if (a->CORNER && isNeumannBieDofKey(a, a_face) /*行の変更*/) {
+        if (a->BCInterface && isNeumannBieDofKey(a, a_face) /*行の変更*/) {
           std::ranges::fill(mat_ukn[i], 0.);
           std::ranges::fill(mat_kn[i], 0.);
           mat_ukn[i][i] = max_value;
@@ -631,8 +653,8 @@ void generateBIEMatrix() {
           if (i < 0) continue;
           fill_columns(i, surfacePoints, water);
 
-          // CORNER midpoint: Neumann face phi = Dirichlet face phi
-          if (a_line->CORNER && isNeumannBieDofKey(a_line, a_face)) {
+          // BCInterface midpoint: Neumann face phi = Dirichlet face phi
+          if (a_line->BCInterface && isNeumannBieDofKey(a_line, a_face)) {
             std::ranges::fill(mat_ukn[i], 0.);
             std::ranges::fill(mat_kn[i], 0.);
             mat_ukn[i][i] = max_value;

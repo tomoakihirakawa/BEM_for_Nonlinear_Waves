@@ -15,9 +15,11 @@
 #include <cstdint>
 #include <concepts>
 #include <functional>
+#include <optional>
 #include <sstream>
 #include <typeinfo>
 #include <unordered_set>
+#include <utility>
 #include "integrationOfODE.hpp"
 
 class networkLine;
@@ -38,6 +40,32 @@ using V_netPp = std::vector<networkPoint*>;
 using VV_netPp = std::vector<std::vector<networkPoint*>>;
 using V_netFp = std::vector<networkFace*>;
 using VV_netFp = std::vector<std::vector<networkFace*>>;
+
+struct ProviderTargetCurvatureCache {
+  bool valid = false;
+  std::uint64_t provider_epoch = 0;
+  bool need_reference = false;
+  bool need_body = false;
+  bool used_reference = false;
+  bool used_body = false;
+  Tddd source_X = {0., 0., 0.};
+  Tddd target_X = {0., 0., 0.};
+  Tddd normal = {0., 0., 0.};
+  surface_geometry::PrincipalCurvatureResult curvature;
+
+  void invalidate() {
+    valid = false;
+    provider_epoch = 0;
+    need_reference = false;
+    need_body = false;
+    used_reference = false;
+    used_body = false;
+    source_X = {0., 0., 0.};
+    target_X = {0., 0., 0.};
+    normal = {0., 0., 0.};
+    curvature = {};
+  }
+};
 using V_Netp = std::vector<Network*>;
 //
 using T_LL = std::array<networkLine*, 2>;
@@ -161,12 +189,36 @@ struct NodeFaceState {
 // 近い面は広い角度で受け入れ、遠い面は厳しく絞る
 // distance ≈ 0 → near_angle_deg、distance ≈ contact_range → far_angle_deg
 inline double contactAcceptanceAngle(const double distance, const double contact_range,
-                                     const double near_angle_deg = 60., const double far_angle_deg = 30.) {
+                                     const double near_angle_deg = 70., const double far_angle_deg = 50.) {
   if (!(contact_range > 0) || !std::isfinite(contact_range) || !std::isfinite(distance))
     return M_PI * near_angle_deg / 180.;
   const auto r = std::clamp(std::abs(distance) / contact_range, 0.0, 1.0);
   auto deg = std::clamp(near_angle_deg - (near_angle_deg - far_angle_deg) * r, far_angle_deg, near_angle_deg);
   return M_PI * deg / 180.;
+}
+
+inline double contactAnisotropicDistance(const Tddd& X,
+                                         const Tddd& nearest,
+                                         const Tddd& face_normal,
+                                         const double contact_range,
+                                         const double normal_axis_factor,
+                                         const double tangent_axis_factor) {
+  const auto delta = nearest - X;
+  const double euclidean = Norm(delta);
+  if (!(euclidean > 0.0) || !std::isfinite(euclidean))
+    return euclidean;
+  if (!(contact_range > 0.0) || !std::isfinite(contact_range))
+    return euclidean;
+  const double normal_norm = Norm(face_normal);
+  if (!(normal_norm > 0.0) || !std::isfinite(normal_norm))
+    return euclidean;
+  const auto n = face_normal / normal_norm;
+  const double dn = std::abs(Dot(delta, n));
+  const double tangent_sq = std::max(0.0, euclidean * euclidean - dn * dn);
+  const double tangent_axis = std::max(tangent_axis_factor * contact_range, 1e-12);
+  const double normal_axis = std::max(normal_axis_factor * contact_range, 1e-12);
+  return contact_range *
+         std::sqrt(tangent_sq / (tangent_axis * tangent_axis) + (dn * dn) / (normal_axis * normal_axis));
 }
 
 /* ------------------------------------------------------ */
@@ -236,7 +288,7 @@ struct ContactDetectable {
     return std::any_of(dofs.begin(), dofs.end(), [](const auto& kv) { return kv.second.index >= 0; });
   }
 
-  // Override to extend faces used for isFacing check (e.g., CORNER lines include endpoint vertex faces)
+  // Override to extend faces used for isFacing check (e.g., BCInterface lines include endpoint vertex faces)
   virtual std::vector<networkFace*> getFacesForContactCheck() const { return getBoundaryFaces(); }
 
   // Unified contact face detection for both networkPoint and networkLine
@@ -282,7 +334,9 @@ struct BEM_DOF_Base : public ContactDetectable {
 
   // --- boundary classification ---
   bool isMultipleNode = false;
-  bool CORNER = false;
+  // BCInterface = true when this entity sits on a Dirichlet/Neumann junction.
+  // Renamed from CORNER (misleading: not a geometric corner).
+  bool BCInterface = false;
 
   // --- velocity fields ---
   Tddd u_potential_BEM = {0., 0., 0.};
@@ -311,6 +365,7 @@ struct BEM_DOF_Base : public ContactDetectable {
   // --- curvature (mesh density control) ---
   surface_geometry::LocalFrame local_frame;                   // 局所座標系
   surface_geometry::PrincipalCurvatureResult geom_curvature;  // 主曲率・主方向
+  ProviderTargetCurvatureCache provider_target_curvature;      // Provider target 面の主曲率・主方向
   virtual void buildLocalFrame() = 0;
 
   // --- debug counters ---
@@ -373,10 +428,10 @@ public:
 #endif
 
 public:
-  // CORNER is inherited from BEM_DOF_Base
+  // BCInterface is inherited from BEM_DOF_Base
   bool Dirichlet;
   bool Neumann;
-  Tddd corner_midpoint_offset = {0., 0., 0.}; // quadratic correction from linear midpoint for CORNER edges
+  Tddd corner_midpoint_offset = {0., 0., 0.}; // quadratic correction from linear midpoint for BCInterface edges
   bool isIntxn();
 #if defined(BEM)
   V_d interpoltedX;
@@ -418,8 +473,8 @@ public:
   // border edge: 面が片側だけの辺
   bool BorderQ() const noexcept { return this->getBoundaryFaces().size() < 2; }
 
-  // sharp edge: 隣接面の法線偏差が閾値を超える（角の上にいる）
-  bool SharpQ(double threshold = 20.0 * M_PI / 180.0) const noexcept;
+  // sharp edge: 隣接境界面同士の法線角が閾値を超える幾何 crease
+  bool SharpQ(double threshold = 60.0 * M_PI / 180.0) const noexcept;
 
   //---------------------------------
 public:
@@ -432,7 +487,7 @@ public:
 
     this->Dirichlet = l->Dirichlet;
     this->Neumann = l->Neumann;
-    this->CORNER = l->CORNER;
+    this->BCInterface = l->BCInterface;
 
     auto tmpL = l->getPoints();
     set(std::get<0>(tmpL), std::get<1>(tmpL));
@@ -452,9 +507,10 @@ public:
   void set(networkFace* const Face0_IN, networkFace* const Face1_IN) { this->Faces = {Face0_IN, Face1_IN}; };
   void set(networkFace* const Face0_IN) { this->Faces = {Face0_IN}; };
   //---------------------------------
-  netPp Split(const Tddd& midX = {1E+80, 1E+80, 1E+80});
+  netPp Split(const Tddd& midX = {1E+80, 1E+80, 1E+80},
+              bool update_midpoints_after = true);
   bool canFlip(const double) const;
-  bool Flip(bool);
+  bool Flip(bool force = false, bool update_midpoints_after = true);
   bool checkTopology() const;
   bool flipIfIllegal();
   bool flipIfBetter(const double min_degree_to_flat = M_PI / 180., const double min_inner_angle = M_PI / 180., const int min_n = 5);
@@ -463,7 +519,7 @@ public:
   bool isAdjacentFacesFlat(const double) const;
   bool islegal() const;
   bool isGoodForQuadInterp() const noexcept {
-    if (this->CORNER)
+    if (this->BCInterface)
       return false;
     else
       return true;
@@ -473,14 +529,15 @@ public:
     // 周辺の三角形の状況から判断する
     if (this->Neumann && !this->isAdjacentFacesFlat(M_PI / 3.))
       return false;
-    if (this->CORNER)
+    if (this->BCInterface)
       return false;
     if (!this->islegal())
       return false;
     return true;
   };
   bool isMergeable() const;
-  netPp Collapse(const Tddd& externalTargetX = {1E+80, 1E+80, 1E+80});  // デフォルト = 内部決定
+  netPp Collapse(const Tddd& externalTargetX = {1E+80, 1E+80, 1E+80},
+                 bool update_midpoints_after = true);  // デフォルト = 内部決定
   netPp mergeIfMergeable(); // deleteしていない方のpointを返す
   //---------------------------------
   //  netP* operator()(netP* a){return this->Point2Point[a];};
@@ -662,6 +719,9 @@ public:
 public:
   std::array<double, 3> X_last;
   netPp tmpPoint;
+  // Scratch pointer used by Network::copyLocalPatch as an O(1) orig→copy map.
+  // Invariant: nullptr outside the scope of copyLocalPatch.
+  mutable networkPoint* patch_copy = nullptr;
   V_netLp Lines;
   std::vector<networkFace*> Faces;
   std::vector<networkTetra*> Tetras;
@@ -676,10 +736,10 @@ public:
 
   int Find(netL* l_IN) { return network::find(this->Lines, l_IN); };
 
-  bool erase(networkLine* l) { geom_curvature.valid = false; return ::erase_element(this->Lines, l); };
-  bool add(networkLine* l) { geom_curvature.valid = false; return ::add_element(this->Lines, l); };
-  bool erase(networkFace* f) { geom_curvature.valid = false; return ::erase_element(this->Faces, f); };
-  bool add(networkFace* f) { geom_curvature.valid = false; return ::add_element(this->Faces, f); };
+  bool erase(networkLine* l) { geom_curvature.valid = false; provider_target_curvature.invalidate(); return ::erase_element(this->Lines, l); };
+  bool add(networkLine* l) { geom_curvature.valid = false; provider_target_curvature.invalidate(); return ::add_element(this->Lines, l); };
+  bool erase(networkFace* f) { geom_curvature.valid = false; provider_target_curvature.invalidate(); return ::erase_element(this->Faces, f); };
+  bool add(networkFace* f) { geom_curvature.valid = false; provider_target_curvature.invalidate(); return ::add_element(this->Faces, f); };
 
 public:
   // 今のところBEMのためのもの
@@ -711,11 +771,11 @@ public:
   /* --------------------------------------------------------------------------
    */
 public:
-  V_netLp getLinesCORNER() const noexcept {
+  V_netLp getLinesBCInterface() const noexcept {
     V_netLp ret;
     ret.reserve(this->Lines.size());
     for (const auto& l : this->Lines)
-      if (l->CORNER)
+      if (l->BCInterface)
         ret.emplace_back(l);
     return ret;
   };
@@ -1008,7 +1068,7 @@ public:
   double b_diff_RHS_FMM = 0; //! FMMのため
   double b_RHS_Direct = 0;   //! FMMのため
   double b_RHS_FMM = 0;      //! FMMのため
-  // CORNER is inherited from BEM_DOF_Base
+  // BCInterface is inherited from BEM_DOF_Base
   bool Dirichlet = false;
   bool Neumann = false;
 
@@ -1016,30 +1076,30 @@ public:
    */
 
   std::map<Network*, int> net_depth;
-  int minDepthFromCORNER, minDepthFromCORNER_;             // remeshのために導入
+  int minDepthFromBCInterface, minDepthFromBCInterface_;             // remeshのために導入
   int minDepthFromMultipleNode, minDepthFromMultipleNode_; // remeshのために導入
   //
-  bool isCorner() const noexcept { return this->CORNER; };
+  bool isCorner() const noexcept { return this->BCInterface; };
   bool isDirichlet() const noexcept { return this->Dirichlet; };
   bool isNeumann() const noexcept { return this->Neumann; };
   void setC() {
     this->Dirichlet = false;
     this->Neumann = false;
-    this->CORNER = true;
+    this->BCInterface = true;
   };
-  void unsetC() { this->CORNER = false; };
+  void unsetC() { this->BCInterface = false; };
   //
   void setDirichlet() {
     this->Dirichlet = true;
     this->Neumann = false;
-    this->CORNER = false;
+    this->BCInterface = false;
   };
   void unsetDirichlet() { this->Dirichlet = false; };
   //
   void setNeumann() {
     this->Dirichlet = false;
     this->Neumann = true;
-    this->CORNER = false;
+    this->BCInterface = false;
   };
   void unsetNeumann() { this->Neumann = false; };
   void setD() { this->setDirichlet(); };
@@ -1154,6 +1214,7 @@ public:
     this->CoordinateBounds::setBounds(xyz_IN);
     this->Xtarget = xyz_IN;
     this->geom_curvature.valid = false;
+    this->provider_target_curvature.invalidate();
     for (auto* q : this->getNeighbors())
       if (q) q->geom_curvature.valid = false;
   };
@@ -1254,8 +1315,8 @@ public:
     return false;
   }
 
-  // sharp point: 隣接面の法線偏差が閾値を超える（角の上にいる）
-  bool SharpQ(double threshold = 20.0 * M_PI / 180.0) const noexcept;
+  // sharp point: sharp edge に接続する点
+  bool SharpQ(double threshold = 60.0 * M_PI / 180.0) const noexcept;
 
   // 隣接境界辺の長さの変動係数 (Coefficient of Variation, CV = σ/μ)
   // 隣接辺の長さがどれだけ揃っているか（local grading の指標）
@@ -1296,8 +1357,9 @@ public:
   V_netFp getFacesNeumann() const;
   V_netFp getFacesDirichlet() const;
 
-  V_netFp getFacesSort(networkLine* const l) const;
-  V_netFp getFacesSort() const;
+  V_netFp getBoundaryFacesSort(networkLine* const l) const;
+  V_netFp getBoundaryFacesSort() const;
+  std::vector<networkLine*> getBoundaryLinesSort(networkLine* const l) const;
 
   // V_d getNormal() const override;
   Tddd getNormalTuple() const;
@@ -1714,6 +1776,14 @@ public:
   //% ==================================================================
 
   std::array<std::shared_ptr<DodecaPoints>, 3> dodecaPoints;
+  enum class IntegrationInfoMode {
+    AutoFromElementType,
+    LinearOnly,
+    PseudoQuadratic,
+  };
+  void invalidateGeometryDependentCaches();
+  bool hasDodecaPoints() const;
+  void ensureDodecaPoints();
   void setDodecaPoints();
 
   // # ==================================================================
@@ -1721,7 +1791,7 @@ public:
   // # ==================================================================
 
   bool is_active_face = false;
-  int minDepthToCORNER;
+  int minDepthToBCInterface;
   Network* penetratedBody = nullptr;
 
   // Pressure-based detachment
@@ -1742,11 +1812,10 @@ public:
   using BEM_IGIGn_info_type = std::tuple<networkPoint*, networkFace*, double, double>;
   std::unordered_map<networkPoint*, std::vector<BEM_IGIGn_info_type>> map_Point_BEM_IGIGn_info_init;
 
-  void setIntegrationInfo();
-
   bool isPseudoQuadraticElement = false;
   bool isTrueQuadraticElement = false;
   bool isLinearElement = false;
+  void setIntegrationInfo(IntegrationInfoMode mode = IntegrationInfoMode::AutoFromElementType);
   std::vector<FaceBadQualityEvent> bad_quality_history;
 
   // # ------------------------------------------------------------------
@@ -1763,9 +1832,9 @@ public:
   // # ハイブリッド重み分配ルール（DodecaPoints::N6_new の else 分岐と同構造）:
   // #   - Dirichlet面: 全辺中点が独立DOF（full quadratic）
   // #   - Neumann面:
-  // #     - CORNER辺の中点: 独立DOF（重み保持）
-  // #     - 非CORNER辺の中点: 両端頂点に 0.5 ずつ再分配（実質linear）
-  // #   CORNER辺を0〜2本持つNeumann面が存在しうる。
+  // #     - BCInterface辺の中点: 独立DOF（重み保持）
+  // #     - 非BCInterface辺の中点: 両端頂点に 0.5 ずつ再分配（実質linear）
+  // #   BCInterface辺を0〜2本持つNeumann面が存在しうる。
   // # ------------------------------------------------------------------
 
   /// 求積点での事前計算データ（幾何・形状関数・重み）
@@ -1777,7 +1846,7 @@ public:
   };
 
   /// 6DOF のグローバルインデックス [0-2]=頂点, [3-5]=辺中点
-  /// 非活性な辺中点（非CORNER Neumann辺）は負値: 再分配済みのため直接参照しない
+  /// 非活性な辺中点（非BCInterface Neumann辺）は負値: 再分配済みのため直接参照しない
   std::array<int32_t, 6> true_quad_dof_indices = {-1, -1, -1, -1, -1, -1};
 
   /// 遠方非隣接ソース用の求積点（例: Dunavant p2m設定点数）
@@ -2061,10 +2130,11 @@ public:
       CoordinateBounds::setBounds(this->X);　伝播なし $  LineのsetBoundsSingle()
       ----> CoordinateBounds::setBounds(this->X);　伝播なし
       */
-      CoordinateBounds::setBounds(toX_this_points);
-      Triangle::setProperties(toX_this_points);
-      if (!isFinite(toX_this_points) || !isFinite(this->area) || !isFinite(this->normal) || !isFinite(this->angles))
-        return false; // OMP 並列内で throw は禁止
+	      CoordinateBounds::setBounds(toX_this_points);
+	      Triangle::setProperties(toX_this_points);
+	      invalidateGeometryDependentCaches();
+	      if (!isFinite(toX_this_points) || !isFinite(this->area) || !isFinite(this->normal) || !isFinite(this->angles))
+	        return false; // OMP 並列内で throw は禁止
       return true;
     } catch (...) {
       return false; // OMP 並列内で throw は禁止
@@ -2541,11 +2611,11 @@ public:
     auto [p0_f1, p1_f1, p2_f1] = (*l1)(this)->getPoints(l1); // f1
     auto [p0_f2, p1_f2, p2_f2] = (*l2)(this)->getPoints(l2); // f2
 
-    if (l0->CORNER)
+    if (l0->BCInterface)
       p2_f0 = nullptr;
-    if (l1->CORNER)
+    if (l1->BCInterface)
       p2_f1 = nullptr;
-    if (l2->CORNER)
+    if (l2->BCInterface)
       p2_f2 = nullptr;
     return {p2_f0, p2_f1, p2_f2, p0_f0, p0_f1, p0_f2};
   };
@@ -2589,8 +2659,8 @@ netL* unlink(netP* obj, netP* obj_);
 //@                         extract                        */
 //@ ------------------------------------------------------ */
 
-std::unordered_set<networkPoint*> extPointsCORNER_(const std::vector<networkPoint*>& ps);
-std::unordered_set<networkPoint*> extPointsCORNER_(const std::unordered_set<networkPoint*>& ps);
+std::unordered_set<networkPoint*> extPointsBCInterface_(const std::vector<networkPoint*>& ps);
+std::unordered_set<networkPoint*> extPointsBCInterface_(const std::unordered_set<networkPoint*>& ps);
 std::unordered_set<networkPoint*> extPointsCornerOrNeumann_(const std::vector<networkPoint*>& ps);
 std::unordered_set<networkPoint*> extPointsCornerOrNeumann_(const std::unordered_set<networkPoint*>& ps);
 
@@ -2598,15 +2668,15 @@ std::unordered_set<networkPoint*> extPointsCornerOrNeumann_(const std::unordered
 // b! ---------------------- extLines ---------------------- */
 // b! ------------------------------------------------------ */
 /* ------------------ for unordered_set ----------------- */
-std::unordered_set<networkLine*> extLinesCORNER_(const std::unordered_set<networkFace*>& fs);
+std::unordered_set<networkLine*> extLinesBCInterface_(const std::unordered_set<networkFace*>& fs);
 std::unordered_set<networkLine*> extLines_(const std::unordered_set<networkFace*>& fs);
-std::unordered_set<networkLine*> extLinesCORNER_(const std::unordered_set<networkPoint*>& ps);
-std::unordered_set<networkLine*> extLinesCORNER_(const networkPoint* p);
+std::unordered_set<networkLine*> extLinesBCInterface_(const std::unordered_set<networkPoint*>& ps);
+std::unordered_set<networkLine*> extLinesBCInterface_(const networkPoint* p);
 std::unordered_set<networkLine*> extLines_(const std::unordered_set<networkPoint*>& ps);
 /* --------------------- for vector --------------------- */
-std::unordered_set<networkLine*> extLinesCORNER_(const std::vector<networkFace*>& fs);
+std::unordered_set<networkLine*> extLinesBCInterface_(const std::vector<networkFace*>& fs);
 std::unordered_set<networkLine*> extLines_(const std::vector<networkFace*>& fs);
-std::unordered_set<networkLine*> extLinesCORNER_(const std::vector<networkPoint*>& ps);
+std::unordered_set<networkLine*> extLinesBCInterface_(const std::vector<networkPoint*>& ps);
 std::unordered_set<networkLine*> extLines_(const std::vector<networkPoint*>& ps);
 // b! ------------------------------------------------------ */
 // b! ------------------------------------------------------ */
@@ -2784,6 +2854,10 @@ netF* genFace(Network* const net, netL* const l0, netL* const l1, netL* const l2
 std::tuple<bool, networkTetra*> genTetra(Network* const net, netP* const p0, netP* const p1, netP* p2, netP* p3);
 std::tuple<bool, networkTetra*> genTetra(Network* const net, const T_4P& abcd);
 Tddd Nearest(const Tddd& X, const networkFace* f);
+Tddd NearestAnisotropic(const Tddd& X,
+                        const networkFace* f,
+                        double normal_axis_length,
+                        double tangent_axis_length);
 double Distance(const Tddd& X, const networkFace* f);
 std::tuple<Tddd, networkFace*> Nearest_(const Tddd& X, const std::unordered_set<networkFace*>& faces);
 std::tuple<Tddd, networkFace*> Nearest_(const Tddd& X, const std::vector<networkFace*>& faces);
@@ -2791,8 +2865,27 @@ std::tuple<Tddd, networkFace*> Nearest_(const Tddd& X, const double& r, const st
 Tddd Nearest(const Tddd& X, const std::vector<networkFace*>& faces);
 Tddd Nearest(const Tddd& X, const std::unordered_set<networkFace*>& faces);
 Tddd Nearest(const networkPoint* p, const std::unordered_set<networkFace*>& faces);
+struct DirectedHausdorffDistanceResult {
+  double distance = 0.;
+  bool exceeded = false;
+  long long samples = 0;
+  long long nearest_calls = 0;
+  bool has_witness = false;
+  Tddd query_point = {0., 0., 0.};
+  Tddd nearest_point = {0., 0., 0.};
+  int query_face_index = -1;
+  int target_face_index = -1;
+};
 double DirectedHausdorffDistance(const V_netFp& query_faces, const V_netFp& target_faces, int triangle_subdivision = 6);
 double DirectedHausdorffDistance(const V_netFp& query_faces, const V_Netp& target_networks, int triangle_subdivision = 6);
+DirectedHausdorffDistanceResult DirectedHausdorffDistanceWithLimit(const V_netFp& query_faces,
+                                                                   const V_netFp& target_faces,
+                                                                   int triangle_subdivision,
+                                                                   double limit);
+DirectedHausdorffDistanceResult DirectedHausdorffDistanceWithLimit(const V_netFp& query_faces,
+                                                                   const V_Netp& target_networks,
+                                                                   int triangle_subdivision,
+                                                                   double limit);
 
 /* -------------------------------------------------------------------------- */
 
@@ -2981,8 +3074,7 @@ T_3L ConnectedQ(const T_3P& abc);
 /*   @-@-@                                                                    */
 /*  ========================================================================= */
 
-class LumpedCable;
-class LumpedCableSystem;
+class MooringLine;
 class Network : public CoordinateBounds, public RigidBodyDynamics {
 public:
   virtual ~Network(); // = default;  // Virtual destructor
@@ -3092,6 +3184,8 @@ public:
   double GaussIntegral2(const Tddd& X) const;
   double GaussIntegral(const Tddd& X) const;
   double windingNumber(const Tddd& X) const;
+  bool InsideQExact(const Tddd& X) const;
+  std::optional<bool> InsideQByNearestNormal(const Tddd& X) const;
   bool InsideQ(const Tddd& X) const;
   std::vector<double> windingNumber(const std::vector<Tddd>& Xs) const;
   bool all_of_isInside(const std::vector<Tddd>& Xs) const;
@@ -3104,13 +3198,16 @@ public:
   std::unordered_set<networkPoint*> getContactPointsOfPoints(const std::vector<Network*>& nets) const;
 
   // b$ =================================================================== */
-  // b$       ３次元空間分割に関する．　バケツ．Faces,Points,ParametricPoints
+  // b$       ３次元空間分割に関する．Points/Tetras は Buckets, Faces は BVH
   // b$ =================================================================== */
 
 public:
-  Buckets<networkFace*> BucketFaces, BucketSurfaces;
   Buckets<networkPoint*> BucketPoints;
   Buckets<networkTetra*> BucketTetras;
+  BoundingVolumeHierarchy<networkFace*> FaceBVH;
+  BoundingVolumeHierarchy<networkFace*> BoundaryFaceBVH;
+  bool FaceBVHReady = false;
+  bool BoundaryFaceBVHReady = false;
 
   const double expand_bounds = 1.5;
 
@@ -3120,8 +3217,69 @@ public:
 
   void makeBucketTetras(double spacing = 1E+20);
 
-  /*面は点と違って，複数のバケツ（セル）と接することがある*/
-  void makeBucketFaces(double spacing = 1E+20);
+  void makeFaceBVH(double spacing = 1E+20);
+  void makeBoundingVolumeHierarchyForFaces();
+  void makeBoundingVolumeHierarchyForBoundaryFaces();
+
+  template <class Visitor>
+  void applyFacesNear(const Tddd& X, const double radius, Visitor&& visitor) const {
+    if (!(radius >= 0.0))
+      return;
+    if (this->FaceBVHReady && !this->FaceBVH.empty()) {
+      this->FaceBVH.apply(X, radius, std::forward<Visitor>(visitor));
+      return;
+    }
+    const double radius2 = radius * radius;
+    for (auto* f : this->getFaces()) {
+      if (!f)
+        continue;
+      const auto Y = ::Nearest(X, f);
+      if (NormSquared(Y - X) <= radius2)
+        visitor(f);
+    }
+  }
+
+  template <class Visitor>
+  void applyBoundaryFacesNear(const Tddd& X, const double radius, Visitor&& visitor) const {
+    if (!(radius >= 0.0))
+      return;
+    if (this->BoundaryFaceBVHReady && !this->BoundaryFaceBVH.empty()) {
+      this->BoundaryFaceBVH.apply(X, radius, std::forward<Visitor>(visitor));
+      return;
+    }
+    const double radius2 = radius * radius;
+    for (auto* f : this->getBoundaryFaces()) {
+      if (!f)
+        continue;
+      const auto Y = ::Nearest(X, f);
+      if (NormSquared(Y - X) <= radius2)
+        visitor(f);
+    }
+  }
+
+  template <class Visitor>
+  void applyBoundaryFacePairsNear(const Network& other, const double radius, Visitor&& visitor) const {
+    if (!(radius >= 0.0))
+      return;
+    if (this->BoundaryFaceBVHReady && !this->BoundaryFaceBVH.empty() &&
+        other.BoundaryFaceBVHReady && !other.BoundaryFaceBVH.empty()) {
+      this->BoundaryFaceBVH.applyPairsWithin(other.BoundaryFaceBVH, radius, std::forward<Visitor>(visitor));
+      return;
+    }
+
+    for (auto* fa : this->getBoundaryFaces()) {
+      if (!fa)
+        continue;
+      const auto ta = ToX(fa);
+      for (auto* fb : other.getBoundaryFaces()) {
+        if (!fb)
+          continue;
+        const auto [xa, xb] = ::Nearest(ta, ToX(fb));
+        if (NormSquared(xa - xb) <= radius * radius)
+          visitor(fa, fb);
+      }
+    }
+  }
 
   double last_makeBucketPoints_spacing = 0.;
 
@@ -3131,9 +3289,10 @@ public:
 
   std::vector<networkFace*> ContactFaces;
 
-  void setContactFaces(const std::vector<Network*>& nets) {
+  void setContactFaces(const std::vector<Network*>& nets, bool verbose = true) {
 
-    std::cout << this->getName() << " setContactFaces()" << std::endl;
+    if (verbose)
+      std::cout << this->getName() << " setContactFaces()" << std::endl;
     auto points = ToVector(this->Points);
     /*
      *  p->contact_range
@@ -3144,17 +3303,21 @@ public:
 
     this->setGeometricPropertiesForce();
 
+    auto lines = ToVector(this->getLines());
+    auto contact_range_from_local = [](double local_len) {
+      return (std::isfinite(local_len) && local_len > 0.0) ? 0.4 * local_len : 0.0;
+    };
+
     for (const auto& p : points) {
-      p->setContactRange(nets);
+      p->contact_range = contact_range_from_local(localEdgeLength(p));
       p->clearContactFaces();
     }
 
     _Pragma("omp parallel for") for (const auto& p : points)
         p->addContactFaces(nets, false);
     // Lines の接触判定（端点の contact_range 設定後に実行）
-    auto lines = ToVector(this->getLines());
     for (const auto& l : lines) {
-      l->setContactRange();
+      l->contact_range = contact_range_from_local(localEdgeLength(l));
       l->clearContactFaces();
     }
 
@@ -3193,9 +3356,9 @@ public:
   Nearestは，外部のNearest関数と似たように，Networkの境界面上の最も近い点を返す．
   ただし，Network内の面に限定して探索を行う．
   */
-  std::tuple<networkFace*, std::array<double, 3>> Nearest(const std::array<double, 3>& X, const std::function<Tddd(const networkPoint*)>& position = [](const networkPoint* p) { return p->X; }) const {
+  std::tuple<networkFace*, Tddd> NearestByFullScan(const Tddd& X, const std::function<Tddd(const networkPoint*)>& position = [](const networkPoint* p) { return p->X; }) const {
     double min_distance = 1E+20, r;
-    std::tuple<networkFace*, std::array<double, 3>> ret = {nullptr, {1E+20, 1E+20, 1E+20}};
+    std::tuple<networkFace*, Tddd> ret = {nullptr, {1E+20, 1E+20, 1E+20}};
     T3Tddd X0X1X2;
     Tddd X_nearest;
     for (const auto& f : this->getBoundaryFaces()) {
@@ -3209,9 +3372,24 @@ public:
     return ret;
   }
 
+  std::tuple<networkFace*, Tddd> Nearest(const Tddd& X) const {
+    if (this->BoundaryFaceBVHReady && !this->BoundaryFaceBVH.empty()) {
+      const auto result = this->BoundaryFaceBVH.nearest(X, [&](networkFace* f) {
+        return ::Nearest(X, f);
+      });
+      if (result.found)
+        return {result.item, result.point};
+    }
+    return this->NearestByFullScan(X);
+  }
+
+  std::tuple<networkFace*, Tddd> Nearest(const Tddd& X, const std::function<Tddd(const networkPoint*)>& position) const {
+    return this->NearestByFullScan(X, position);
+  }
+
   // query_faces 上に一様サンプル点を置き，この Network の境界面への最近点距離の最大値を返す．
   double DirectedHausdorffDistance(const V_netFp& query_faces, const int triangle_subdivision = 6) const {
-    return ::DirectedHausdorffDistance(query_faces, this->getBoundaryFaces(), triangle_subdivision);
+    return ::DirectedHausdorffDistance(query_faces, V_Netp{const_cast<Network*>(this)}, triangle_subdivision);
   }
 
   // @ ============================================================== */
@@ -3326,7 +3504,7 @@ public:
   境界要素法用のNetworkには，以下が設定されている．
 
   * bool BASE;
-  * bool CORNER;
+  * bool BCInterface;
   * bool Dirichlet;
   * bool Neumann;
 
@@ -3579,10 +3757,10 @@ public:
   std::vector<networkPoint*> getBoundaryPoints() const;
   /* ------------------------------ 境界条件に関する設定関数 ------------------------------ */
 
-  std::unordered_set<networkPoint*> getPointsCORNER() const;
+  std::unordered_set<networkPoint*> getPointsBCInterface() const;
   std::unordered_set<networkPoint*> getPointsNeumann() const;
   std::unordered_set<networkPoint*> getPointsDirichlet() const;
-  void setMinDepthFromCORNER();
+  void setMinDepthFromBCInterface();
 
   /* --------------------------------------------------------------------------*/
 
@@ -3700,13 +3878,7 @@ public:
 
   /* ------------------------------------------------------ */
 public:
-  // Phase 2 (2026-04-12): cable_system replaces the old `mooringLines` vector.
-  // It owns the LumpedCable instances (RAII via unique_ptr) and exposes the
-  // unified API for both the bridge-cable use case (`solveEquilibrium()`) and
-  // the BEM time-loop use case (`advanceRKStage()` + `commitRKStep()` +
-  // `forceOnBody()`). BEM call sites that iterated
-  // `for (auto& m : net->mooringLines)` now use `net->cable_system->cables()`.
-  std::unique_ptr<LumpedCableSystem> cable_system;
+  std::vector<MooringLine*> mooringLines;
 
 #ifdef tetgenH
 
@@ -4219,9 +4391,9 @@ inline T4T3P ToT4T3P(const T_4P& p0123) {
 //    PseudoQuadPatch(const networkPoint *origin, const networkFace *f)
 //        : p_of_face(f->getPoints(origin)),
 //          l_of_face(f->getLinesTupleFrom(std::get<0>(p_of_face))),
-//          ignore({!std::get<1>(l_of_face)->CORNER,
-//                  !std::get<2>(l_of_face)->CORNER,
-//                  !std::get<0>(l_of_face)->CORNER}),
+//          ignore({!std::get<1>(l_of_face)->BCInterface,
+//                  !std::get<2>(l_of_face)->BCInterface,
+//                  !std::get<0>(l_of_face)->BCInterface}),
 //          points({f->getPointOpposite(std::get<1>(l_of_face)) /*0*/,
 //                  f->getPointOpposite(std::get<2>(l_of_face)) /*1*/,
 //                  f->getPointOpposite(std::get<0>(l_of_face)) /*2*/,
@@ -4268,9 +4440,9 @@ struct PseudoQuadPatch {
   // PseudoQuadPatch(const networkLine *origin_line, const networkFace *f) : f(f),
   // PLPLPL(f->getPointsAndLines(origin_line)) { initialize(); };
 
-  PseudoQuadPatch(networkFace* f, const networkPoint* origin_point = nullptr, std::function<bool(const networkLine*)> checker = [](const networkLine* line) { return !line->CORNER && line->getBoundaryFaces().size() == 2; }) : f(f), PLPLPL(f->getPointsAndLinesFromNearest(origin_point)), conditionChecker(checker) { initialize(); };
+  PseudoQuadPatch(networkFace* f, const networkPoint* origin_point = nullptr, std::function<bool(const networkLine*)> checker = [](const networkLine* line) { return !line->BCInterface && line->getBoundaryFaces().size() == 2; }) : f(f), PLPLPL(f->getPointsAndLinesFromNearest(origin_point)), conditionChecker(checker) { initialize(); };
 
-  PseudoQuadPatch(networkFace* f, const networkLine* origin_line = nullptr, std::function<bool(const networkLine*)> checker = [](const networkLine* line) { return !line->CORNER && line->getBoundaryFaces().size() == 2; }) : f(f), PLPLPL(f->getPointsAndLines(origin_line)), conditionChecker(checker) { initialize(); };
+  PseudoQuadPatch(networkFace* f, const networkLine* origin_line = nullptr, std::function<bool(const networkLine*)> checker = [](const networkLine* line) { return !line->BCInterface && line->getBoundaryFaces().size() == 2; }) : f(f), PLPLPL(f->getPointsAndLines(origin_line)), conditionChecker(checker) { initialize(); };
 
   void initialize() {
     auto [p0, l0, p1, l1, p2, l2] = this->PLPLPL;
@@ -4442,7 +4614,7 @@ struct DodecaPoints {
   };
 
   DodecaPoints(
-      networkFace* f, const networkPoint* origin_point = nullptr, std::function<bool(const networkLine*)> checker = [](const networkLine* line) { return !line->CORNER && line->getBoundaryFaces().size() == 2; })
+      networkFace* f, const networkPoint* origin_point = nullptr, std::function<bool(const networkLine*)> checker = [](const networkLine* line) { return !line->BCInterface && line->getBoundaryFaces().size() == 2; })
       : f(f), conditionChecker(checker), quadpoint(f, origin_point, checker), PLPLPL(quadpoint.PLPLPL), l0(std::get<1>(PLPLPL)), l1(std::get<3>(PLPLPL)), l2(std::get<5>(PLPLPL)), available(quadpoint.available), f0(l0->getBoundaryFaces().size() == 1 ? l0->getBoundaryFaces()[0] : (l0->getBoundaryFaces()[0] == f ? l0->getBoundaryFaces()[1] : l0->getBoundaryFaces()[0])),
         f1(l1->getBoundaryFaces().size() == 1 ? l1->getBoundaryFaces()[0] : (l1->getBoundaryFaces()[0] == f ? l1->getBoundaryFaces()[1] : l1->getBoundaryFaces()[0])), f2(l2->getBoundaryFaces().size() == 1 ? l2->getBoundaryFaces()[0] : (l2->getBoundaryFaces()[0] == f ? l2->getBoundaryFaces()[1] : l2->getBoundaryFaces()[0])), quadpoint_l0(f0, l0, checker), quadpoint_l1(f1, l1, checker), quadpoint_l2(f2, l2, checker) {};
   /*
@@ -4621,16 +4793,16 @@ struct DodecaPoints {
     return {Nc, Nl0, Nl1, Nl2};
   };
 
-  // CORNER edge quadratic offset at parametric coordinates
+  // BCInterface edge quadratic offset at parametric coordinates
   // Returns {0,0,0} when all offsets are zero (inactive)
   Tddd corner_offset(const double t0, const double t1) const {
     const auto [N0, N1, N2, N3, N4, N5] = TriShape<6>(t0, t1);
     Tddd offset = {0., 0., 0.};
-    if (!this->conditionChecker(this->l0) && this->l0->CORNER)
+    if (!this->conditionChecker(this->l0) && this->l0->BCInterface)
       offset += N3 * this->l0->corner_midpoint_offset;
-    if (!this->conditionChecker(this->l1) && this->l1->CORNER)
+    if (!this->conditionChecker(this->l1) && this->l1->BCInterface)
       offset += N4 * this->l1->corner_midpoint_offset;
-    if (!this->conditionChecker(this->l2) && this->l2->CORNER)
+    if (!this->conditionChecker(this->l2) && this->l2->BCInterface)
       offset += N5 * this->l2->corner_midpoint_offset;
     return offset;
   };
@@ -4766,18 +4938,18 @@ struct DodecaPoints {
     Tddd dXdt0 = Dot(DNc_t0, X_c) + Dot(DNl0_t0, X_l0) + Dot(DNl1_t0, X_l1) + Dot(DNl2_t0, X_l2);
     Tddd dXdt1 = Dot(DNc_t1, X_c) + Dot(DNl0_t1, X_l0) + Dot(DNl1_t1, X_l1) + Dot(DNl2_t1, X_l2);
 
-    // CORNER edge quadratic correction (offset is {0,0,0} when not active)
-    if (!this->conditionChecker(this->l0) && this->l0->CORNER) {
+    // BCInterface edge quadratic correction (offset is {0,0,0} when not active)
+    if (!this->conditionChecker(this->l0) && this->l0->BCInterface) {
       X += N3 * this->l0->corner_midpoint_offset;
       dXdt0 += DN3_t0 * this->l0->corner_midpoint_offset;
       dXdt1 += DN3_t1 * this->l0->corner_midpoint_offset;
     }
-    if (!this->conditionChecker(this->l1) && this->l1->CORNER) {
+    if (!this->conditionChecker(this->l1) && this->l1->BCInterface) {
       X += N4 * this->l1->corner_midpoint_offset;
       dXdt0 += DN4_t0 * this->l1->corner_midpoint_offset;
       dXdt1 += DN4_t1 * this->l1->corner_midpoint_offset;
     }
-    if (!this->conditionChecker(this->l2) && this->l2->CORNER) {
+    if (!this->conditionChecker(this->l2) && this->l2->BCInterface) {
       X += N5 * this->l2->corner_midpoint_offset;
       dXdt0 += DN5_t0 * this->l2->corner_midpoint_offset;
       dXdt1 += DN5_t1 * this->l2->corner_midpoint_offset;
@@ -5311,13 +5483,8 @@ inline bool networkPoint::ComputationalBoundaryQ() const noexcept {
 }
 
 inline bool networkPoint::SharpQ(double threshold) const noexcept {
-  auto faces = this->getBoundaryFaces();
-  Tddd n_avg = {0., 0., 0.};
-  for (auto* f : faces)
-    n_avg += f->area * f->normal;
-  n_avg = Normalize(n_avg);
-  for (auto* f : faces)
-    if (!isFlat(n_avg, f->normal, threshold))
+  for (auto* l : this->getBoundaryLines())
+    if (l && l->SharpQ(threshold))
       return true;
   return false;
 }
@@ -5343,13 +5510,25 @@ inline double networkPoint::localEdgeLengthCV() const noexcept {
 inline bool networkLine::SharpQ(double threshold) const noexcept {
   auto faces = this->getBoundaryFaces();
   if (faces.size() < 2) return false;
-  Tddd n_avg = {0., 0., 0.};
-  for (auto* f : faces)
-    n_avg += f->area * f->normal;
-  n_avg = Normalize(n_avg);
-  for (auto* f : faces)
-    if (!isFlat(n_avg, f->normal, threshold))
-      return true;
+
+  std::vector<Tddd> normals;
+  normals.reserve(faces.size());
+  for (auto* f : faces) {
+    if (!f || !(f->area > 0.0) || !isFinite(f->normal)) continue;
+    const double nn = Norm(f->normal);
+    if (!(nn > 0.0) || !std::isfinite(nn)) continue;
+    normals.emplace_back(f->normal / nn);
+  }
+  if (normals.size() < 2) return false;
+
+  const double cos_threshold = std::cos(threshold);
+  constexpr double eps = 1e-12;
+  for (std::size_t i = 0; i < normals.size(); ++i)
+    for (std::size_t j = i + 1; j < normals.size(); ++j) {
+      const double c = std::clamp(Dot(normals[i], normals[j]), -1.0, 1.0);
+      if (c < cos_threshold - eps)
+        return true;
+    }
   return false;
 }
 
@@ -5406,7 +5585,7 @@ inline networkTetra* networkFace::getOutsideTetra() const noexcept {
   return nullptr;
 }
 
-#include "LumpedCable.hpp"
+#include "MooringLine.hpp"
 #include "NetworkUtility.hpp"
 // #include "networkFace.cpp"
 // #include "networkLine.cpp"

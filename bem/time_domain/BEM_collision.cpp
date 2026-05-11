@@ -169,7 +169,7 @@ CollisionDetectionResult detectNonAdjacentCollisions(
     double proximity_threshold) {
    CollisionDetectionResult result;
 
-   water.makeBucketFaces(proximity_threshold * 2.0);
+   water.makeFaceBVH(proximity_threshold * 2.0);
 
    auto boundary_faces = water.getBoundaryFaces();
 
@@ -177,7 +177,11 @@ CollisionDetectionResult detectNonAdjacentCollisions(
       auto fp = f->getPoints();
       Tddd centroid_f = (fp[0]->X + fp[1]->X + fp[2]->X) / 3.0;
 
-      auto nearby = water.BucketFaces.getData(centroid_f, proximity_threshold * 2.0);
+      std::vector<networkFace*> nearby;
+      water.applyFacesNear(centroid_f, proximity_threshold * 2.0, [&](networkFace* g) {
+         if (g)
+            nearby.emplace_back(g);
+      });
 
       for (auto* g : nearby) {
          if (g == f)

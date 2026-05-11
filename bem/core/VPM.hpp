@@ -29,7 +29,7 @@
 struct VortexParticle {
   std::array<double, 3> x;     //!< 粒子位置
   std::array<double, 3> alpha; //!< 渦強度ベクトル (alpha = omega * volume)
-  double sigma;                //!< コア半径 (正則化パラメータ)　ｙ
+  double sigma;                //!< コア半径 (正則化パラメータ)
   double volume;               //!< 粒子体積
 
   // 時間発展計算用の一時変数
@@ -63,6 +63,21 @@ public:
     Curvature,
   };
 
+  struct VPMDiagnostics {
+    std::size_t particle_count = 0;
+    std::size_t pse_correction_success = 0;
+    std::size_t pse_correction_failure = 0;
+    double min_sigma = std::numeric_limits<double>::infinity();
+    double max_sigma = 0.0;
+    double max_u = 0.0;
+    double max_strain_rate = 0.0;
+
+    double pseCorrectionFailureRatio() const {
+      const std::size_t total = pse_correction_success + pse_correction_failure;
+      return total > 0 ? static_cast<double>(pse_correction_failure) / static_cast<double>(total) : 0.0;
+    }
+  };
+
 private:
   double nu; // basic_constants.hppで定義されていると仮定
   StretchingScheme stretching_scheme = StretchingScheme::Standard;
@@ -79,6 +94,8 @@ private:
   double pse_correction_max_dimless_coeff = 1e3;    // safety clamp for ill-conditioned neighborhoods
   std::vector<VortexParticle> particles;
   std::function<std::array<double, 3>(const std::array<double, 3> &)> potentialField;
+  std::size_t last_pse_correction_success_ = 0;
+  std::size_t last_pse_correction_failure_ = 0;
 
   // --- BEM coupling state (managed by configure()) ---
   bool enabled_ = false;
@@ -329,6 +346,27 @@ private:
     double max_sigma_search = 0.0;
   };
 
+  VPMDiagnostics diagnostics_;
+
+  void refreshDiagnostics() {
+    VPMDiagnostics d;
+    d.particle_count = particles.size();
+    d.pse_correction_success = last_pse_correction_success_;
+    d.pse_correction_failure = last_pse_correction_failure_;
+
+    constexpr double eps = 1e-16;
+    for (const auto &p : particles) {
+      d.min_sigma = std::min(d.min_sigma, p.sigma);
+      d.max_sigma = std::max(d.max_sigma, p.sigma);
+      d.max_u = std::max(d.max_u, Norm(p.u_total));
+      const double a = Norm(p.alpha);
+      if (a > eps)
+        d.max_strain_rate = std::max(d.max_strain_rate, Norm(p.d_alpha_dt) / a);
+    }
+
+    diagnostics_ = d;
+  }
+
 	  WallFluxStats injectWallVorticityFluxPSE_core(Network *boundaryNet, double dt, std::size_t min_absorb_receivers, double min_absorb_total_weight, double sigma_factor, bool allow_shed) {
 	    WallFluxStats stats;
 	    if (!boundaryNet)
@@ -433,8 +471,7 @@ private:
       // Used only during injection:
       // - sigma_search: range for deciding absorption (distribute into existing near-wall particles).
       //   (We use `min_absorb_total_weight` to robustly decide absorb vs shed, even if the neighborhood is sparse.)
-      // - sigma_search also defines the injection distance when shedding new particles.
-      //   (No separate sigma_inject variable to avoid confusion.)
+      // - the shed location is separate: center - normal*sigma.
       const double sigma_search = std::max(sigma, sigma_heat);
       if (!(sigma_search > sigma_eps) || !std::isfinite(sigma_search))
         continue;
@@ -515,6 +552,7 @@ public:
 
   const std::vector<VortexParticle> &getParticles() const { return particles; }
   std::vector<VortexParticle> &getParticles() { return particles; }
+  const VPMDiagnostics &getDiagnostics() const { return diagnostics_; }
 
   struct SuggestedTimeStep {
     double dt = std::numeric_limits<double>::infinity();
@@ -595,8 +633,9 @@ public:
 
   /**
    * @brief ストレッチング項の計算
-   * Standard:  dα_i/dt = (α_i·∇)u = (∇u) α_i
-   * Transpose: dα_i/dt = (∇u)^T α_i   (Cottet & Koumoutsakos Eq. 3.1.7)
+   * 現行実装はRosenhead-Moore核の粒子対微分だけを使い，BEMポテンシャル速度勾配は含めない。
+   * Standard:  dα_i/dt = (α_i·∇)u_omega = (∇u_omega) α_i
+   * Transpose: dα_i/dt = (∇u_omega)^T α_i   (Cottet & Koumoutsakos Eq. 3.1.7)
    */
   void computeStretching() {
 // ストレッチング計算はO(N^2)なので並列化推奨
@@ -649,13 +688,16 @@ public:
   }
 
   /**
-   * @brief 粘性拡散項の計算 (PSE: Potential Singularity Expansion)
+   * @brief 粘性拡散項の計算 (PSE: Particle Strength Exchange)
    * * d(alpha_i)/dt = nu * nabla^2 (alpha_i)
    * * ここでは、他の粒子との相互作用による拡散項を計算する。
    * @param nu 粘性係数
    */
 
   void computeDiffusionPSE() {
+    last_pse_correction_success_ = 0;
+    last_pse_correction_failure_ = 0;
+
     if (nu <= 0.0 || particles.size() < 2)
       return;
 
@@ -719,6 +761,8 @@ public:
     // To preserve the antisymmetry of the exchange flux (and thus conservation),
     // the pairwise correction factor is symmetrized as: f_ij = 0.5*(p_i(r_ij) + p_j(r_ji)).
     std::vector<std::array<double, 9>> corr(n_perm);
+    std::size_t correction_success = 0;
+    std::size_t correction_failure = 0;
 #pragma omp parallel for
     for (std::size_t i = 0; i < n_perm; ++i) {
       corr[i].fill(0.0);
@@ -732,14 +776,27 @@ public:
           corr[i][0] = c3[0];
           corr[i][1] = c3[1];
           corr[i][2] = c3[2];
+#pragma omp atomic update
+          ++correction_success;
+        } else {
+#pragma omp atomic update
+          ++correction_failure;
         }
       } else if (pse_correction_mode == PSECorrectionMode::Curvature) {
         std::array<double, 9> c9{};
         if (computePSECorrectionCoeffs<9>(pi, i, particles, c9, pse_correction_second_moment_target, cutoff_ratio, pse_correction_regularization_rel, pse_correction_max_dimless_coeff)) {
           corr[i] = c9;
+#pragma omp atomic update
+          ++correction_success;
+        } else {
+#pragma omp atomic update
+          ++correction_failure;
         }
       }
     }
+
+    last_pse_correction_success_ = correction_success;
+    last_pse_correction_failure_ = correction_failure;
 
 #pragma omp parallel for
     for (std::size_t i = 0; i < n_perm; ++i) {
@@ -878,6 +935,15 @@ public:
     computeStretching(); // overwrites d_alpha_dt
   }
 
+  // Refresh velocity and stretching fields used by dt heuristics without advancing particles.
+  void refreshKinematicsForDt(std::function<std::array<double, 3>(const std::array<double, 3> &)> bemVelocityCallback) {
+    if (!enabled_)
+      return;
+    set_u_potential_BEM(std::move(bemVelocityCallback));
+    calcVelocityAndStretching();
+    refreshDiagnostics();
+  }
+
   // Explicit diffusion step applied once per time-step (operator splitting).
   // This updates alpha as: alpha <- alpha + dt * PSE(alpha).
   // `d_alpha_dt` is restored to the pre-diffusion value so that dt heuristics based on
@@ -903,6 +969,15 @@ public:
 
     for (std::size_t i = 0; i < particles.size(); ++i)
       particles[i].d_alpha_dt = backup_dadt[i];
+
+    if (last_pse_correction_failure_ > 0) {
+      const auto total = last_pse_correction_success_ + last_pse_correction_failure_;
+      const double ratio = total > 0 ? static_cast<double>(last_pse_correction_failure_) / static_cast<double>(total) : 0.0;
+      std::cout << "[VPM:PSE] correction_success=" << last_pse_correction_success_
+                << " correction_failure=" << last_pse_correction_failure_
+                << " failure_ratio=" << ratio << std::endl;
+    }
+    refreshDiagnostics();
   }
 
   void calcVelocityAndStretching() { calcVelocityAndDerivatives(); }
@@ -987,7 +1062,8 @@ public:
       Print("[dt] limited by VPM:", "dt=", vpm_dt.dt, "dt_strain=", vpm_dt.dt_strain,
             "dt_diffusion=", vpm_dt.dt_diffusion, "dt_move=", vpm_dt.dt_move,
             "max_strain_rate=", vpm_dt.max_strain_rate, "max_u=", vpm_dt.max_u,
-            "min_sigma=", vpm_dt.min_sigma, "particles=", vpm_dt.particle_count);
+            "min_sigma=", vpm_dt.min_sigma, "particles=", vpm_dt.particle_count,
+            "pse_correction_failure=", diagnostics_.pse_correction_failure);
     }
     dt = std::min(dt, vpm_dt.dt);
   }
@@ -1038,8 +1114,9 @@ public:
       auto boundary_lines = water->getBoundaryLines();
       _Pragma("omp parallel for") for (size_t il = 0; il < boundary_lines.size(); ++il) {
         auto *l = boundary_lines[il];
-        // 要素タイプに依らず midpoint で VPM 速度を評価（可視化・デバッグ整合性）
-        l->u_omega_VPM = computeVelocity(l->X_mid);
+        bool has_true_quad = std::ranges::any_of(l->getBoundaryFaces(), [](const auto *f) { return f->isTrueQuadraticElement; });
+        if (has_true_quad)
+          l->u_omega_VPM = computeVelocity(l->X_mid);
         if (!l->Neumann)
           continue;
         for (auto &[face, dd] : l->dofs) {

@@ -1256,9 +1256,7 @@ template <std::size_t N> void lapack_svd_solve(const std::array<std::array<doubl
 // lapack_svd_solve for std::vector<double,std::vector<double>>
 
 inline void lapack_svd_solve(const std::vector<std::vector<double>> &A, std::vector<double> &x, const std::vector<double> &b) {
-  // NOTE: reference LAPACK dgesvd_ is NOT thread-safe.
-  // OMP parallel region 内で呼ぶ場合は omp critical で保護するか、
-  // 小行列なら正規方程式 + Cholesky で代替すること。
+  // ローカル変数にキャストしてポインタを渡せるようにする
   int m = A.size();
   int n = A[0].size();
   int lda = m, ldu = m, ldvt = n, info;

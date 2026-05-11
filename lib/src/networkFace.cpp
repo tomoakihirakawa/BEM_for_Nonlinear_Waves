@@ -22,7 +22,6 @@ bool networkFace::replace(netP* const oldP, netP* const newP) {
     else if (std::get<4>(this->PLPLPL) == oldP)
       std::get<4>(this->PLPLPL) = newP;
 
-    // 面の全頂点を invalidate（法線・面積が変わるため）
     auto [p0, p1, p2] = this->Points;
     if (p0) p0->geom_curvature.valid = false;
     if (p1) p1->geom_curvature.valid = false;
@@ -30,7 +29,7 @@ bool networkFace::replace(netP* const oldP, netP* const newP) {
     if (oldP) oldP->geom_curvature.valid = false;
   }
   return found;
-};
+}
 
 namespace {
 
@@ -54,6 +53,26 @@ bool isFaceNeumannFromPointFaceStatesLocal(const networkFace* f) {
 
 } // namespace
 
+void networkFace::invalidateGeometryDependentCaches() {
+  dodecaPoints = {};
+  map_Point_BEM_IGIGn_info_init.clear();
+  map_Point_LinearIntegrationInfo_vector.clear();
+  map_Point_PseudoQuadraticIntegrationInfo_vector.clear();
+  true_quad_qp_far.clear();
+  true_quad_qp_near.clear();
+  for (auto& qps : true_quad_qp_duffy)
+    qps.clear();
+}
+
+bool networkFace::hasDodecaPoints() const {
+  return std::get<0>(dodecaPoints) && std::get<1>(dodecaPoints) && std::get<2>(dodecaPoints);
+}
+
+void networkFace::ensureDodecaPoints() {
+  if (!hasDodecaPoints())
+    setDodecaPoints();
+}
+
 void networkFace::setDodecaPoints() {
   try {
     // setIntegrationInfo用に統一した条件（useOppositeFace）を使用
@@ -62,7 +81,10 @@ void networkFace::setDodecaPoints() {
     std::get<1>(this->dodecaPoints) = std::make_shared<DodecaPoints>(this, std::get<1>(this->Points), condition);
     std::get<2>(this->dodecaPoints) = std::make_shared<DodecaPoints>(this, std::get<2>(this->Points), condition);
   } catch (...) {
-    // OMP 並列内で throw は禁止。エラーを無視。
+    std::cout << "this : " << this << std::endl;
+    std::cout << "this->Lines : " << this->Lines << std::endl;
+    std::cout << "this->Points : " << this->Points << std::endl;
+    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "Error in setting DodecaPoints");
   }
 }
 
@@ -74,21 +96,43 @@ void networkFace::setDodecaPoints() {
    `map_Point_BEM_IGIGn_info_init`とは，
 */
 
-void networkFace::setIntegrationInfo() {
-  // set linear integration info
+void networkFace::setIntegrationInfo(networkFace::IntegrationInfoMode mode) {
   this->map_Point_BEM_IGIGn_info_init.clear();
   this->map_Point_LinearIntegrationInfo_vector.clear();
   this->map_Point_LinearIntegrationInfo_vector.resize(3);
   this->map_Point_PseudoQuadraticIntegrationInfo_vector.clear();
-  this->map_Point_PseudoQuadraticIntegrationInfo_vector.resize(3);
-
-  // 最適化: 既存のdodecaPointsを再利用（なければ作成）
-  if (!std::get<0>(this->dodecaPoints))
-    this->setDodecaPoints();
+  const bool build_pseudo =
+      mode == IntegrationInfoMode::PseudoQuadratic ||
+      (mode == IntegrationInfoMode::AutoFromElementType && isPseudoQuadraticElement);
+  if (build_pseudo) {
+    this->map_Point_PseudoQuadraticIntegrationInfo_vector.resize(3);
+    this->ensureDodecaPoints();
+  }
 
   //@ -------------------------------------------------------------------------- */
-  auto addIntegrationInfo = [&](networkPoint *const p, const DodecaPoints &dodecapoint) {
-    //% -------------------------------------------------------------------------- */
+  auto addLinearIntegrationInfo = [&](networkPoint *const p) {
+    auto X012 = ToX(this->getPoints(p));
+    const auto cross_linear = Cross(X012[1] - X012[0], X012[2] - X012[0]);
+    const auto norm_cross_linear = Norm(cross_linear);
+
+    auto add = [&](const int i, const auto &GWGW) {
+      std::vector<linear_triangle_integration_info> info_linears;
+      info_linears.reserve(GWGW.size());
+
+      for (const auto &[t0, t1, ww] : GWGW) {
+        auto N012_geometry = ModTriShape<3>(t0, t1);
+        auto X = Dot(N012_geometry, X012);
+        const double weight = ww * (1. - t0);
+        info_linears.emplace_back(linear_triangle_integration_info{Tdd{t0, t1}, weight, N012_geometry, X, cross_linear, norm_cross_linear});
+      }
+      this->map_Point_LinearIntegrationInfo_vector[i][p] = std::move(info_linears);
+    };
+    add(0, __array_GW1xGW1__);
+    add(1, __array_GW5xGW5__);
+    add(2, __array_GW10xGW10__);
+  };
+
+  auto addPseudoQuadraticIntegrationInfo = [&](networkPoint *const p, const DodecaPoints &dodecapoint) {
     std::vector<BEM_IGIGn_info_type> temp;
     temp.reserve(24); // 6点 × 4 PseudoQuadPatch
     for (const auto &[pt, f] : dodecapoint.quadpoint.points_faces)
@@ -100,30 +144,19 @@ void networkFace::setIntegrationInfo() {
     for (const auto &[pt, f] : dodecapoint.quadpoint_l2.points_faces)
       temp.push_back({pt, f, 0., 0.});
     this->map_Point_BEM_IGIGn_info_init[p] = std::move(temp);
-    //% -------------------------------------------------------------------------- */
-    auto X012 = ToX(this->getPoints(p));
-    // 線形要素用のcrossは定数なので事前計算
-    const auto cross_linear = Cross(X012[1] - X012[0], X012[2] - X012[0]);
-    const auto norm_cross_linear = Norm(cross_linear);
 
     auto add = [&](const int i, const auto &GWGW) {
-      std::vector<linear_triangle_integration_info> info_linears;
       std::vector<pseudo_quadratic_triangle_integration_info> info_quadratics;
-      info_linears.reserve(GWGW.size());
       info_quadratics.reserve(GWGW.size());
 
       for (const auto &[t0, t1, ww] : GWGW) {
         auto N012_geometry = ModTriShape<3>(t0, t1);
-        auto X = Dot(N012_geometry, X012);
         const double weight = ww * (1. - t0);
-        info_linears.emplace_back(linear_triangle_integration_info{Tdd{t0, t1}, weight, N012_geometry, X, cross_linear, norm_cross_linear});
-        //$ ------------------------------------ */
         auto [xi0, xi1, xi2] = N012_geometry;
-        // 最適化: X_N6_cross()で一度に計算
+        (void)xi2;
         auto [X_quad, Nc_N0_N1_N2, cross_quad] = dodecapoint.X_N6_cross(xi0, xi1);
         info_quadratics.emplace_back(pseudo_quadratic_triangle_integration_info{Tdd{t0, t1}, weight, Nc_N0_N1_N2, X_quad, cross_quad, Norm(cross_quad)});
       }
-      this->map_Point_LinearIntegrationInfo_vector[i][p] = std::move(info_linears);
       this->map_Point_PseudoQuadraticIntegrationInfo_vector[i][p] = std::move(info_quadratics);
     };
     add(0, __array_GW1xGW1__);
@@ -133,9 +166,14 @@ void networkFace::setIntegrationInfo() {
   //@ -------------------------------------------------------------------------- */
 
   auto [p0, p1, p2] = this->getPoints();
-  addIntegrationInfo(p0, *std::get<0>(this->dodecaPoints));
-  addIntegrationInfo(p1, *std::get<1>(this->dodecaPoints));
-  addIntegrationInfo(p2, *std::get<2>(this->dodecaPoints));
+  addLinearIntegrationInfo(p0);
+  addLinearIntegrationInfo(p1);
+  addLinearIntegrationInfo(p2);
+  if (build_pseudo) {
+    addPseudoQuadraticIntegrationInfo(p0, *std::get<0>(this->dodecaPoints));
+    addPseudoQuadraticIntegrationInfo(p1, *std::get<1>(this->dodecaPoints));
+    addPseudoQuadraticIntegrationInfo(p2, *std::get<2>(this->dodecaPoints));
+  }
 };
 
 Tddd networkFace::normalVelocityRigidBody(const Tddd &X) const { return this->normal * Dot(this->normal, this->network->velocityRigidBody(X)); };

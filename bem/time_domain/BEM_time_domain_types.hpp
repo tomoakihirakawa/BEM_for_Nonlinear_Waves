@@ -15,3 +15,8 @@ enum class NodeRelocationSurface {
 enum class InterpolationMidpointMode {
   nearest
 };
+
+enum class MeshPreparationPseudoQuadraticPolicy {
+  error,
+  fallback_6node
+};

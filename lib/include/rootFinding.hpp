@@ -7,33 +7,30 @@ using V_d = std::vector<double>;
 using VV_d = std::vector<std::vector<double>>;
 using VVV_d = std::vector<std::vector<std::vector<double>>>;
 
-template <typename T>
-struct NewtonRaphson_Common {
+template <typename T> struct NewtonRaphson_Common {
   T X, dX;
-  NewtonRaphson_Common(const T& Xinit) : X(Xinit), dX(Xinit) {};
-  void initialize(const T& Xin) { X = Xin; };
+  NewtonRaphson_Common(const T &Xinit) : X(Xinit), dX(Xinit) {};
+  void initialize(const T &Xin) { X = Xin; };
 };
 
-template <typename T>
-struct NewtonRaphson : public NewtonRaphson_Common<T> {
-  NewtonRaphson(const T& Xinit) : NewtonRaphson_Common<T>(Xinit) {};
+template <typename T> struct NewtonRaphson : public NewtonRaphson_Common<T> {
+  NewtonRaphson(const T &Xinit) : NewtonRaphson_Common<T>(Xinit) {};
 };
 
-template <>
-struct NewtonRaphson<V_d> : public NewtonRaphson_Common<V_d> {
-  NewtonRaphson(const V_d& Xinit) : NewtonRaphson_Common<V_d>(Xinit) {};
-  void update(const V_d& F, const VV_d& dFdx) {
+template <> struct NewtonRaphson<V_d> : public NewtonRaphson_Common<V_d> {
+  NewtonRaphson(const V_d &Xinit) : NewtonRaphson_Common<V_d>(Xinit) {};
+  void update(const V_d &F, const VV_d &dFdx) {
     lapack_svd lu(dFdx, dX, -F);
     X += dX;
   };
 
-  void update(const V_d& F, const VV_d& dFdx, const double a) {
+  void update(const V_d &F, const VV_d &dFdx, const double a) {
     lapack_svd lu(dFdx, dX, -F);
     X += a * dX;
   };
 
   // pass lambda function to constrain the solution and update X and dX
-  void constrains(const std::function<V_d(V_d)>& constraint) {
+  void constrains(const std::function<V_d(V_d)> &constraint) {
     /*
     X^* = X + dX
     constrained(X^*) = X^* + dX* = X + dX + dX^*
@@ -56,8 +53,7 @@ struct NewtonRaphson<V_d> : public NewtonRaphson_Common<V_d> {
   };
 };
 /* ------------------------------------------------------ */
-template <>
-struct NewtonRaphson<double> : public NewtonRaphson_Common<double> {
+template <> struct NewtonRaphson<double> : public NewtonRaphson_Common<double> {
   NewtonRaphson(const double Xinit = 0) : NewtonRaphson_Common<double>(Xinit) {};
   void update(const double F, const double dFdx) {
     if (std::abs(dFdx) > 1E-20)
@@ -68,70 +64,39 @@ struct NewtonRaphson<double> : public NewtonRaphson_Common<double> {
       X += a * (dX = F / (-dFdx));
   };
 };
-template <>
-struct NewtonRaphson<Tdd> : public NewtonRaphson_Common<Tdd> {
-  NewtonRaphson(const Tdd& Xinit) : NewtonRaphson_Common<Tdd>(Xinit) {};
-  // 2x2 直接解（クラメル）: スレッドセーフ、LAPACK 不要
-  // 特異時は dX = 0（呼び出し側で収束扱いになり停止する）
-  void update(const Tdd& F, const T2Tdd& dFdx) {
-    const double a = std::get<0>(std::get<0>(dFdx)), b = std::get<1>(std::get<0>(dFdx));
-    const double c = std::get<0>(std::get<1>(dFdx)), d = std::get<1>(std::get<1>(dFdx));
-    const double det = a * d - b * c;
-    if (std::abs(det) > 1e-20) {
-      const double inv = 1.0 / det;
-      const double f0 = -std::get<0>(F), f1 = -std::get<1>(F);
-      std::get<0>(dX) = (d * f0 - b * f1) * inv;
-      std::get<1>(dX) = (-c * f0 + a * f1) * inv;
-      X += dX;
-    } else {
-      std::get<0>(dX) = 0.;
-      std::get<1>(dX) = 0.;
-    }
+template <> struct NewtonRaphson<Tdd> : public NewtonRaphson_Common<Tdd> {
+  NewtonRaphson(const Tdd &Xinit) : NewtonRaphson_Common<Tdd>(Xinit) {};
+  void update(const Tdd &F, const T2Tdd &dFdx) {
+    lapack_svd(dX, dFdx, -F);
+    X += dX;
   };
-  void update(const Tdd& F, const T2Tdd& dFdx, const double scale) {
-    update(F, dFdx);
-    X += (scale - 1.0) * dX;
+  void update(const Tdd &F, const T2Tdd &dFdx, const double a) {
+    lapack_svd(dX, dFdx, -F);
+    X += a * dX;
   };
 };
-template <>
-struct NewtonRaphson<Tddd> : public NewtonRaphson_Common<Tddd> {
-  NewtonRaphson(const Tddd& Xinit) : NewtonRaphson_Common<Tddd>(Xinit) {};
-  // 3x3 直接解（クラメル）: スレッドセーフ、LAPACK 不要
-  // 特異時は dX = 0（呼び出し側で収束扱いになり停止する）
-  void update(const Tddd& F, const T3Tddd& dFdx) {
-    const double a = std::get<0>(std::get<0>(dFdx)), b = std::get<1>(std::get<0>(dFdx)), c = std::get<2>(std::get<0>(dFdx));
-    const double d = std::get<0>(std::get<1>(dFdx)), e = std::get<1>(std::get<1>(dFdx)), f = std::get<2>(std::get<1>(dFdx));
-    const double g = std::get<0>(std::get<2>(dFdx)), h = std::get<1>(std::get<2>(dFdx)), i = std::get<2>(std::get<2>(dFdx));
-    const double det = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
-    if (std::abs(det) > 1e-20) {
-      const double inv = 1.0 / det;
-      const double f0 = -std::get<0>(F), f1 = -std::get<1>(F), f2 = -std::get<2>(F);
-      std::get<0>(dX) = ((e * i - f * h) * f0 - (b * i - c * h) * f1 + (b * f - c * e) * f2) * inv;
-      std::get<1>(dX) = (-(d * i - f * g) * f0 + (a * i - c * g) * f1 - (a * f - c * d) * f2) * inv;
-      std::get<2>(dX) = ((d * h - e * g) * f0 - (a * h - b * g) * f1 + (a * e - b * d) * f2) * inv;
-      X += dX;
-    } else {
-      std::get<0>(dX) = 0.;
-      std::get<1>(dX) = 0.;
-      std::get<2>(dX) = 0.;
-    }
+template <> struct NewtonRaphson<Tddd> : public NewtonRaphson_Common<Tddd> {
+  NewtonRaphson(const Tddd &Xinit) : NewtonRaphson_Common<Tddd>(Xinit) {};
+  void update(const Tddd &F, const T3Tddd &dFdx) {
+    lapack_svd(dX, dFdx, -F);
+    X += dX;
   };
 
-  void constrains(const std::function<Tddd(const Tddd&)>& constraint) {
+  void constrains(const std::function<Tddd(const Tddd &)> &constraint) {
     dX -= X;
     dX += (X = constraint(X));
   };
 
-  void update(const Tddd& F, const T3Tddd& dFdx, const std::function<Tddd(const Tddd&)>& constraint) {
-    update(F, dFdx);
+  void update(const Tddd &F, const T3Tddd &dFdx, const std::function<Tddd(const Tddd &)> &constraint) {
+    lapack_svd(dX, dFdx, -F);
+    X += dX;
     constraint(X);
   };
 };
-template <>
-struct NewtonRaphson<T4d> : public NewtonRaphson_Common<T4d> {
-  NewtonRaphson(const T4d& Xinit) : NewtonRaphson_Common<T4d>(Xinit) { this->ans = V_d(4, 0.); };
+template <> struct NewtonRaphson<T4d> : public NewtonRaphson_Common<T4d> {
+  NewtonRaphson(const T4d &Xinit) : NewtonRaphson_Common<T4d>(Xinit) { this->ans = V_d(4, 0.); };
   V_d ans;
-  void update(const T4d& F, const T4T4d& dFdx) {
+  void update(const T4d &F, const T4T4d &dFdx) {
     lapack_svd(dX, dFdx, -F);
     X += dX;
     // ludcmp lu(ToVector(dFdx));
@@ -151,13 +116,13 @@ struct NewtonRaphson<T4d> : public NewtonRaphson_Common<T4d> {
 //! v = vx*ex + vy*ey + vz*ezの場合
 //! {vx,vy,vz}, {ex,ey,ez}を与える
 //! ex = {1,0,0}, ey = {0,1,0}, ez = {0,0,1}でなくとも良いが，ほぼ正規直交座標系であることが望ましいだろう
-inline std::array<double, 3> optimalVector(std::vector<double> Vsample, std::vector<Tddd> Directions, const Tddd& Vinit, std::vector<double> weights, std::array<double, 3>& convergence_info) {
+inline std::array<double, 3> optimalVector(std::vector<double> Vsample, std::vector<Tddd> Directions, const Tddd &Vinit, std::vector<double> weights, std::array<double, 3> &convergence_info) {
 
   if (Vsample.size() == 1)
     return Vsample[0] * Directions[0];
 
   double mean = 0.;
-  for (const auto& v : Vsample)
+  for (const auto &v : Vsample)
     mean += std::abs(v);
   mean /= Vsample.size();
   if (mean == 0)
@@ -175,9 +140,9 @@ inline std::array<double, 3> optimalVector(std::vector<double> Vsample, std::vec
   /* -------------------------------------------------------------------------- */
 
   std::vector<std::tuple<Tddd, std::vector<Tddd>>> direction_groups;
-  for (auto& dir : Directions) {
+  for (auto &dir : Directions) {
     bool colinear = false;
-    for (auto& [representative_dir, vec] : direction_groups) {
+    for (auto &[representative_dir, vec] : direction_groups) {
       if (isFlat(representative_dir, dir, threshold_angle_in_rad)) {
         vec.push_back(Normalize(dir));
         representative_dir = Normalize(Mean(vec));
@@ -201,14 +166,14 @@ inline std::array<double, 3> optimalVector(std::vector<double> Vsample, std::vec
     weights.push_back(Mean(weights));
   }
 
-  for (auto& d : Directions)
+  for (auto &d : Directions)
     d = Normalize(d);
 
   /* -------------------------------------------------------------------------- */
 
-  auto diff = [&](const Tddd& U, const std::size_t i) -> double { return Dot(U, Directions[i]) - Vsample[i]; };
+  auto diff = [&](const Tddd &U, const std::size_t i) -> double { return Dot(U, Directions[i]) - Vsample[i]; };
 
-  auto optimizing_function = [&](const Tddd& U) -> double {
+  auto optimizing_function = [&](const Tddd &U) -> double {
     double S = 0;
     for (std::size_t i = 0; i < Vsample.size(); ++i)
       S += weights[i] * std::pow(diff(U, i), 2);
@@ -221,7 +186,7 @@ inline std::array<double, 3> optimalVector(std::vector<double> Vsample, std::vec
   int iteration = 0;
   for (iteration = 0; iteration < 50; ++iteration) {
     grad.fill(0.);
-    for (auto& row : hess)
+    for (auto &row : hess)
       row.fill(0.);
     for (std::size_t i = 0; i < Vsample.size(); ++i) {
       grad += weights[i] * Directions[i] * diff(NR.X, i);
@@ -239,24 +204,135 @@ inline std::array<double, 3> optimalVector(std::vector<double> Vsample, std::vec
   return NR.X;
 }
 
-inline std::array<double, 3> optimalVector(const std::vector<double>& Vsample, const std::vector<Tddd>& Directions, const Tddd& Vinit) {
+inline std::array<double, 3> optimalVectorRegularized(std::vector<double> Vsample,
+                                                      std::vector<Tddd> Directions,
+                                                      const Tddd &Vinit,
+                                                      std::vector<double> weights,
+                                                      const double lambda_rel = 1.0e-6,
+                                                      std::array<double, 3> *convergence_info = nullptr) {
+  if (Vsample.empty() || Directions.empty() || weights.empty()) {
+    if (convergence_info)
+      *convergence_info = {0., 0., 0.};
+    return {0., 0., 0.};
+  }
+
+  const std::size_t n = std::min({Vsample.size(), Directions.size(), weights.size()});
+  Vsample.resize(n);
+  Directions.resize(n);
+  weights.resize(n);
+
+  double mean = 0.;
+  for (const auto &v : Vsample)
+    mean += std::abs(v);
+  mean /= Vsample.size();
+  if (mean == 0.) {
+    if (convergence_info)
+      *convergence_info = {0., 0., 0.};
+    return {0., 0., 0.};
+  }
+
+  std::vector<Tddd> valid_dirs;
+  std::vector<double> valid_samples;
+  std::vector<double> valid_weights;
+  valid_dirs.reserve(n);
+  valid_samples.reserve(n);
+  valid_weights.reserve(n);
+  for (std::size_t i = 0; i < n; ++i) {
+    if (!std::isfinite(Vsample[i]) || !std::isfinite(weights[i]) ||
+        weights[i] <= 0.0 || !isFinite(Directions[i]) || Norm(Directions[i]) <= 0.0)
+      continue;
+    valid_samples.push_back(Vsample[i]);
+    valid_dirs.push_back(Normalize(Directions[i]));
+    valid_weights.push_back(weights[i]);
+  }
+
+  if (valid_samples.empty()) {
+    if (convergence_info)
+      *convergence_info = {0., 0., 0.};
+    return {0., 0., 0.};
+  }
+
+  double trace = 0.0;
+  for (double w : valid_weights)
+    trace += w;
+  const double lambda = std::max(lambda_rel, 0.0) * std::max(trace / 3.0, 1.0e-30);
+
+  std::vector<std::vector<double>> A;
+  std::vector<double> b;
+  A.reserve(valid_samples.size() + (lambda > 0.0 ? 3 : 0));
+  b.reserve(valid_samples.size() + (lambda > 0.0 ? 3 : 0));
+
+  for (std::size_t i = 0; i < valid_samples.size(); ++i) {
+    const double s = std::sqrt(valid_weights[i]);
+    A.push_back({s * valid_dirs[i][0], s * valid_dirs[i][1], s * valid_dirs[i][2]});
+    b.push_back(s * valid_samples[i]);
+  }
+
+  if (lambda > 0.0) {
+    const double s = std::sqrt(lambda);
+    A.push_back({s, 0.0, 0.0});
+    A.push_back({0.0, s, 0.0});
+    A.push_back({0.0, 0.0, s});
+    b.push_back(0.0);
+    b.push_back(0.0);
+    b.push_back(0.0);
+  }
+
+  std::vector<double> x(3, 0.0);
+  try {
+    lapack_svd svd(A);
+    svd.solve(b, x);
+  } catch (...) {
+    if (convergence_info)
+      *convergence_info = {0., std::numeric_limits<double>::infinity(), std::numeric_limits<double>::infinity()};
+    return isFinite(Vinit) ? Vinit : Tddd{0., 0., 0.};
+  }
+
+  const Tddd U = {x[0], x[1], x[2]};
+  if (!isFinite(U)) {
+    if (convergence_info)
+      *convergence_info = {0., std::numeric_limits<double>::infinity(), std::numeric_limits<double>::infinity()};
+    return isFinite(Vinit) ? Vinit : Tddd{0., 0., 0.};
+  }
+
+  if (convergence_info) {
+    double residual2 = 0.0;
+    for (std::size_t i = 0; i < valid_samples.size(); ++i) {
+      const double r = Dot(U, valid_dirs[i]) - valid_samples[i];
+      residual2 += valid_weights[i] * r * r;
+    }
+    const double objective = 0.5 * (residual2 + lambda * Dot(U, U));
+    *convergence_info = {0., std::sqrt(residual2), objective};
+  }
+
+  return U;
+}
+
+inline std::array<double, 3> optimalVectorRegularized(const std::vector<double> &Vsample,
+                                                      const std::vector<Tddd> &Directions,
+                                                      const Tddd &Vinit,
+                                                      const double lambda_rel = 1.0e-6) {
+  std::vector<double> weights(Vsample.size(), 1.);
+  return optimalVectorRegularized(Vsample, Directions, Vinit, weights, lambda_rel);
+}
+
+inline std::array<double, 3> optimalVector(const std::vector<double> &Vsample, const std::vector<Tddd> &Directions, const Tddd &Vinit) {
   std::vector<double> weights(Vsample.size(), 1.);
   std::array<double, 3> convergence_info;
   return optimalVector(Vsample, Directions, Vinit, weights, convergence_info);
 }
 
-inline std::array<double, 3> optimalVector(const std::vector<double>& Vsample, const std::vector<Tddd>& Directions, const Tddd& Vinit, const std::vector<double>& weights) {
+inline std::array<double, 3> optimalVector(const std::vector<double> &Vsample, const std::vector<Tddd> &Directions, const Tddd &Vinit, const std::vector<double> &weights) {
   std::array<double, 3> convergence_info;
   return optimalVector(Vsample, Directions, Vinit, weights, convergence_info);
 }
 
-inline std::array<double, 3> optimalVector(const std::vector<double>& Vsample, const std::vector<Tddd>& Directions, const Tddd& Vinit, std::array<double, 3>& convergence_info) {
+inline std::array<double, 3> optimalVector(const std::vector<double> &Vsample, const std::vector<Tddd> &Directions, const Tddd &Vinit, std::array<double, 3> &convergence_info) {
   std::vector<double> weights(Vsample.size(), 1.);
   return optimalVector(Vsample, Directions, Vinit, weights, convergence_info);
 }
 
-template <std::size_t N>
-std::array<double, N> optimumVector(const std::vector<std::array<double, N>>& sample_vectors, const std::array<double, N>& init_vector, const double tolerance = 1E-12) {
+template <std::size_t N> std::array<double, N> optimumVector(const std::vector<std::array<double, N>> &sample_vectors, const std::array<double, N> &init_vector, const double tolerance = 1E-12) {
   std::array<NewtonRaphson<double>, N> NRs;
   for (std::size_t i = 0; i < N; ++i)
     NRs[i].X = init_vector[i];
@@ -265,7 +341,7 @@ std::array<double, N> optimumVector(const std::vector<std::array<double, N>>& sa
   for (auto j = 0; j < 500; ++j) {
     Fs.fill(0);
     dFs.fill(0);
-    for (const auto& vec : sample_vectors) {
+    for (const auto &vec : sample_vectors) {
       w = 1;
       drdx = -w;
       for (std::size_t i = 0; i < N; ++i) {
@@ -291,12 +367,121 @@ std::array<double, N> optimumVector(const std::vector<std::array<double, N>>& sa
   return result;
 }
 
-inline double optimumValue(const std::vector<double>& sample_values, const double init_value, std::vector<double> weights, const double tolerance = 1E-12) {
+// template <std::size_t N>
+// std::array<double, N> optimumVector(const std::vector<std::array<double, N>> &sample_vectors,
+//                                     const std::array<double, N> &init_vector,
+//                                     const std::vector<double> &weights,
+//                                     const double tolerance = 1E-12) {
+//    if (weights.size() != sample_vectors.size())
+//       throw std::runtime_error("The size of the weights vector must match the size of the sample_vectors vector.");
+
+//    double max_weight = *std::max_element(weights.begin(), weights.end());
+//    std::vector<double> normalized_weights(weights.size());
+//    std::transform(weights.begin(), weights.end(), normalized_weights.begin(), [&](double w) { return w / max_weight; });
+
+//    std::array<NewtonRaphson<double>, N> NRs;
+//    for (std::size_t i = 0; i < N; ++i)
+//       NRs[i].X = init_vector[i];
+
+//    std::array<double, N> Fs, dFs;
+//    double w, drdx;
+//    for (int iteration = 0; iteration < 500; ++iteration) {
+//       Fs.fill(0);
+//       dFs.fill(0);
+//       for (size_t i = 0; i < sample_vectors.size(); ++i) {
+//          w = normalized_weights[i];
+//          drdx = -w;
+//          for (size_t j = 0; j < N; ++j) {
+//             // Fs[j] += w * (sample_vectors[i][j] - NRs[j].X) * drdx;
+//             // dFs[j] += drdx * drdx;
+//             // use std::fma
+//             Fs[j] = std::fma(w * (sample_vectors[i][j] - NRs[j].X), drdx, Fs[j]);
+//             dFs[j] = std::fma(drdx, drdx, dFs[j]);
+//          }
+//       }
+
+//       bool converged = true;
+//       for (std::size_t i = 0; i < N; ++i) {
+//          NRs[i].update(Fs[i], dFs[i]);
+//          if (std::abs(NRs[i].dX) >= tolerance) converged = false;
+//       }
+//       if (converged) break;
+//    }
+
+//    std::array<double, N> result;
+//    for (std::size_t i = 0; i < N; ++i) result[i] = NRs[i].X;
+//    return result;
+// }
+
+// template <std::size_t N>
+// std::array<double, N> optimumVector(const std::vector<std::array<double, N>> &sample_vectors,
+//                                     const std::array<double, N> &init_vector,
+//                                     const std::vector<double> &weights,
+//                                     const std::function<std::array<double, N>(const std::array<double, N> &)> &constraint,
+//                                     const double tolerance = 1E-12) {
+//    if (weights.size() != sample_vectors.size())
+//       throw std::runtime_error("The size of the weights vector must match the size of the sample_vectors vector.");
+
+//    double max_weight = *std::max_element(weights.begin(), weights.end());
+//    std::vector<double> normalized_weights(weights.size());
+//    std::transform(weights.begin(), weights.end(), normalized_weights.begin(), [&](double w) { return w / max_weight; });
+
+//    std::array<NewtonRaphson<double>, N> NRs;
+//    for (std::size_t i = 0; i < N; ++i)
+//       NRs[i].X = init_vector[i];
+
+//    std::array<double, N> Fs, dFs;
+//    double w, drdx;
+//    for (int iteration = 0; iteration < 500; ++iteration) {
+//       Fs.fill(0);
+//       dFs.fill(0);
+//       for (size_t i = 0; i < sample_vectors.size(); ++i) {
+//          w = normalized_weights[i];
+//          drdx = -w;
+//          for (size_t j = 0; j < N; ++j) {
+//             // Fs[j] += w * (sample_vectors[i][j] - NRs[j].X) * drdx;
+//             // dFs[j] += drdx * drdx;
+//             // use std::fma
+//             Fs[j] = std::fma(w * (sample_vectors[i][j] - NRs[j].X), drdx, Fs[j]);
+//             dFs[j] = std::fma(drdx, drdx, dFs[j]);
+//          }
+//       }
+
+//       bool converged = true;
+//       for (std::size_t i = 0; i < N; ++i) {
+//          NRs[i].update(Fs[i], dFs[i]);
+//       }
+/*
+//       std::array<NewtonRaphson<double>, N> NRs;としたので，
+//       直接的なconstraintの適用は難しくなった．
+//       */
+
+//       std::array<double, N> tmpX;
+//       for (std::size_t i = 0; i < N; ++i)
+//          tmpX[i] = NRs[i].X;
+
+//       std::array<double, N> constraintX = constraint(tmpX);
+
+//       for (std::size_t i = 0; i < N; ++i) {
+//          NRs[i].dX -= NRs[i].X;
+//          NRs[i].dX += (NRs[i].X = constraintX[i]);
+//          if (iteration > 5 || std::abs(NRs[i].dX) >= tolerance) converged = false;
+//       }
+
+//       if (converged) break;
+//    }
+
+//    std::array<double, N> result;
+//    for (std::size_t i = 0; i < N; ++i) result[i] = NRs[i].X;
+//    return result;
+// }
+
+inline double optimumValue(const std::vector<double> &sample_values, const double init_value, std::vector<double> weights, const double tolerance = 1E-12) {
   if (weights.size() != sample_values.size())
     throw std::runtime_error("The size of the weights vector must match the size of the sample_vectors vector.");
 
   double m = 0;
-  for (const auto& max : weights)
+  for (const auto &max : weights)
     if (m < std::abs(max))
       m = std::abs(max);
   weights /= m;
@@ -459,7 +644,7 @@ struct WaterWaveTheory {
     return z;
   }
 
-  double phi(const std::array<double, 3>& X, const double t, const double A, const double bottom_z) const {
+  double phi(const std::array<double, 3> &X, const double t, const double A, const double bottom_z) const {
     auto [x, y, z] = X;
     z = clampZ(z - h - bottom_z, k); //! distance from the bottom
     // return A * _GRAVITY_ / w * cosh_kzh_cosh_kh(k,h,z) * std::sin(k * x - w * t);
@@ -468,12 +653,12 @@ struct WaterWaveTheory {
     return A * _GRAVITY_ / w * cosh_kzh_cosh_kh(k, h, z) * std::sin(kx * x + ky * y - w * t + phase_shift);
   };
 
-  double phi(const std::array<double, 3>& X, const double t) const { return this->phi(X, t, A, bottom_z); };
+  double phi(const std::array<double, 3> &X, const double t) const { return this->phi(X, t, A, bottom_z); };
 
   double A;
   double bottom_z = 0;
 
-  std::array<double, 3> gradPhi(const std::array<double, 3>& X, const double t) const {
+  std::array<double, 3> gradPhi(const std::array<double, 3> &X, const double t) const {
     auto [x, y, z] = X;
     double kx = k * std::cos(theta);
     double ky = k * std::sin(theta);
@@ -484,7 +669,7 @@ struct WaterWaveTheory {
     //         A * w * std::sinh(k * (z + h)) / std::sinh(k * h) * std::sin(k * x - w * t)};
   };
 
-  std::array<double, 3> gradPhi_t(const std::array<double, 3>& X, const double t, const double A) const {
+  std::array<double, 3> gradPhi_t(const std::array<double, 3> &X, const double t, const double A) const {
     auto [x, y, z] = X;
     double kx = k * std::cos(theta);
     double ky = k * std::sin(theta);
@@ -492,18 +677,18 @@ struct WaterWaveTheory {
     return {w * A * _GRAVITY_ * kx / w * cosh_kzh_cosh_kh(k, h, z) * std::sin(kx * x + ky * y - w * t + phase_shift), w * A * _GRAVITY_ * ky / w * cosh_kzh_cosh_kh(k, h, z) * std::sin(kx * x + ky * y - w * t + phase_shift), -w * A * _GRAVITY_ * k / w * sinh_kzh_cosh_kh(k, h, z) * std::cos(kx * x + ky * y - w * t + phase_shift)};
   };
 
-  std::array<double, 3> gradPhi_t(const std::array<double, 3>& X, const double t) const { return this->gradPhi_t(X, t, A); };
+  std::array<double, 3> gradPhi_t(const std::array<double, 3> &X, const double t) const { return this->gradPhi_t(X, t, A); };
 
-  double eta(const std::array<double, 3>& X, const double t, const double A) const {
+  double eta(const std::array<double, 3> &X, const double t, const double A) const {
     auto [x, y, z] = X;
     double kx = k * std::cos(theta);
     double ky = k * std::sin(theta);
     return A * std::cos(kx * x + ky * y - w * t + phase_shift) + h + bottom_z;
   };
 
-  double eta(const std::array<double, 3>& X, const double t) const { return this->eta(X, t, A); };
+  double eta(const std::array<double, 3> &X, const double t) const { return this->eta(X, t, A); };
 
-  double etaZeroAtRest(const std::array<double, 3>& X, const double t) const {
+  double etaZeroAtRest(const std::array<double, 3> &X, const double t) const {
     auto [x, y, z] = X;
     double kx = k * std::cos(theta);
     double ky = k * std::sin(theta);
@@ -511,312 +696,169 @@ struct WaterWaveTheory {
   };
 };
 
-/* ================================================================
-   Wave spectrum types and parameter input modes
-   ================================================================ */
-
 enum class SpectrumType { BRETSCHNEIDER_MITSUYA, JONSWAP };
-
 inline std::ostream &operator<<(std::ostream &os, SpectrumType type) {
   switch (type) {
-  case SpectrumType::BRETSCHNEIDER_MITSUYA: os << "BRETSCHNEIDER_MITSUYA"; break;
-  case SpectrumType::JONSWAP: os << "JONSWAP"; break;
+  case SpectrumType::BRETSCHNEIDER_MITSUYA:
+    os << "BRETSCHNEIDER_MITSUYA";
+    break;
+  case SpectrumType::JONSWAP:
+    os << "JONSWAP";
+    break;
+  default:
+    os << "UNKNOWN";
+    break;
   }
   return os;
 }
-
-// Wave height: H₁/₃ (zero-crossing) or Hm0 (spectral)
-// Wave period: T₁/₃ (zero-crossing) or Tp (spectral peak)
-enum class WaveParamMode { H13_T13, H13_TP, HM0_T13, HM0_TP };
-
-inline std::ostream &operator<<(std::ostream &os, WaveParamMode m) {
-  switch (m) {
-  case WaveParamMode::H13_T13: os << "H13_T13"; break;
-  case WaveParamMode::H13_TP: os << "H13_TP"; break;
-  case WaveParamMode::HM0_T13: os << "HM0_T13"; break;
-  case WaveParamMode::HM0_TP: os << "HM0_TP"; break;
-  }
-  return os;
-}
-
-/* ================================================================
-   RandomWaterWaveTheory
-   ================================================================ */
 
 struct RandomWaterWaveTheory {
 
-  /* ---------- Physical parameters ---------- */
-  double h = 0;
-  double bottom_z = 0;
+  /* ------------------------------------------------------ */
+  double H13; // 有義波高
+  double T13; // 有義周期
+  double L13;
+  double h;        // 水深
+  double bottom_z; // 底面のz座標
 
-  /* ---------- Wave parameters (mode determines which are active) ---------- */
-  WaveParamMode mode = WaveParamMode::H13_T13;
+  static constexpr std::size_t N = 1000; // 分割数
+  double f_min, f_max, df;
+  std::array<std::shared_ptr<WaterWaveTheory>, N> waves;
+  std::mt19937 gen;
+  std::uniform_real_distribution<double> random_phase;
+
+  // JONSWAP parameters
+private:
   SpectrumType spectrum_type = SpectrumType::BRETSCHNEIDER_MITSUYA;
 
-  double H13 = 0;      // 有義波高 H₁/₃ (active when mode is H13_*)
-  double Hm0 = 0;      // スペクトル有義波高 (active when mode is HM0_*)
-  double T13 = 0;      // 有義波周期 T₁/₃ (active when mode is *_T13)
-  double Tp = 0;       // ピーク周期 (active when mode is *_TP)
-  double gamma = 3.3;  // JONSWAP peak enhancement factor
-
-  /* ---------- Derived quantities (computed by rebuildWaves) ---------- */
-  double reference_wavelength = 0;
-  double betaJ = 0;
-  double f_min = 0, f_max = 0, df = 0;
-
-  static constexpr std::size_t N = 1000;
-  std::array<std::shared_ptr<WaterWaveTheory>, N> waves;
-  std::mt19937 gen{std::random_device{}()};
-  std::uniform_real_distribution<double> random_phase{0.0, 2.0 * M_PI};
-
-  /* ==========================================================
-     Constructors
-     ========================================================== */
-
-  RandomWaterWaveTheory() = default;
-
-  // Backward-compatible constructor (Bretschneider, H13_T13)
-  RandomWaterWaveTheory(double H13, double T13, double h, double bottom_z)
-      : h(h), bottom_z(bottom_z), mode(WaveParamMode::H13_T13),
-        spectrum_type(SpectrumType::BRETSCHNEIDER_MITSUYA),
-        H13(H13), T13(T13) {
-    rebuildWaves();
-  }
-
-  /* ==========================================================
-     Factory: single entry point
-     ========================================================== */
-
-  static RandomWaterWaveTheory create(
-      SpectrumType spectrum, WaveParamMode mode,
-      double height, double period,
-      double gamma, double h, double bottom_z) {
-    RandomWaterWaveTheory w;
-    w.h = h;
-    w.bottom_z = bottom_z;
-    w.spectrum_type = spectrum;
-    w.mode = mode;
-    w.gamma = gamma;
-    switch (mode) {
-    case WaveParamMode::H13_T13: w.H13 = height; w.T13 = period; break;
-    case WaveParamMode::H13_TP: w.H13 = height; w.Tp = period; break;
-    case WaveParamMode::HM0_T13: w.Hm0 = height; w.T13 = period; break;
-    case WaveParamMode::HM0_TP: w.Hm0 = height; w.Tp = period; break;
-    }
-    w.rebuildWaves();
-    return w;
-  }
-
-  /* ---------- Convenience wrappers for common cases ---------- */
-
-  static RandomWaterWaveTheory Bretschneider(
-      double H13, double T13, double h, double bottom_z) {
-    return create(SpectrumType::BRETSCHNEIDER_MITSUYA,
-                  WaveParamMode::H13_T13, H13, T13, 1.0, h, bottom_z);
-  }
-
-  static RandomWaterWaveTheory JONSWAP_H13_T13(
-      double H13, double T13, double gamma, double h, double bottom_z) {
-    return create(SpectrumType::JONSWAP,
-                  WaveParamMode::H13_T13, H13, T13, gamma, h, bottom_z);
-  }
-
-  static RandomWaterWaveTheory JONSWAP_Hm0_Tp(
-      double Hm0, double Tp, double gamma, double h, double bottom_z) {
-    return create(SpectrumType::JONSWAP,
-                  WaveParamMode::HM0_TP, Hm0, Tp, gamma, h, bottom_z);
-  }
-
-  /* ---------- Backward-compatible setter (deprecated) ---------- */
-
-  void setSpectrumType(SpectrumType type) {
-    spectrum_type = type;
-    rebuildWaves();
-  }
-
-  /* ==========================================================
-     Parameter resolution — mode determines conversions
-     ========================================================== */
-private:
-
-  double resolve_Tp() const {
-    if (mode == WaveParamMode::H13_T13 || mode == WaveParamMode::HM0_T13)
-      return T13 / (1 - 0.132 * std::pow(gamma + 0.2, -0.559)); // Goda's formula
-    return Tp;
-  }
-
-  double resolve_T13() const {
-    if (mode == WaveParamMode::H13_T13 || mode == WaveParamMode::HM0_T13)
-      return T13;
-    return Tp * (1 - 0.132 * std::pow(gamma + 0.2, -0.559)); // inverse
-  }
-
-  // H₁/₃ ≈ Hm0 under linear narrow-band assumption
-  double resolve_effective_wave_height() const {
-    if (mode == WaveParamMode::H13_T13 || mode == WaveParamMode::H13_TP)
-      return H13;
-    return Hm0;
-  }
-
-  double resolve_representative_period() const {
-    if (spectrum_type == SpectrumType::JONSWAP)
-      return resolve_Tp();
-    return resolve_T13();
-  }
-
-  void validate() const {
-    if (spectrum_type == SpectrumType::BRETSCHNEIDER_MITSUYA
-        && mode != WaveParamMode::H13_T13)
-      throw std::runtime_error(
-          "Bretschneider-Mitsuyasu requires H13_T13 mode");
-  }
-
-  /* ==========================================================
-     Spectrum computation
-     ========================================================== */
-
-  double spectrum_bretschneider_mitsuya(double f) const {
-    double H = resolve_effective_wave_height();
-    double T = resolve_T13();
-    return 0.205 * std::pow(H, 2.) * std::pow(T, -4.)
-         * std::pow(f, -5.) * std::exp(-0.75 * std::pow(T * f, -4.));
-  }
-
-  double spectrum_jonswap(double f) const {
-    double H = resolve_effective_wave_height();
-    double T_p = resolve_Tp();
-    double fp = 1.0 / T_p;
-    double sigma = (f <= fp) ? 0.07 : 0.09;
-    return betaJ * std::pow(H, 2.) * std::pow(T_p, -4.)
-         * std::pow(f, -5.) * std::exp(-1.25 * std::pow(T_p * f, -4.))
-         * std::pow(gamma,
-                    std::exp(-0.5 * std::pow(-(T_p * f - 1) / sigma, 2.)));
-  }
-
 public:
+  double gamma = 3.3; // Peak enhancement factor for JONSWAP (typical value)
+  double betaJ = 0.;
+
+  /* ------------------------------------------------------ */
+
+  // 修正ブレットシュナイダー・光易型スペクトル
+  double spectrum_bretschneider_mitsuya(double f) const { return 0.205 * std::pow(H13, 2.) * std::pow(T13, -4.) * std::pow(f, -5.) * std::exp(-0.75 * std::pow(T13 * f, -4.)); }
+
+  // JONSWAP spectrum
+  double spectrum_jonswap(double f) const {
+    double Tp = T13 / (1 - 0.132 * std::pow(gamma + 0.2, -0.559)); // T13 to peak period Tp
+    double fp = 1.0 / Tp;
+    double sigma = (f <= fp) ? 0.07 : 0.09;
+    return betaJ * std::pow(H13, 2.) * std::pow(Tp, -4.) * std::pow(f, -5.) * std::exp(-1.25 * std::pow(Tp * f, -4.)) * std::pow(gamma, std::exp(-0.5 * std::pow(-(Tp * f - 1) / sigma, 2.)));
+  }
 
   double spectrum(double f) const {
     switch (spectrum_type) {
-    case SpectrumType::JONSWAP: return spectrum_jonswap(f);
+    case SpectrumType::JONSWAP:
+      return spectrum_jonswap(f);
     case SpectrumType::BRETSCHNEIDER_MITSUYA:
-    default: return spectrum_bretschneider_mitsuya(f);
+    default:
+      return spectrum_bretschneider_mitsuya(f);
     }
   }
 
-  /* ==========================================================
-     Wave discretization (single implementation)
-     ========================================================== */
+  RandomWaterWaveTheory() : H13(0), T13(0), h(0), bottom_z(0), gen(std::random_device()()), random_phase(0.0, 2.0 * M_PI) {};
 
-  void rebuildWaves() {
-    validate();
-
-    // Goda (1999) approximate normalization coefficient for JONSWAP.
-    // This is kept for spectrum() evaluation but is NOT relied upon for
-    // amplitude normalization. Instead, we numerically integrate and
-    // renormalize below. Reason: Goda's formula is a curve-fit that
-    // introduces ~3% error in 4*sqrt(m0) relative to the input wave
-    // height. With N=1000, the numerical sum converges to <0.01%
-    // (verified for N>=100), so direct renormalization is both more
-    // accurate and independent of the approximation quality of betaJ.
-    if (spectrum_type == SpectrumType::JONSWAP)
-      betaJ = 0.0624 / (0.23 + 0.0336 * gamma - 0.185 / (1.9 + gamma))
-            * (1.094 - 0.01915 * std::log(gamma));
-
-    double T_rep = resolve_representative_period();
+  RandomWaterWaveTheory(double H13, double T13, double h, double bottom_z) : H13(H13), T13(T13), h(h), bottom_z(bottom_z), gen(std::random_device{}()), random_phase(0.0, 2.0 * M_PI) {
     DispersionRelation disp;
-    disp.set_T_h(T_rep, h);
-    reference_wavelength = disp.L;
-
-    f_min = 0.5 / T_rep;
-    f_max = (spectrum_type == SpectrumType::JONSWAP)
-                ? 5.0 / T_rep
-                : 3.0 / T_rep;
+    disp.set_T_h(T13, h);
+    this->L13 = disp.L;
+    f_min = 0.5 / T13;
+    f_max = 2.0 / T13;
     df = (f_max - f_min) / N;
-
-    for (std::size_t i = 0; i < N; i++) {
+    for (int i = 0; i < N; i++) {
       auto a_wave = std::make_shared<WaterWaveTheory>();
       double f = f_min + i * df;
-      a_wave->A = std::sqrt(2.0 * spectrum(f) * df);
+      double T_wave = 1.0 / f;
+      a_wave->A = std::sqrt(2 * spectrum(f) * df);
       a_wave->bottom_z = bottom_z;
-      a_wave->set_T_h(1.0 / f, h);
-      a_wave->phase_shift = random_phase(gen);
+      a_wave->set_T_h(T_wave, h);
+      a_wave->phase_shift = random_phase(gen); // ランダムな位相シフトを設定
       if (!isFinite(a_wave->eta({0, 0, 0}, 0)))
         throw std::runtime_error("eta is not finite");
       waves[i] = a_wave;
     }
-
-    // Renormalize: scale all amplitudes so that 4*sqrt(m0) == input H.
-    // This corrects for (1) Goda betaJ approximation error and
-    // (2) finite integration range [f_min, f_max] truncation.
-    // Convergence verified: N>=100 gives <0.01% change in m0.
-    double H_input = resolve_effective_wave_height();
-    double m0 = 0;
-    for (std::size_t i = 0; i < N; i++)
-      m0 += waves[i]->A * waves[i]->A / 2.0;
-    if (m0 > 0) {
-      double scale = H_input / (4.0 * std::sqrt(m0));
-      for (std::size_t i = 0; i < N; i++)
-        waves[i]->A *= scale;
-    }
   }
 
-  /* ==========================================================
-     Superposition of wave components (unchanged)
-     ========================================================== */
+  void setSpectrumType(SpectrumType type) {
+    this->spectrum_type = type;
+    this->betaJ = 0.0624 / (0.23 + 0.0336 * gamma - 0.185 / (1.9 + gamma)) * (1.094 - 0.01915 * std::log(gamma));
+    DispersionRelation disp;
+    disp.set_T_h(T13, h);
+    this->L13 = disp.L;
+    f_min = 0.5 / T13;
+    f_max = 3.0 / T13;
+    df = (f_max - f_min) / N;
+    for (int i = 0; i < N; i++) {
+      auto a_wave = std::make_shared<WaterWaveTheory>();
+      double f = f_min + i * df;
+      double T_wave = 1.0 / f;
+      a_wave->A = std::sqrt(2 * spectrum(f) * df);
+      a_wave->bottom_z = bottom_z;
+      a_wave->set_T_h(T_wave, h);
+      a_wave->phase_shift = random_phase(gen); // ランダムな位相シフトを設定
+      if (!isFinite(a_wave->eta({0, 0, 0}, 0)))
+        throw std::runtime_error("eta is not finite");
+      waves[i] = a_wave;
+    }
+  };
 
   std::array<double, 3> gradPhi(const std::array<double, 3> &X, const double t) const {
     std::array<double, 3> ret{0., 0., 0.};
     for (const auto &wave : waves) {
       auto grad = wave->gradPhi(X, t);
-      ret[0] += grad[0]; ret[1] += grad[1]; ret[2] += grad[2];
+      ret[0] += grad[0];
+      ret[1] += grad[1];
+      ret[2] += grad[2];
     }
     return ret;
-  }
+  };
 
   std::array<double, 3> gradPhi_t(const std::array<double, 3> &X, const double t) const {
     std::array<double, 3> ret{0., 0., 0.};
     for (const auto &wave : waves) {
       auto grad = wave->gradPhi_t(X, t);
-      ret[0] += grad[0]; ret[1] += grad[1]; ret[2] += grad[2];
+      ret[0] += grad[0];
+      ret[1] += grad[1];
+      ret[2] += grad[2];
     }
     return ret;
-  }
+  };
 
   double phi(const std::array<double, 3> &X, const double t) const {
     double sum = 0.0;
-    for (const auto &wave : waves) sum += wave->phi(X, t);
+    for (const auto &wave : waves)
+      sum += wave->phi(X, t);
     return sum;
   }
 
   double eta(const std::array<double, 3> &X, const double t) const {
     double sum = 0.0;
-    for (const auto &wave : waves) sum += wave->etaZeroAtRest(X, t);
+    for (const auto &wave : waves)
+      sum += wave->etaZeroAtRest(X, t);
     return sum + h + bottom_z;
   }
 
-  /* ==========================================================
-     Output
-     ========================================================== */
-
-  friend std::ostream &operator<<(std::ostream &os, const RandomWaterWaveTheory &t);
+  friend std::ostream &operator<<(std::ostream &os, const RandomWaterWaveTheory &theory);
 };
 
-inline std::ostream &operator<<(std::ostream &os, const RandomWaterWaveTheory &t) {
-  std::ios::fmtflags fl(os.flags());
-  os << std::fixed << std::setprecision(6)
-     << "RandomWaterWaveTheory {\n"
-     << "  spectrum_type          = " << t.spectrum_type << "\n"
-     << "  mode                   = " << t.mode << "\n"
-     << "  H13=" << t.H13 << "  Hm0=" << t.Hm0 << "\n"
-     << "  T13=" << t.T13 << "  Tp=" << t.Tp << "\n"
-     << "  gamma=" << t.gamma << "  betaJ=" << t.betaJ << "\n"
-     << "  h=" << t.h << "  bottom_z=" << t.bottom_z << "\n"
-     << "  reference_wavelength   = " << t.reference_wavelength << "\n"
-     << "  N=" << t.N
-     << "  f=[" << t.f_min << ", " << t.f_max << "]"
-     << "  df=" << t.df << "\n"
-     << "}\n";
-  os.flags(fl);
+inline std::ostream &operator<<(std::ostream &os, const RandomWaterWaveTheory &theory) {
+  std::ios::fmtflags f(os.flags());
+  os << std::fixed << std::setprecision(6) << "RandomWaterWaveTheory {\n"
+     << "  spectrum_type = " << theory.spectrum_type << "\n"
+     << "  gamma         = " << theory.gamma << "\n"
+     << "  betaJ         = " << theory.betaJ << "\n"
+     << "  H13           = " << theory.H13 << "  (significant wave height)\n"
+     << "  T13           = " << theory.T13 << "  (mean period)\n"
+     << "  L13           = " << theory.L13 << "\n"
+     << "  h             = " << theory.h << "\n"
+     << "  bottom_z      = " << theory.bottom_z << "\n"
+     << "  N             = " << theory.N << "  (number of components)\n"
+     << "  f_min         = " << theory.f_min << "\n"
+     << "  f_max         = " << theory.f_max << "\n"
+     << "  df            = " << theory.df << "\n";
+  os.flags(f);
   return os;
 }
 /* -------------------------------------------------------------------------- */
@@ -834,12 +876,12 @@ struct LighthillRobot {
 
   auto yLH(const double x, const double t) { return (c1 * x / L + c2 * std::pow(x / L, 2)) * std::sin(k * (x / L) - w * t); };
 
-  auto X_RB(const std::array<double, 2>& a, const double q) {
+  auto X_RB(const std::array<double, 2> &a, const double q) {
     double r = L / n;
     return a + r * std::array<double, 2>{std::cos(q), std::sin(q)};
   };
 
-  auto f(const std::array<double, 2>& a, const double q, const double t) {
+  auto f(const std::array<double, 2> &a, const double q, const double t) {
     auto [x, y] = X_RB(a, q);
     return yLH(x, t) - y;
   };
@@ -875,7 +917,7 @@ struct LighthillRobot {
     return Q;
   };
 
-  std::vector<std::array<double, 2>> anglesToX(const V_d& Q) {
+  std::vector<std::array<double, 2>> anglesToX(const V_d &Q) {
     std::array<double, 2> a = {0., 0.};
     std::vector<std::array<double, 2>> ret;
     ret.reserve(Q.size() + 1);

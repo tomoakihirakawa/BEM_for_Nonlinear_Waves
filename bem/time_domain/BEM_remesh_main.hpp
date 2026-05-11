@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <functional>
 #include <iostream>
 #include <optional>
 #include <sstream>
@@ -13,6 +14,16 @@
 #include "BEM_collision.hpp"
 #include "BEM_inputfile_reader.hpp"
 #include "BEM_node_face_state.hpp"
+
+namespace BEMMeshPipeline {
+struct RemeshTrialGeometryInputs;
+}
+
+#ifndef BEM_REMESH_WATER_SNAPSHOT_WRITER_DEFINED
+#define BEM_REMESH_WATER_SNAPSHOT_WRITER_DEFINED
+using RemeshWaterSnapshotWriter =
+    std::function<void(Network*, int, const std::string&, PVDWriter&)>;
+#endif
 
 struct SubsurfaceAltitudeCheckResult {
   std::size_t checked_lines = 0;
@@ -119,7 +130,8 @@ inline std::string faceBadQualityHistorySummary(const networkFace* face) {
   return oss.str();
 }
 
-inline std::vector<FaceTriangle> qualityTriangles(networkFace* face) {
+inline std::vector<FaceTriangle> qualityTriangles(networkFace* face,
+                                                  bool use_quadratic_subfaces = true) {
   std::vector<FaceTriangle> tris;
   if (!face)
     return tris;
@@ -128,7 +140,7 @@ inline std::vector<FaceTriangle> qualityTriangles(networkFace* face) {
   if (!p0 || !p1 || !p2)
     return tris;
 
-  if (!face->isTrueQuadraticElement) {
+  if (!use_quadratic_subfaces || !face->isTrueQuadraticElement) {
     tris.push_back({p0->X, p1->X, p2->X});
     return tris;
   }
@@ -146,7 +158,9 @@ inline std::vector<FaceTriangle> qualityTriangles(networkFace* face) {
   return tris;
 }
 
-inline std::vector<FaceTriangleWithBase> qualityTrianglesAlongSharedLine(networkFace* face, networkLine* shared_line) {
+inline std::vector<FaceTriangleWithBase> qualityTrianglesAlongSharedLine(networkFace* face,
+                                                                         networkLine* shared_line,
+                                                                         bool use_quadratic_subfaces = true) {
   std::vector<FaceTriangleWithBase> tris;
   if (!face || !shared_line)
     return tris;
@@ -155,7 +169,7 @@ inline std::vector<FaceTriangleWithBase> qualityTrianglesAlongSharedLine(network
   if (!p0 || !p1 || !p2)
     return tris;
 
-  if (!face->isTrueQuadraticElement)
+  if (!use_quadratic_subfaces || !face->isTrueQuadraticElement)
     return tris;
 
   auto [l0, l1, l2] = face->getLines();
@@ -303,7 +317,7 @@ inline double faceAspectRatio(networkFace* face) {
 }
 
 inline bool isPostTypeCollapseTargetLine(const networkLine* l) {
-  return l && !l->CORNER;
+  return l && !l->BCInterface;
 }
 
 struct CornerConnectedNeumannCollapseResult {
@@ -333,8 +347,8 @@ inline CornerConnectedNeumannCollapseResult collapseCornerConnectedNeumannLinesA
               << " area_ratio1=" << area_ratio1
               << " min_angle_deg0=" << min_angle_deg0
               << " min_angle_deg1=" << min_angle_deg1
-              << " line_flags={D:" << l->Dirichlet << ",N:" << l->Neumann << ",C:" << l->CORNER << "}"
-              << " endpoint_corner={" << (pts[0] ? pts[0]->CORNER : false) << "," << (pts[1] ? pts[1]->CORNER : false) << "}"
+              << " line_flags={D:" << l->Dirichlet << ",N:" << l->Neumann << ",C:" << l->BCInterface << "}"
+              << " endpoint_corner={" << (pts[0] ? pts[0]->BCInterface : false) << "," << (pts[1] ? pts[1]->BCInterface : false) << "}"
               << " x0=" << (pts[0] ? pts[0]->X : Tddd{0., 0., 0.})
               << " x1=" << (pts[1] ? pts[1]->X : Tddd{0., 0., 0.})
               << colorReset << std::endl;
@@ -423,9 +437,9 @@ inline Tddd collapseTargetPointOnLine(const networkLine* line) {
   auto [pA, pB] = line->getPoints();
   if (!pA || !pB)
     return {0., 0., 0.};
-  if (pA->CORNER && !pB->CORNER)
+  if (pA->BCInterface && !pB->BCInterface)
     return pA->X;
-  if (pB->CORNER && !pA->CORNER)
+  if (pB->BCInterface && !pA->BCInterface)
     return pB->X;
   return 0.5 * (pA->X + pB->X);
 }
@@ -532,7 +546,8 @@ inline bool flipTinyFaceIfImproves(networkLine* line, const double min_face_area
   return line->Flip(false);
 }
 
-inline TinyFaceCheckResult checkTinyFacesRelativeToLocalMean(Network& water) {
+inline TinyFaceCheckResult checkTinyFacesRelativeToLocalMean(Network& water,
+                                                             bool use_quadratic_subfaces = true) {
   TinyFaceCheckResult out;
   for (auto* face : water.getBoundaryFaces()) {
     if (!face)
@@ -542,11 +557,12 @@ inline TinyFaceCheckResult checkTinyFacesRelativeToLocalMean(Network& water) {
       continue;
     ++out.checked_faces;
 
-    const double subface_mean_area = face->isTrueQuadraticElement ? mean_area * 0.25 : mean_area;
+    const double subface_mean_area =
+        (use_quadratic_subfaces && face->isTrueQuadraticElement) ? mean_area * 0.25 : mean_area;
     if (!(subface_mean_area > 0.0) || !std::isfinite(subface_mean_area))
       continue;
 
-    const auto tris = qualityTriangles(face);
+    const auto tris = qualityTriangles(face, use_quadratic_subfaces);
     for (std::size_t i = 0; i < tris.size(); ++i) {
       const double area = triangleArea(tris[i]);
       if (!(area > 0.0) || !std::isfinite(area))
@@ -640,7 +656,7 @@ inline bool collapseFaceByIndexIfPossible(Network& water, const int face_index) 
     for (auto* l : target_face->getLines()) {
       if (!l)
         continue;
-      if (!allow_corner_lines && l->CORNER)
+      if (!allow_corner_lines && l->BCInterface)
         continue;
       candidates.emplace_back(l);
     }
@@ -653,17 +669,19 @@ inline bool collapseFaceByIndexIfPossible(Network& water, const int face_index) 
 
   if (try_collapse(false))
     return true;
-  // CORNER edges should not be collapsed — they are feature edges
+  // BCInterface edges should not be collapsed — they are feature edges
   // return try_collapse(true);
   return false;
 }
 
-inline FaceAltitudeDetail faceAltitudeRelativeToSharedEdgeDetail(networkFace* face, networkLine* shared_line) {
+inline FaceAltitudeDetail faceAltitudeRelativeToSharedEdgeDetail(networkFace* face,
+                                                                 networkLine* shared_line,
+                                                                 bool use_quadratic_subfaces = true) {
   FaceAltitudeDetail out;
   if (!face || !shared_line)
     return out;
 
-  if (!face->isTrueQuadraticElement) {
+  if (!use_quadratic_subfaces || !face->isTrueQuadraticElement) {
     auto [p0, p1] = shared_line->getPoints();
     if (!p0 || !p1)
       return out;
@@ -676,7 +694,7 @@ inline FaceAltitudeDetail faceAltitudeRelativeToSharedEdgeDetail(networkFace* fa
     return out;
   }
 
-  const auto tris = qualityTrianglesAlongSharedLine(face, shared_line);
+  const auto tris = qualityTrianglesAlongSharedLine(face, shared_line, use_quadratic_subfaces);
   for (const auto& tri : tris) {
     const double rel = triangleAltitudeRelativeToBase(tri.tri);
     if (rel < out.altitude_rel) {
@@ -687,8 +705,10 @@ inline FaceAltitudeDetail faceAltitudeRelativeToSharedEdgeDetail(networkFace* fa
   return out;
 }
 
-inline double faceAltitudeRelativeToSharedEdge(networkFace* face, networkLine* shared_line) {
-  return faceAltitudeRelativeToSharedEdgeDetail(face, shared_line).altitude_rel;
+inline double faceAltitudeRelativeToSharedEdge(networkFace* face,
+                                               networkLine* shared_line,
+                                               bool use_quadratic_subfaces = true) {
+  return faceAltitudeRelativeToSharedEdgeDetail(face, shared_line, use_quadratic_subfaces).altitude_rel;
 }
 
 inline void refreshFaceBadQualityHistory(
@@ -754,7 +774,8 @@ inline void refreshFaceBadQualityHistory(
 
 inline SubsurfaceAltitudeCheckResult checkSubsurfaceFaceAltitude(
     Network& water,
-    const SubsurfaceAltitudeRejectSettings& settings) {
+    const SubsurfaceAltitudeRejectSettings& settings,
+    bool use_quadratic_subfaces = true) {
   SubsurfaceAltitudeCheckResult out;
   if (!settings.enabled)
     return out;
@@ -773,8 +794,8 @@ inline SubsurfaceAltitudeCheckResult checkSubsurfaceFaceAltitude(
       continue;
     ++out.angle_lines;
 
-    const auto detail0 = faceAltitudeRelativeToSharedEdgeDetail(faces[0], line);
-    const auto detail1 = faceAltitudeRelativeToSharedEdgeDetail(faces[1], line);
+    const auto detail0 = faceAltitudeRelativeToSharedEdgeDetail(faces[0], line, use_quadratic_subfaces);
+    const auto detail1 = faceAltitudeRelativeToSharedEdgeDetail(faces[1], line, use_quadratic_subfaces);
     const double line_worst = std::min(detail0.altitude_rel, detail1.altitude_rel);
     if (line_worst < out.worst_altitude_rel) {
       out.worst_altitude_rel = line_worst;
@@ -828,7 +849,7 @@ inline bool flipIfOnce(Network& water, const Tdd& limit_Dirichlet, const Tdd& li
     int count = 0;
     auto V = ToVector(water.getLines());
     for (const auto& l : RandomSample(V)) {
-      if (!l->CORNER) {
+      if (!l->BCInterface) {
         if (skip_lines && skip_lines->count(l))
           continue;
         if (force && (iteration == 0 || count < iteration)) {
@@ -881,7 +902,7 @@ inline bool flipIfBatched(Network& water, const Tdd& limit_Dirichlet, const Tdd&
     std::vector<networkLine*> candidates;
     candidates.reserve(dirty.size());
     for (auto* l : dirty) {
-      if (!line_alive(l) || l->CORNER)
+      if (!line_alive(l) || l->BCInterface)
         continue;
       candidates.emplace_back(l);
     }
@@ -894,7 +915,7 @@ inline bool flipIfBatched(Network& water, const Tdd& limit_Dirichlet, const Tdd&
     int flipped_in_batch = 0;
     std::unordered_set<networkLine*> touched;
     for (auto* l : batch) {
-      if (!line_alive(l) || l->CORNER)
+      if (!line_alive(l) || l->BCInterface)
         continue;
       if (skip_lines && skip_lines->count(l))
         continue;
@@ -937,7 +958,12 @@ void remesh_for_main_loop(Network& water, int time_step,
                           PVDWriter* candidate_patches_pvd = nullptr,
                           PVDWriter* remeshed_patches_pvd = nullptr,
                           PVDWriter* trigger_edges_pvd = nullptr,
-                          PVDWriter* edges_pvd = nullptr);
+                          PVDWriter* edges_pvd = nullptr,
+                          const BEMMeshPipeline::RemeshTrialGeometryInputs* trial_geometry_inputs = nullptr,
+                          const std::string& phase_debug_tag = "",
+                          PVDWriter* remeshed_water_unrepaired_pvd = nullptr,
+                          int step_retry = 0,
+                          RemeshWaterSnapshotWriter remeshed_water_snapshot_writer = RemeshWaterSnapshotWriter{});
 
 // ---------------------------------------------------------------------------
 // Curvature-based mesh density control
@@ -962,7 +988,7 @@ enum class EdgeThetaVerdict {
 inline Tddd qualitySmoothingVector(const networkPoint* p,
                                    const Tddd& current_pX,
                                    std::function<Tddd(const networkPoint*)> position) {
-  auto faces = p->CORNER ? p->getFacesDirichlet() : p->getBoundaryFaces();
+  auto faces = p->BCInterface ? p->getFacesDirichlet() : p->getBoundaryFaces();
   std::vector<double> weights;
   std::vector<Tddd> positions_vec;
 
@@ -1061,9 +1087,9 @@ inline void remesh_for_main_loop_IMPL_UNUSED(Network& water, const int time_step
     if (protected_ratio > max_protected_ratio) {
       throw step_failure("collision unresolved + protected ratio " + std::to_string(protected_ratio) + " > " + std::to_string(max_protected_ratio) + " (" + std::to_string(protected_lines.size()) + " / " + std::to_string(n_boundary_lines) + " lines)" + " at time_step " + std::to_string(time_step));
     }
-    std::cout << Yellow << "[remesh] time_step " << time_step
-              << ": collision unresolved (fold_ratio=" << fold_ratio
-              << ", protected_ratio=" << protected_ratio << "), continuing"
+    std::cout << Yellow << "[remesh:quality] step=" << time_step
+              << " collision_unresolved=1 fold_ratio=" << fold_ratio
+              << " protected_ratio=" << protected_ratio
               << colorReset << std::endl;
   }
 
@@ -1107,9 +1133,9 @@ inline void remesh_for_main_loop_IMPL_UNUSED(Network& water, const int time_step
   // During wave breaking the wave approaches itself, causing non-adjacent collision
   // to protect most of the mesh. Skipping all remesh leads to mesh quality collapse.
   if (boundary_line_count > 0 && protected_lines.size() > 0) {
-    std::cout << Yellow << "[remesh] time_step " << time_step
-              << ": protected region is " << protected_lines.size() << " / " << boundary_line_count
-              << " boundary lines (" << protected_halo_lines.size() << " incl. 1-ring halo)"
+    std::cout << Yellow << "[remesh:protect] step=" << time_step
+              << " protected_lines=" << protected_lines.size() << "/" << boundary_line_count
+              << " halo_lines=" << protected_halo_lines.size()
               << colorReset << std::endl;
   }
   const bool heavy_collision_protection = false; // never skip remesh entirely
@@ -1121,8 +1147,8 @@ inline void remesh_for_main_loop_IMPL_UNUSED(Network& water, const int time_step
       if (!l->checkTopology())
         n_pre_topo_err++;
     if (n_pre_topo_err > 0) {
-      std::cerr << Red << "[remesh] time_step " << time_step
-                << ": " << n_pre_topo_err << " pre-existing topology errors detected"
+      std::cerr << Red << "[remesh:topology] step=" << time_step
+                << " pre_existing_errors=" << n_pre_topo_err
                 << colorReset << std::endl;
       throw step_failure("pre-existing topology errors (" + std::to_string(n_pre_topo_err) + " lines) at time_step " + std::to_string(time_step));
     }
@@ -1223,7 +1249,7 @@ inline void remesh_for_main_loop_IMPL_UNUSED(Network& water, const int time_step
             if (nl)
               out.insert(nl);
     };
-    static const bool enable_corner_neumann_debug = (std::getenv("BEM_CORNER_DEBUG") && std::string(std::getenv("BEM_CORNER_DEBUG")) != "0");
+    static const bool enable_corner_neumann_debug = (std::getenv("BEM_BCInterface_DEBUG") && std::string(std::getenv("BEM_BCInterface_DEBUG")) != "0");
     auto log_corner_connected_neumann_line = [&](const char* phase, const networkLine* l, const char* event = nullptr) {
       if (!enable_corner_neumann_debug)
         return;
@@ -1305,15 +1331,15 @@ inline void remesh_for_main_loop_IMPL_UNUSED(Network& water, const int time_step
                 << " area_ratio1=" << area_ratio1
                 << " normal_dot=" << normal_dot
                 << " common_points=" << common_points
-                << " line_flags={D:" << l->Dirichlet << ",N:" << l->Neumann << ",C:" << l->CORNER << "}"
+                << " line_flags={D:" << l->Dirichlet << ",N:" << l->Neumann << ",C:" << l->BCInterface << "}"
                 << " face0_flags={D:" << face0_dirichlet << ",N:" << face0_neumann << "}"
                 << " face1_flags={D:" << face1_dirichlet << ",N:" << face1_neumann << "}"
                 << " endpoint0_flags={D:" << (p0 ? p0->Dirichlet : false)
                 << ",N:" << (p0 ? p0->Neumann : false)
-                << ",C:" << (p0 ? p0->CORNER : false) << "}"
+                << ",C:" << (p0 ? p0->BCInterface : false) << "}"
                 << " endpoint1_flags={D:" << (p1 ? p1->Dirichlet : false)
                 << ",N:" << (p1 ? p1->Neumann : false)
-                << ",C:" << (p1 ? p1->CORNER : false) << "}"
+                << ",C:" << (p1 ? p1->BCInterface : false) << "}"
                 << " endpoint_lines={" << p0_lines << "," << p1_lines << "}"
                 << " opposite_lines={" << opp0_lines << "," << opp1_lines << "}"
                 << " x0=" << (p0 ? p0->X : Tddd{0., 0., 0.})
@@ -1404,8 +1430,8 @@ inline void remesh_for_main_loop_IMPL_UNUSED(Network& water, const int time_step
                 break;
               }
           if (!pre_ok) {
-            std::cerr << Yellow << "[remesh] time_step " << time_step
-                      << ": skipping split (neighbor topology already bad)" << colorReset << std::endl;
+            std::cerr << Yellow << "[remesh:topology] step=" << time_step
+                      << " skip_split=1 reason=bad_neighbor_topology" << colorReset << std::endl;
             continue;
           }
           auto [sp0, sp1] = l->getPoints();
@@ -1434,8 +1460,8 @@ inline void remesh_for_main_loop_IMPL_UNUSED(Network& water, const int time_step
           }
         }
         if (split_topo_error) {
-          std::cerr << Red << "[remesh] time_step " << time_step
-                    << ": topology error after split batch, stopping further splits" << colorReset << std::endl;
+          std::cerr << Red << "[remesh:topology] step=" << time_step
+                    << " error_after_split_batch=1 action=stop_splits" << colorReset << std::endl;
           break;
         }
         dirty = std::move(touched);
@@ -1494,7 +1520,7 @@ inline void remesh_for_main_loop_IMPL_UNUSED(Network& water, const int time_step
               for (auto* l : face->getLines()) {
                 if (!l)
                   continue;
-                if (!line_alive(l) || l->CORNER || is_near_protected(l))
+                if (!line_alive(l) || l->BCInterface || is_near_protected(l))
                   continue;
                 if (seen.insert(l).second)
                   tiny_flip_candidates.emplace_back(l);
@@ -1510,7 +1536,7 @@ inline void remesh_for_main_loop_IMPL_UNUSED(Network& water, const int time_step
             bool changed_tiny_faces = false;
             std::unordered_set<networkLine*> touched;
             for (auto* l : batch) {
-              if (!line_alive(l) || l->CORNER || is_near_protected(l))
+              if (!line_alive(l) || l->BCInterface || is_near_protected(l))
                 continue;
               const double before_ratio = worstTinyFaceAreaRatioOnLine(l);
               const double predicted_ratio = predictedWorstTinyFaceAreaRatioAfterFlip(l);
@@ -1540,7 +1566,7 @@ inline void remesh_for_main_loop_IMPL_UNUSED(Network& water, const int time_step
           for (auto* l : water.getBoundaryLines()) {
             if (!l)
               continue;
-            if (!line_alive(l) || l->CORNER || is_near_protected(l))
+            if (!line_alive(l) || l->BCInterface || is_near_protected(l))
               continue;
             if (!is_small_impact_collapse_candidate(l))
               continue;
@@ -1565,7 +1591,7 @@ inline void remesh_for_main_loop_IMPL_UNUSED(Network& water, const int time_step
             for (auto* l : face->getLines()) {
               if (!l)
                 continue;
-              if (!line_alive(l) || l->CORNER || is_near_protected(l))
+              if (!line_alive(l) || l->BCInterface || is_near_protected(l))
                 continue;
               const double len = l->length();
               if (!(len > 0.0) || !std::isfinite(len))
@@ -1587,7 +1613,7 @@ inline void remesh_for_main_loop_IMPL_UNUSED(Network& water, const int time_step
 
           bool changed_tiny_faces = false;
           for (auto* l : batch) {
-            if (!line_alive(l) || l->CORNER || is_near_protected(l))
+            if (!line_alive(l) || l->BCInterface || is_near_protected(l))
               continue;
             const auto attached_faces = l->getBoundaryFaces();
             double worst_ratio = 1E+100;
@@ -1640,8 +1666,8 @@ inline void remesh_for_main_loop_IMPL_UNUSED(Network& water, const int time_step
             if (!line_alive(l))
               continue;
 
-            // Skip CORNER lines (similar to flip operations)
-            if (l->CORNER)
+            // Skip BCInterface lines (similar to flip operations)
+            if (l->BCInterface)
               continue;
             // Skip lines near unresolved collision zones
             if (is_near_protected(l))
@@ -1685,7 +1711,7 @@ inline void remesh_for_main_loop_IMPL_UNUSED(Network& water, const int time_step
               double alt_ratio1 = (local_mean_len > 0.0) ? alt1 / local_mean_len : 1E+100;
               double min_angle_deg0 = minimumInteriorAngleDeg(f0);
               double min_angle_deg1 = minimumInteriorAngleDeg(f1);
-              if (!l->CORNER &&
+              if (!l->BCInterface &&
                   std::min(alt_ratio0, alt_ratio1) < 0.2 &&
                   std::min(area_ratio0, area_ratio1) < 0.2 &&
                   std::min(min_angle_deg0, min_angle_deg1) < 20.0) {
@@ -1846,9 +1872,9 @@ inline void remesh_for_main_loop_IMPL_UNUSED(Network& water, const int time_step
     size_t n_boundary_faces = water.getBoundaryFaces().size();
     double fold_ratio = (n_boundary_faces > 0) ? static_cast<double>(folded.size()) / n_boundary_faces : 0.0;
     if (!folded.empty()) {
-      std::cout << Yellow << "[remesh] time_step " << time_step
-                << ": post-remesh fold check: " << folded.size() << " / " << n_boundary_faces
-                << " folded faces (ratio=" << fold_ratio << ")"
+      std::cout << Yellow << "[remesh:quality] step=" << time_step
+                << " folded_faces=" << folded.size() << "/" << n_boundary_faces
+                << " ratio=" << fold_ratio
                 << colorReset << std::endl;
     }
     if (fold_ratio > max_fold_ratio) {
@@ -1858,8 +1884,8 @@ inline void remesh_for_main_loop_IMPL_UNUSED(Network& water, const int time_step
   {
     const auto tiny = checkTinyFacesRelativeToLocalMean(water);
     if (tiny.worst_face && tiny.worst_area_ratio < min_local_face_area_ratio) {
-      std::cout << Yellow << "[remesh] time_step " << time_step
-                << ": tiny face check: face=" << tiny.worst_face->index
+      std::cout << Yellow << "[remesh:quality] step=" << time_step
+                << " tiny_face=" << tiny.worst_face->index
                 << " area_ratio=" << tiny.worst_area_ratio
                 << " area=" << tiny.worst_area
                 << " local_mean_area=" << tiny.worst_local_mean_area

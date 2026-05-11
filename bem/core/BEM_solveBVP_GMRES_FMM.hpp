@@ -4,14 +4,20 @@
 // GMRES + FMM (+ ILU/Jacobi preconditioner) implementation details.
 
 #include <atomic>
+#include <cstdlib>
 #include <deque>
 #include <functional>
 #include <string>
 
+inline bool fmmTrueQuadraticStraightGeometryProbeEnabled() {
+  const char* env = std::getenv("BEM_FMM_TRUE_QUAD_STRAIGHT_GEOMETRY_PROBE");
+  return env && std::string(env) != "0";
+}
+
 std::array<double, 2> integrateNearField(const target4FMM& target) const { return target.integrateNearField(cache_phi_val_D_by_index.data(), cache_phin_val_D_by_index.data()); }
 
 inline bool isMidpointDirichletBC(const networkLine* l) const {
-  // Keep CORNER classification as mixed boundary.
+  // Keep BCInterface classification as mixed boundary.
   // Midpoint Dirichlet-side treatment is applied only to pure Dirichlet edges.
   return l->Dirichlet;
 }
@@ -79,7 +85,7 @@ V_d compute_Ax_minus_b(bool is_time_derivative = false) {
       for (const auto& [f, d_] : a->dofs) {
         if (d_.index < 0) continue;
         const auto i = d_.index;
-        if (!(a->CORNER && isNeumannBieDofKey(a, f))) {
+        if (!(a->BCInterface && isNeumannBieDofKey(a, f))) {
           need_integrals = true;
           break;
         }
@@ -104,7 +110,7 @@ V_d compute_Ax_minus_b(bool is_time_derivative = false) {
       for (const auto& [f, d_] : a->dofs) {
         if (d_.index < 0) continue;
         const auto i = d_.index;
-        if (a->CORNER && isNeumannBieDofKey(a, f)) {
+        if (a->BCInterface && isNeumannBieDofKey(a, f)) {
           Av[i] = a->dof(f).phi_FMM;
         } else {
           Av[i] = GPhin_point - (GnPhi_point + diag_coeffs[i] * a->dof(f).phi_FMM);
@@ -139,8 +145,8 @@ V_d compute_Ax_minus_b(bool is_time_derivative = false) {
           const auto i = d_.index;
           if (i >= static_cast<int>(Av.size()))
             continue;
-          if (l->CORNER && isNeumannBieDofKey(l, f)) {
-            // CORNER constraint row: Av[i] = phi (phi_N = phi_D enforced)
+          if (l->BCInterface && isNeumannBieDofKey(l, f)) {
+            // BCInterface constraint row: Av[i] = phi (phi_N = phi_D enforced)
             Av[i] = l->dof(f).phi_FMM;
           } else {
             Av[i] = GPhin_mid - (GnPhi_mid + diag_coeffs[i] * l->dof(f).phi_FMM);
@@ -186,7 +192,7 @@ void buildDiagonalPreconditionerForKRing0() {
       double diag = 1.0;
 
       // Corner constraint row: A = I on the Neumann ID
-      if (p->CORNER && isNeumannBieDofKey(p, f)) {
+      if (p->BCInterface && isNeumannBieDofKey(p, f)) {
         diag = 1.0;
       } else if (isNeumannBieDofKey(p, f)) {
         // Use only the diagonal jump/free-term coefficient (no face integration).
@@ -636,7 +642,7 @@ void buildSparseMatrixForILU() {
         auto& row = crs_nodes[row_idx];
 
         // Corner constraint row: A = I on the Neumann ID
-        if (origin->CORNER && isNeumannBieDofKey(origin, target_f)) {
+        if (origin->BCInterface && isNeumannBieDofKey(origin, target_f)) {
           row.clearColumnValue();
           row.set(crs_ptrs[row_idx], 1.0);
           continue;
@@ -824,8 +830,8 @@ void buildSparseMatrixForILU() {
           const auto row_idx = d_.index;
           auto& row = crs_nodes[row_idx];
 
-          // CORNER constraint row: A = I on the Neumann DOF
-          if (l->CORNER && isNeumannBieDofKey(l, target_f)) {
+          // BCInterface constraint row: A = I on the Neumann DOF
+          if (l->BCInterface && isNeumannBieDofKey(l, target_f)) {
             row.clearColumnValue();
             row.set(crs_ptrs[row_idx], 1.0);
             continue;
@@ -1219,6 +1225,517 @@ void initializeBucket() {
   std::cout << "Buckets set up complete." << std::endl;
 }
 
+void prepareMatrixFreeFMMNoReindex() {
+  std::cout << Magenta << "[Solver] " << Cyan << "prepare matrix-free FMM (no solve, no reindex)" << colorReset << std::endl;
+
+  auto obj = WATERS[0];
+  this->points = obj->getBoundaryPoints();
+  auto faces = obj->getBoundaryFaces();
+
+  // Frequency-domain matrix-free diagnostics compare directly against dense
+  // LU in physical coordinates.  Keep the existing time-domain GMRES scaling
+  // path untouched and disabled here.
+  use_coordinate_scaling_ = false;
+  coordinate_scale_factor_ = 1.0;
+
+  for (auto& net : this->WATERS)
+    net->setGeometricProperties();
+
+  std::vector<networkFace*> all_faces;
+  for (const auto& water : WATERS) {
+    const auto& fs = water->getBoundaryFaces();
+    all_faces.insert(all_faces.end(), fs.begin(), fs.end());
+  }
+  _Pragma("omp parallel for schedule(dynamic, 100)") for (std::size_t i = 0; i < all_faces.size(); ++i)
+    all_faces[i]->setIntegrationInfo();
+
+  if (is_B_pole_initialized == false) {
+    this->initializeBucket();
+    is_B_pole_initialized = true;
+  }
+
+  copyToFMM(false);
+  const bool reused_sources = this->createSourcesOnSurfaces();
+  std::cout << Magenta << "[BEM] " << Cyan << "matrix-free sources reuse" << Green << " all_reused=" << reused_sources << colorReset << std::endl;
+
+  is_fmm_static_initialized = false;
+  B_poles.traverseTree([](auto& child) {
+    delete child;
+    child = nullptr;
+  });
+  B_poles.clearDataKeepTree();
+
+  int num_sources_added = 0;
+  for (const auto& f : faces)
+    for (const auto& s : f->sources)
+      num_sources_added += B_poles.add(s);
+  std::cout << Magenta << "[BEM] " << Cyan << "matrix-free FMM sources=" << Green << num_sources_added << colorReset << std::endl;
+  B_poles.generateTree();
+  is_tree_generated = true;
+
+  midpoint_lines.clear();
+  if (use_true_quadratic_element) {
+    for (auto* water : WATERS) {
+      for (auto* l : water->getBoundaryLines()) {
+        if (!std::any_of(l->dofs.begin(), l->dofs.end(), [](const auto& kv) { return kv.second.index >= 0; }))
+          continue;
+        if (!std::isfinite(l->X_mid[0]) || !std::isfinite(l->X_mid[1]) || !std::isfinite(l->X_mid[2])) {
+          auto [pA, pB] = l->getPoints();
+          l->setXSingle(0.5 * (pA->Xtarget + pB->Xtarget));
+        }
+        midpoint_lines.push_back(l);
+      }
+    }
+  }
+
+  std::vector<target4FMM*> all_targets;
+  all_targets.reserve(points.size() + midpoint_lines.size());
+  for (auto* p : points)
+    all_targets.push_back(static_cast<target4FMM*>(p));
+  for (auto* l : midpoint_lines)
+    all_targets.push_back(static_cast<target4FMM*>(l));
+
+#if defined(USE_METAL_M2L)
+  initializeFMM(B_poles, all_targets, false, MetalM2LSettings{use_metal_m2l, metal_m2l_threadgroup, metal_m2l_sort_terms}, nearfield_mode);
+#else
+  initializeFMM(B_poles, all_targets, false, {}, nearfield_mode);
+#endif
+  is_fmm_static_initialized = true;
+  fmm_tree_signature_built = computeFMMTreeSignature();
+
+  createCopyMap();
+
+  int total = 0;
+  for (const auto& p : points)
+    for (const auto& [f_, d_] : p->dofs)
+      if (d_.index >= 0)
+        ++total;
+  if (use_true_quadratic_element) {
+    for (auto* l : midpoint_lines)
+      for (const auto& [f_, d_] : l->dofs)
+        if (d_.index >= 0)
+          ++total;
+  }
+  total_unknowns = total;
+  if (matrix_size <= 0)
+    matrix_size = total_unknowns;
+  if (total_unknowns != matrix_size) {
+    std::cout << Magenta << "[BEM] " << Yellow << "matrix-free FMM unknown count mismatch matrix_size="
+              << matrix_size << " active=" << total_unknowns << colorReset << std::endl;
+    matrix_size = total_unknowns;
+  }
+
+  updateGeometricProperties();
+  copyToFMM(false);
+  cacheBoundaryValues(this->points, total_unknowns);
+}
+
+void updateLastFMMMatvecStats(const std::string& setup_source,
+                              bool coordinate_scaling,
+                              bool morton_reindex,
+                              bool reused_sources,
+                              bool reused_static_fmm) {
+  FMMMatvecStats stats;
+  stats.setup_source = setup_source;
+  stats.coordinate_scaling = coordinate_scaling;
+  stats.morton_reindex = morton_reindex;
+  stats.reused_sources = reused_sources;
+  stats.reused_static_fmm = reused_static_fmm;
+  stats.coordinate_scale_factor = coordinate_scale_factor_;
+  stats.targets = points.size() + midpoint_lines.size();
+
+  std::vector<networkFace*> faces;
+  if (!WATERS.empty())
+    faces = WATERS[0]->getBoundaryFaces();
+  std::vector<std::pair<int, double>> source_offsets;
+  source_offsets.reserve(faces.size());
+  for (const auto* f : faces) {
+    if (!f)
+      continue;
+    stats.sources += f->sources.size();
+    for (const auto& s : f->sources) {
+      if (s) {
+        stats.max_source_offset = std::max(stats.max_source_offset, s->max_source_offset);
+        source_offsets.emplace_back(f->index, s->max_source_offset);
+        stats.mean_source_offset += s->max_source_offset;
+      }
+    }
+  }
+  if (!source_offsets.empty()) {
+    stats.mean_source_offset /= static_cast<double>(source_offsets.size());
+    std::sort(source_offsets.begin(), source_offsets.end(), [](const auto& a, const auto& b) { return a.second < b.second; });
+    const std::size_t p95_index = std::min(source_offsets.size() - 1, static_cast<std::size_t>(0.95 * static_cast<double>(source_offsets.size() - 1)));
+    stats.p95_source_offset = source_offsets[p95_index].second;
+    stats.top_source_offsets.assign(source_offsets.rbegin(), source_offsets.rbegin() + std::min<std::size_t>(10, source_offsets.size()));
+  }
+
+  auto accumulate_target = [&](const target4FMM* t, const bool midpoint) {
+    if (!t)
+      return;
+    const std::size_t n = t->near_indices.size();
+    stats.total_near_terms += n;
+    stats.max_near_terms_per_target = std::max(stats.max_near_terms_per_target, n);
+    if (midpoint) {
+      ++stats.midpoint_targets;
+      stats.midpoint_total_near_terms += n;
+      stats.midpoint_max_near_terms_per_target = std::max(stats.midpoint_max_near_terms_per_target, n);
+    } else {
+      ++stats.vertex_targets;
+      stats.vertex_total_near_terms += n;
+      stats.vertex_max_near_terms_per_target = std::max(stats.vertex_max_near_terms_per_target, n);
+    }
+  };
+  for (const auto* p : points)
+    accumulate_target(static_cast<const target4FMM*>(p), false);
+  for (const auto* l : midpoint_lines)
+    accumulate_target(static_cast<const target4FMM*>(l), true);
+  if (stats.targets > 0)
+    stats.mean_near_terms_per_target = static_cast<double>(stats.total_near_terms) / static_cast<double>(stats.targets);
+  if (stats.vertex_targets > 0)
+    stats.vertex_mean_near_terms_per_target = static_cast<double>(stats.vertex_total_near_terms) / static_cast<double>(stats.vertex_targets);
+  if (stats.midpoint_targets > 0)
+    stats.midpoint_mean_near_terms_per_target = static_cast<double>(stats.midpoint_total_near_terms) / static_cast<double>(stats.midpoint_targets);
+  last_fmm_matvec_stats = stats;
+}
+
+std::unique_ptr<FMMMatvecSession> prepareFMMMatvecSession(bool enable_coordinate_scaling = true,
+                                                          bool enable_morton_reindex = true,
+                                                          bool allow_static_reuse = true,
+                                                          const std::string& setup_source = "time_domain_shared") {
+  auto session = std::make_unique<FMMMatvecSession>();
+  session->waters = &this->WATERS;
+  session->use_scaling = &use_coordinate_scaling_;
+  session->scale_factor = &coordinate_scale_factor_;
+
+  TimeWatch log_stage_watch;
+  auto log_stage = [&](const std::string& label) {
+    if (!bem_verbose()) return;
+    std::cout << Magenta << "[BEM] " << Cyan << label << Green << " elapsed=" << log_stage_watch() << colorReset << std::endl;
+  };
+
+  auto obj = WATERS[0];
+  this->points = obj->getBoundaryPoints();
+  auto faces = obj->getBoundaryFaces();
+  auto sync_midpoint_targets = [&]() {
+    if (!use_true_quadratic_element)
+      return;
+    const bool straight_probe = fmmTrueQuadraticStraightGeometryProbeEnabled();
+    for (auto* water : WATERS) {
+      for (auto* l : water->getBoundaryLines()) {
+        auto [pA, pB] = l->getPoints();
+        if (!pA || !pB)
+          continue;
+        if (straight_probe || !std::isfinite(l->X_mid[0]) || !std::isfinite(l->X_mid[1]) || !std::isfinite(l->X_mid[2])) {
+          l->setXSingle(0.5 * (pA->Xtarget + pB->Xtarget));
+        } else {
+          l->setXSingle(l->X_mid);
+        }
+      }
+    }
+  };
+
+  use_coordinate_scaling_ = false;
+  coordinate_scale_factor_ = 1.0;
+  if (enable_coordinate_scaling) {
+    use_coordinate_scaling_ = true;
+    obj->setGeometricProperties();
+    coordinate_scale_factor_ = obj->computeCharacteristicLength();
+    if (coordinate_scale_factor_ > 1e-10) {
+      std::stringstream ss;
+      ss << "Coordinate scaling enabled (L=" << coordinate_scale_factor_ << ")" << colorReset << std::endl;
+      log_stage(ss.str());
+      for (auto& net : this->WATERS)
+        net->applyScaling(coordinate_scale_factor_);
+      session->active_scaling = true;
+    } else {
+      std::stringstream ss;
+      ss << "Coordinate scaling skipped (L too small: " << coordinate_scale_factor_ << ")" << colorReset << std::endl;
+      log_stage(ss.str());
+      use_coordinate_scaling_ = false;
+      coordinate_scale_factor_ = 1.0;
+    }
+  }
+  sync_midpoint_targets();
+
+  for (auto& net : this->WATERS)
+    net->setGeometricProperties();
+  log_stage("setGeometricProperties");
+
+  std::vector<networkFace*> all_faces;
+  for (const auto& water : WATERS) {
+    const auto& fs = water->getBoundaryFaces();
+    all_faces.insert(all_faces.end(), fs.begin(), fs.end());
+  }
+  _Pragma("omp parallel for schedule(dynamic, 100)") for (std::size_t i = 0; i < all_faces.size(); ++i)
+    all_faces[i]->setIntegrationInfo();
+  log_stage("setIntegrationInfo");
+
+  static std::size_t last_faces_hash = 0;
+  static std::size_t last_points_hash = 0;
+  std::size_t faces_hash = 0;
+  for (const auto& f : faces) {
+    faces_hash ^= std::hash<const networkFace*>{}(f);
+    auto [p0, p1, p2] = f->getPoints();
+    faces_hash ^= std::hash<const networkPoint*>{}(p0);
+    faces_hash ^= std::hash<const networkPoint*>{}(p1);
+    faces_hash ^= std::hash<const networkPoint*>{}(p2);
+  }
+  std::size_t points_hash = 0;
+  for (const auto& p : this->points)
+    points_hash ^= std::hash<const networkPoint*>{}(p);
+  const bool topology_same = is_tree_generated && (faces_hash == last_faces_hash) && (points_hash == last_points_hash);
+  {
+    std::stringstream ss;
+    ss << "tree reuse check topology_same=" << topology_same;
+    if (!topology_same) {
+      ss << " reason:";
+      if (!is_tree_generated)
+        ss << " tree_not_generated";
+      if (faces_hash != last_faces_hash)
+        ss << " faces_changed";
+      if (points_hash != last_points_hash)
+        ss << " points_changed";
+    }
+    ss << " faces_hash=" << faces_hash << " points_hash=" << points_hash;
+    log_stage(ss.str());
+  }
+
+  if (is_B_pole_initialized == false) {
+    this->initializeBucket();
+    is_B_pole_initialized = true;
+  }
+  log_stage("initializeBucket (first time only)");
+
+  if (enable_morton_reindex) {
+    struct dof_entry {
+      std::uint64_t key;
+      int old_index;
+      networkPoint* p;
+      networkFace* f;
+    };
+    auto part1by2 = [](std::uint32_t x) -> std::uint64_t {
+      std::uint64_t v = x & 0x1fffffU;
+      v = (v | (v << 32)) & 0x1f00000000ffffULL;
+      v = (v | (v << 16)) & 0x1f0000ff0000ffULL;
+      v = (v | (v << 8)) & 0x100f00f00f00f00fULL;
+      v = (v | (v << 4)) & 0x10c30c30c30c30c3ULL;
+      v = (v | (v << 2)) & 0x1249249249249249ULL;
+      return v;
+    };
+    auto morton3 = [&](std::uint32_t x, std::uint32_t y, std::uint32_t z) -> std::uint64_t { return (part1by2(x) | (part1by2(y) << 1) | (part1by2(z) << 2)); };
+
+    double xmin = 1e300, xmax = -1e300;
+    double ymin = 1e300, ymax = -1e300;
+    double zmin = 1e300, zmax = -1e300;
+    const auto& pts = this->points;
+    _Pragma("omp parallel for reduction(min:xmin,ymin,zmin) reduction(max:xmax,ymax,zmax)") for (std::size_t i = 0; i < pts.size(); ++i) {
+      const auto& x = pts[i]->X;
+      const double px = std::get<0>(x);
+      const double py = std::get<1>(x);
+      const double pz = std::get<2>(x);
+      xmin = std::min(xmin, px);
+      xmax = std::max(xmax, px);
+      ymin = std::min(ymin, py);
+      ymax = std::max(ymax, py);
+      zmin = std::min(zmin, pz);
+      zmax = std::max(zmax, pz);
+    }
+    const int bits = 21;
+    const std::uint32_t maxv = (1u << bits) - 1u;
+    auto quantize = [&](double v, double v0, double v1) -> std::uint32_t {
+      if (!(v1 > v0))
+        return 0u;
+      double t = (v - v0) / (v1 - v0);
+      t = std::clamp(t, 0.0, 1.0);
+      return static_cast<std::uint32_t>(t * static_cast<double>(maxv) + 0.5);
+    };
+
+    std::vector<std::size_t> point_dof_counts(this->points.size());
+    _Pragma("omp parallel for") for (std::size_t i = 0; i < this->points.size(); ++i) {
+      std::size_t cnt = 0;
+      for (const auto& [f_, d_] : this->points[i]->dofs)
+        if (d_.index >= 0) ++cnt;
+      point_dof_counts[i] = cnt;
+    }
+    std::vector<std::size_t> point_offsets(this->points.size() + 1, 0);
+    for (std::size_t i = 0; i < this->points.size(); ++i)
+      point_offsets[i + 1] = point_offsets[i] + point_dof_counts[i];
+    std::vector<dof_entry> dofs_arr(point_offsets.back());
+    _Pragma("omp parallel for") for (std::size_t i = 0; i < this->points.size(); ++i) {
+      auto* p = this->points[i];
+      const auto& x = p->X;
+      const std::uint32_t qx = quantize(std::get<0>(x), xmin, xmax);
+      const std::uint32_t qy = quantize(std::get<1>(x), ymin, ymax);
+      const std::uint32_t qz = quantize(std::get<2>(x), zmin, zmax);
+      const std::uint64_t key = morton3(qx, qy, qz);
+      std::size_t local_idx = point_offsets[i];
+      for (const auto& [f, d_] : p->dofs) {
+        if (d_.index < 0) continue;
+        dofs_arr[local_idx++] = {key, d_.index, p, f};
+      }
+    }
+    std::stable_sort(dofs_arr.begin(), dofs_arr.end(), [](const dof_entry& a, const dof_entry& b) {
+      if (a.key != b.key)
+        return a.key < b.key;
+      return a.old_index < b.old_index;
+    });
+    int new_idx = 0;
+    for (const auto& e : dofs_arr)
+      e.p->dof(e.f).index = new_idx++;
+
+    if (use_true_quadratic_element) {
+      std::unordered_set<networkLine*> unique_lines;
+      for (auto* water : WATERS)
+        for (auto* l : water->getBoundaryLines())
+          if (std::any_of(l->dofs.begin(), l->dofs.end(), [](const auto& kv) { return kv.second.index >= 0; }))
+            unique_lines.emplace(l);
+      if (!unique_lines.empty()) {
+        for (auto* l : unique_lines) {
+          auto [pA, pB] = l->getPoints();
+          const double mx = 0.5 * (std::get<0>(pA->X) + std::get<0>(pB->X));
+          const double my = 0.5 * (std::get<1>(pA->X) + std::get<1>(pB->X));
+          const double mz = 0.5 * (std::get<2>(pA->X) + std::get<2>(pB->X));
+          xmin = std::min(xmin, mx);
+          xmax = std::max(xmax, mx);
+          ymin = std::min(ymin, my);
+          ymax = std::max(ymax, my);
+          zmin = std::min(zmin, mz);
+          zmax = std::max(zmax, mz);
+        }
+        struct mid_dof_entry {
+          std::uint64_t key;
+          int old_index;
+          networkLine* l;
+        };
+        std::vector<mid_dof_entry> mid_dofs;
+        mid_dofs.reserve(unique_lines.size());
+        for (auto* l : unique_lines) {
+          auto [pA, pB] = l->getPoints();
+          const double mx = 0.5 * (std::get<0>(pA->X) + std::get<0>(pB->X));
+          const double my = 0.5 * (std::get<1>(pA->X) + std::get<1>(pB->X));
+          const double mz = 0.5 * (std::get<2>(pA->X) + std::get<2>(pB->X));
+          mid_dofs.push_back({morton3(quantize(mx, xmin, xmax), quantize(my, ymin, ymax), quantize(mz, zmin, zmax)), l->midpoint_index, l});
+        }
+        std::stable_sort(mid_dofs.begin(), mid_dofs.end(), [](const mid_dof_entry& a, const mid_dof_entry& b) {
+          if (a.key != b.key)
+            return a.key < b.key;
+          return a.old_index < b.old_index;
+        });
+        for (const auto& e : mid_dofs) {
+          e.l->midpoint_index = new_idx;
+          if (e.l->findActiveBieDof(nullptr))
+            e.l->dof(nullptr).index = new_idx++;
+          for (auto& [f, dd] : e.l->dofs) {
+            if (f != nullptr && dd.index >= 0)
+              dd.index = new_idx++;
+          }
+        }
+      }
+    }
+    std::cout << Magenta << "[Solver] " << Cyan << "reindexed unknowns (Morton order), total=" << Green << new_idx << colorReset << std::endl;
+  }
+  log_stage("reindex unknowns (Morton)");
+  if (after_reindex_unknowns)
+    after_reindex_unknowns();
+  sync_midpoint_targets();
+  copyToFMM(false);
+
+  const bool reused_sources = this->createSourcesOnSurfaces();
+  std::cout << Magenta << "[BEM] " << Cyan << "sources reuse" << Green << " all_reused=" << reused_sources << colorReset << std::endl;
+  log_stage("createSourcesOnSurfaces");
+
+  if (allow_static_reuse && topology_same && reused_sources) {
+    std::cout << "updateTree (rebin)" << std::endl;
+    TimeWatch tw;
+    B_poles.rebin();
+    std::cout << Magenta << "updateTree" << Green << ", Elapsed time : " << tw() << colorReset << std::endl;
+  } else {
+    is_fmm_static_initialized = false;
+    B_poles.traverseTree([](auto& child) {
+      delete child;
+      child = nullptr;
+    });
+    B_poles.clearDataKeepTree();
+    std::cout << "バケットの作成．極の追加" << std::endl;
+    TimeWatch tw;
+    int num_sources_added = 0;
+    for (const auto& f : faces)
+      for (const auto& s : f->sources)
+        num_sources_added += B_poles.add(s);
+    std::cout << "num_sources_added :" << num_sources_added << std::endl;
+    std::cout << Magenta << "バケットの作成．極の追加" << Green << ", Elapsed time : " << tw() << colorReset << std::endl;
+    std::cout << "ツリー構造を生成" << std::endl;
+    B_poles.generateTree();
+    std::cout << Magenta << "ツリー構造を生成" << Green << ", Elapsed time : " << tw() << colorReset << std::endl;
+    is_tree_generated = true;
+  }
+  last_faces_hash = faces_hash;
+  last_points_hash = points_hash;
+  log_stage("updateTree/generateTree");
+
+  const std::size_t tree_sig = computeFMMTreeSignature();
+  if (is_fmm_static_initialized && tree_sig != fmm_tree_signature_built)
+    is_fmm_static_initialized = false;
+  bool reuse_static_fmm = allow_static_reuse && is_fmm_static_initialized && topology_same && reused_sources;
+  if (const char* env = std::getenv("BEM_FMM_REUSE_STATIC"); env && std::string(env) == "0")
+    reuse_static_fmm = false;
+
+  if (use_true_quadratic_element) {
+    midpoint_lines.clear();
+    for (auto* water : WATERS) {
+      for (auto* l : water->getBoundaryLines()) {
+        if (!std::any_of(l->dofs.begin(), l->dofs.end(), [](const auto& kv) { return kv.second.index >= 0; }))
+          continue;
+        if (!std::isfinite(l->X_mid[0]) || !std::isfinite(l->X_mid[1]) || !std::isfinite(l->X_mid[2])) {
+          auto [pA, pB] = l->getPoints();
+          l->setXSingle(0.5 * (pA->Xtarget + pB->Xtarget));
+        } else if (fmmTrueQuadraticStraightGeometryProbeEnabled()) {
+          auto [pA, pB] = l->getPoints();
+          l->setXSingle(0.5 * (pA->Xtarget + pB->Xtarget));
+        } else {
+          l->setXSingle(l->X_mid);
+        }
+        midpoint_lines.push_back(l);
+      }
+    }
+  }
+
+  std::vector<target4FMM*> all_targets;
+  all_targets.reserve(points.size() + midpoint_lines.size());
+  for (auto* p : points)
+    all_targets.push_back(static_cast<target4FMM*>(p));
+  for (auto* l : midpoint_lines)
+    all_targets.push_back(static_cast<target4FMM*>(l));
+
+#if defined(USE_METAL_M2L)
+  initializeFMM(B_poles, all_targets, reuse_static_fmm, MetalM2LSettings{use_metal_m2l, metal_m2l_threadgroup, metal_m2l_sort_terms}, nearfield_mode);
+#else
+  initializeFMM(B_poles, all_targets, reuse_static_fmm, {}, nearfield_mode);
+#endif
+  if (!reuse_static_fmm) {
+    is_fmm_static_initialized = true;
+    fmm_tree_signature_built = tree_sig;
+  }
+  log_stage("initializeFMM");
+
+  createCopyMap();
+  total_unknowns = 0;
+  for (const auto& p : points)
+    for (const auto& [f_, d_] : p->dofs)
+      if (d_.index >= 0) ++total_unknowns;
+  if (use_true_quadratic_element)
+    for (auto* l : midpoint_lines)
+      for (const auto& [f_, d_] : l->dofs)
+        if (d_.index >= 0) ++total_unknowns;
+
+  updateGeometricProperties();
+  copyToFMM(false);
+  cacheBoundaryValues(this->points, total_unknowns);
+  updateLastFMMMatvecStats(setup_source, use_coordinate_scaling_, enable_morton_reindex, reused_sources, reuse_static_fmm);
+  log_stage("createCopyMap + updateGeometricProperties + copyToFMM");
+  return session;
+}
+
 void copyToFMM(bool is_time_derivative) {
   // Coordinate scaling math: x' = x/L implies ∂φ/∂n' = L × ∂φ/∂n
   // For Neumann BC input: physical value g → scaled value L×g
@@ -1332,7 +1849,7 @@ bool createSourcesOnSurfaces() {
         }
       }
 
-      auto X012 = std::array<Tddd, 3>{p0->X, p1->X, p2->X};
+      auto X012 = std::array<Tddd, 3>{p0->Xtarget, p1->Xtarget, p2->Xtarget};
       const auto cross_vec = Cross(X012[1] - X012[0], X012[2] - X012[0]);
       const auto normal_vec = Normalize(cross_vec);
       const double J_det = Norm(cross_vec);
@@ -1356,7 +1873,15 @@ bool createSourcesOnSurfaces() {
           }
         }
       }
-      const T6Tddd X6 = {p0->X, p1->X, p2->X, l0_qp->X_mid, l1_qp->X_mid, l2_qp->X_mid};
+      const bool straight_geometry_probe = fmmTrueQuadraticStraightGeometryProbeEnabled();
+      auto midpoint_position = [&](const networkLine* l) -> Tddd {
+        if (straight_geometry_probe) {
+          auto [pa, pb] = l->getPoints();
+          return 0.5 * (pa->Xtarget + pb->Xtarget);
+        }
+        return l->Xtarget;
+      };
+      const T6Tddd X6 = {p0->Xtarget, p1->Xtarget, p2->Xtarget, midpoint_position(l0_qp), midpoint_position(l1_qp), midpoint_position(l2_qp)};
 
       // Pointers to DOF values: [phi, phin] for each of the 6 nodes
       // Vertices use phiOnFace_FMM, midpoints use per-face phiOnFace_FMM/phinOnFace_FMM
@@ -1416,6 +1941,20 @@ bool createSourcesOnSurfaces() {
       // P2M rule
       const auto& p2m_rule = getDunavantP2MRule(g_p2m_quadrature_points);
       const int n_p2m = static_cast<int>(p2m_rule.size());
+      constexpr std::array<bool, 3> all_true_for_center{true, true, true};
+      Tddd p2m_weighted_center{0.0, 0.0, 0.0};
+      double p2m_weight_sum = 0.0;
+      for (const auto& [b0, b1, b2, ww] : p2m_rule) {
+        (void)b2;
+        const auto N6_geo = TriShape<6>(b0, b1, all_true_for_center);
+        const auto dN_dt0 = D_TriShape<6, 1, 0>(b0, b1, all_true_for_center);
+        const auto dN_dt1 = D_TriShape<6, 0, 1>(b0, b1, all_true_for_center);
+        const Tddd Xq = Dot(N6_geo, X6);
+        const double Wq = std::max(Norm(Cross(Dot(dN_dt0, X6), Dot(dN_dt1, X6))) * ww, 0.0);
+        p2m_weighted_center += Wq * Xq;
+        p2m_weight_sum += Wq;
+      }
+      const Tddd p2m_center = (p2m_weight_sum > 1e-300) ? (p2m_weighted_center / p2m_weight_sum) : ((X012[0] + X012[1] + X012[2]) / 3.0);
 
       // Adjacent callback for true quadratic elements (Duffy + rigid-mode).
       // Called when isAdjacentTo(target)=true, i.e., target is one of {p0, p1, p2, l0, l1, l2}.
@@ -1556,8 +2095,8 @@ bool createSourcesOnSurfaces() {
 
       // Non-adjacent callback for true_quadratic: pseudo_quadと同様にDunavantを動的選択。
       // near -> g_p2m_quadrature_points, far -> 6点
-      auto fill_nonadj_true_quad = [F, near_region = obj->getScale() / 25., X6](const target4FMM* origin, DirectAccumulator& acc) -> void {
-        const auto& rule = (Norm(F->centroid - origin->Xtarget) < near_region)
+      auto fill_nonadj_true_quad = [F, near_region = obj->getScale() / 25., X6, p2m_center](const target4FMM* origin, DirectAccumulator& acc) -> void {
+        const auto& rule = (Norm(p2m_center - origin->Xtarget) < near_region)
                                ? getDunavantP2MRule(g_p2m_quadrature_points)
                                : getDunavantP2MRule(6);
         constexpr std::array<bool, 3> all_true{true, true, true};
@@ -1590,7 +2129,7 @@ bool createSourcesOnSurfaces() {
 
       // Setup source element
       auto setup_true_quad_element = [&](source4FMM<target4FMM>& pole) {
-        pole.X = F->centroid;
+        pole.X = p2m_center;
         pole.normal = normal_vec;
         pole.fill_direct_entries = fill_direct_true_quad;
         pole.fill_direct_entries_nonadj = fill_nonadj_true_quad;
@@ -1604,13 +2143,12 @@ bool createSourcesOnSurfaces() {
         pole.get_weighted_source_densities = nullptr;
         // P2M sources using Dunavant quadrature
         pole.p2m_sources.resize(n_p2m);
-        constexpr std::array<bool, 3> all_true{true, true, true};
         for (int q = 0; q < n_p2m; ++q) {
           auto& isrc = pole.p2m_sources[q];
           const auto& [b0, b1, b2, ww] = p2m_rule[q];
-          const auto N6_geo = TriShape<6>(b0, b1, all_true);
-          const auto dN_dt0 = D_TriShape<6, 1, 0>(b0, b1, all_true);
-          const auto dN_dt1 = D_TriShape<6, 0, 1>(b0, b1, all_true);
+          const auto N6_geo = TriShape<6>(b0, b1, all_true_for_center);
+          const auto dN_dt0 = D_TriShape<6, 1, 0>(b0, b1, all_true_for_center);
+          const auto dN_dt1 = D_TriShape<6, 0, 1>(b0, b1, all_true_for_center);
           const Tddd Xq = Dot(N6_geo, X6);
           const Tddd cross_q = Cross(Dot(dN_dt0, X6), Dot(dN_dt1, X6));
           const double J_q = Norm(cross_q);
@@ -1646,6 +2184,7 @@ bool createSourcesOnSurfaces() {
       }
 
     } else if (F->isPseudoQuadraticElement) {
+      F->ensureDodecaPoints();
       /* -------------------------------------------------------------------------- */
 
       /*
@@ -1822,22 +2361,25 @@ bool createSourcesOnSurfaces() {
                                  cross = 2. * F->area * F->normal,
                                  X012_,
                                  points = F->Points, idx0, idx1, idx2](const target4FMM* origin, DirectAccumulator& acc) -> void {
-        auto [p0, p1, p2] = points;
-        std::array<int, 3> idx = {0, 1, 2};
-        std::array<std::array<double, 3>, 3> X012 = X012_;
-        if (p1 == origin) {
-          p2 = points[0];
-          p0 = points[1]; // origin
-          p1 = points[2];
-          idx = {2, 0, 1};
-          X012 = {p0->Xtarget, p1->Xtarget, p2->Xtarget};
-        } else if (p2 == origin) {
-          p1 = points[0];
-          p2 = points[1];
-          p0 = points[2]; // origin
-          idx = {1, 2, 0};
-          X012 = {p0->Xtarget, p1->Xtarget, p2->Xtarget};
-        }
+	      auto [p0, p1, p2] = points;
+	      std::array<int, 3> idx = {0, 1, 2};
+	      int origin_original_index = 0;
+	      std::array<std::array<double, 3>, 3> X012 = X012_;
+	      if (p1 == origin) {
+	        p2 = points[0];
+	        p0 = points[1]; // origin
+	        p1 = points[2];
+	        idx = {2, 0, 1};
+	        origin_original_index = 1;
+	        X012 = {p0->Xtarget, p1->Xtarget, p2->Xtarget};
+	      } else if (p2 == origin) {
+	        p1 = points[0];
+	        p2 = points[1];
+	        p0 = points[2]; // origin
+	        idx = {1, 2, 0};
+	        origin_original_index = 2;
+	        X012 = {p0->Xtarget, p1->Xtarget, p2->Xtarget};
+	      }
 
         double nr_inv;
         std::array<double, 3> WGN = {0., 0., 0.}, WGnN = {0., 0., 0.}, N012_geometry, R, tmp;
@@ -1850,10 +2392,13 @@ bool createSourcesOnSurfaces() {
           WGN += J_det * tmp;
           WGnN += -Dot(R * nr_inv, cross) * tmp * nr_inv;
         }
-        acc.add(idx0, WGN[idx[0]], 0.0);
-        acc.add(idx1, WGN[idx[1]], WGnN[idx[1]]);
-        acc.add(idx2, WGN[idx[2]], WGnN[idx[2]]);
-      };
+	      const std::array<int32_t, 3> dof_idx = {idx0, idx1, idx2};
+	      for (int old = 0; old < 3; ++old) {
+	        acc.add(dof_idx[old],
+	                WGN[idx[old]],
+	                old == origin_original_index ? 0.0 : WGnN[idx[old]]);
+	      }
+	    };
 
       //^ 非隣接面用: 頂点巡回置換・リジッドモード不要の簡略化パス
       auto fill_nonadj_linear = [near_region,
@@ -2028,17 +2573,17 @@ V_d solveSystemGMRES(bool is_time_derivative, V_d x0, bool allow_ilu_rebuild_ret
 
   // コーナー点（DirichletとNeumannの交点）では，phi=phi の条件に変更
   _Pragma("omp parallel for") for (const auto& p : points) {
-    if (p->CORNER)
+    if (p->BCInterface)
       for (const auto& [f, d_] : p->dofs) { if (d_.index < 0) continue; const auto i = d_.index;
         if (isNeumannBieDofKey(p, f))
           b[i] = is_time_derivative ? p->phiphin_t[0] : p->phiphin[0];
       }
   }
 
-  // CORNER midpoint constraint: phi_N = phi_D (same pattern as vertex CORNER above)
+  // BCInterface midpoint constraint: phi_N = phi_D (same pattern as vertex BCInterface above)
   if (use_true_quadratic_element) {
     for (auto* l : midpoint_lines) {
-      if (l->CORNER && l->isMultipleNode) {
+      if (l->BCInterface && l->isMultipleNode) {
         for (const auto& [f, d_] : l->dofs) { if (d_.index < 0) continue; const auto idx = d_.index;
           if (isNeumannBieDofKey(l, f))
             b[idx] = is_time_derivative ? l->phiphin_t[0] : l->phiphin[0];
@@ -2586,7 +3131,7 @@ V_d solveSystemGMRES(bool is_time_derivative, V_d x0, bool allow_ilu_rebuild_ret
         hotspot.endpoint1 = p1 ? p1->X : Tddd{0., 0., 0.};
         hotspot.dirichlet = loc.line->Dirichlet;
         hotspot.neumann = loc.line->Neumann;
-        hotspot.corner = loc.line->CORNER;
+        hotspot.corner = loc.line->BCInterface;
         hotspot.is_multiple_node = loc.line->isMultipleNode;
         hotspot.contact_faces_count = static_cast<int>(loc.line->getContactFaces().size());
         hotspot.adjacent_face_flags = make_face_flag_summary(loc.line->getBoundaryFaces());
@@ -2597,7 +3142,7 @@ V_d solveSystemGMRES(bool is_time_derivative, V_d x0, bool allow_ilu_rebuild_ret
         hotspot.position = loc.point->X;
         hotspot.dirichlet = loc.point->Dirichlet;
         hotspot.neumann = loc.point->Neumann;
-        hotspot.corner = loc.point->CORNER;
+        hotspot.corner = loc.point->BCInterface;
         hotspot.is_multiple_node = loc.point->isMultipleNode;
         hotspot.contact_faces_count = static_cast<int>(loc.point->getContactFaces().size());
         hotspot.adjacent_face_flags = make_face_flag_summary(loc.point->getBoundaryFaces());
@@ -2768,9 +3313,9 @@ void updateGeometricProperties() {
         auto GPhin_GnPhi_near = integrateNearField(mt);
         auto GPhin_GnPhi_far = mt.integrateFarField();
         auto [GPhin, GnPhi] = GPhin_GnPhi_near + GPhin_GnPhi_far;
-        // BIE-derived diag_coeff applies to primary DOF; CORNER Neumann DOF gets 1.0 (constraint row)
+        // BIE-derived diag_coeff applies to primary DOF; BCInterface Neumann DOF gets 1.0 (constraint row)
         for (const auto& [f, d_] : l->dofs) { if (d_.index < 0) continue; const auto i = d_.index;
-          if (l->CORNER && isNeumannBieDofKey(l, f)) {
+          if (l->BCInterface && isNeumannBieDofKey(l, f)) {
             diag_coeffs[i] = 1.0; // constraint row diagonal
           } else {
             diag_coeffs[i] = -GnPhi;
@@ -2784,7 +3329,7 @@ void updateGeometricProperties() {
       for (auto* l : midpoint_lines) {
         for (const auto& [f, d_] : l->dofs) { if (d_.index < 0) continue; const auto i = d_.index;
           if (i >= 0 && i < static_cast<int>(diag_coeffs.size())) {
-            if (l->CORNER && isNeumannBieDofKey(l, f))
+            if (l->BCInterface && isNeumannBieDofKey(l, f))
               diag_coeffs[i] = 1.0; // constraint row
             else
               diag_coeffs[i] = 0.5;
@@ -2806,7 +3351,7 @@ void updateGeometricProperties() {
         double max_GPhin_vtx = 0, max_GPhin_mid = 0;
         for (const auto& a : points) {
           for (const auto& [f, d_] : a->dofs) { if (d_.index < 0) continue; const auto i = d_.index;
-            if (a->CORNER && isNeumannBieDofKey(a, f))
+            if (a->BCInterface && isNeumannBieDofKey(a, f))
               continue;
             auto [GPhin, GnPhi] = integrateNearField(*a) + a->integrateFarField();
             double res = GPhin - (GnPhi + diag_coeffs[i] * 1.0);
@@ -2935,7 +3480,7 @@ void updateGeometricProperties() {
         m.valid = true;
         m.is_midpoint = false;
         m.is_neumann = isNeumannBieDofKey(p, f);
-        m.is_corner = p->CORNER;
+        m.is_corner = p->BCInterface;
         m.X = p->Xtarget;
       }
     }
@@ -2948,7 +3493,7 @@ void updateGeometricProperties() {
           m.valid = true;
           m.is_midpoint = true;
           m.is_neumann = isNeumannBieDofKey(l, f);
-          m.is_corner = l->CORNER;
+          m.is_corner = l->BCInterface;
           m.X = l->Xtarget;
         }
       }
@@ -3190,6 +3735,7 @@ void solveGMRES(TimeWatch& watch, double& time_setup, double& time_solve, const 
   if (enable_reindex_morton) {
     struct dof_entry {
       std::uint64_t key;
+      int old_index;
       networkPoint* p;
       networkFace* f;
     };
@@ -3265,16 +3811,14 @@ void solveGMRES(TimeWatch& watch, double& time_setup, double& time_solve, const 
 
       std::size_t local_idx = point_offsets[i];
       for (const auto& [f, d_] : p->dofs) { if (d_.index < 0) continue;
-        dofs_arr[local_idx++] = {key, p, f};
+        dofs_arr[local_idx++] = {key, d_.index, p, f};
       }
     }
 
     std::stable_sort(dofs_arr.begin(), dofs_arr.end(), [](const dof_entry& a, const dof_entry& b) {
       if (a.key != b.key)
         return a.key < b.key;
-      if (a.p != b.p)
-        return a.p < b.p;
-      return a.f < b.f;
+      return a.old_index < b.old_index;
     });
 
     int new_idx = 0;
@@ -3308,6 +3852,7 @@ void solveGMRES(TimeWatch& watch, double& time_setup, double& time_solve, const 
 
         struct mid_dof_entry {
           std::uint64_t key;
+          int old_index;
           networkLine* l;
         };
         std::vector<mid_dof_entry> mid_dofs;
@@ -3317,10 +3862,12 @@ void solveGMRES(TimeWatch& watch, double& time_setup, double& time_solve, const 
           double mx = 0.5 * (std::get<0>(pA->X) + std::get<0>(pB->X));
           double my = 0.5 * (std::get<1>(pA->X) + std::get<1>(pB->X));
           double mz = 0.5 * (std::get<2>(pA->X) + std::get<2>(pB->X));
-          mid_dofs.push_back({morton3(quantize(mx, xmin, xmax), quantize(my, ymin, ymax), quantize(mz, zmin, zmax)), l});
+          mid_dofs.push_back({morton3(quantize(mx, xmin, xmax), quantize(my, ymin, ymax), quantize(mz, zmin, zmax)), l->midpoint_index, l});
         }
         std::stable_sort(mid_dofs.begin(), mid_dofs.end(), [](const mid_dof_entry& a, const mid_dof_entry& b) {
-          return a.key < b.key;
+          if (a.key != b.key)
+            return a.key < b.key;
+          return a.old_index < b.old_index;
         });
         for (const auto& e : mid_dofs) {
           // Reindex all DOFs of this midpoint (primary DOF first, then per-face DOFs)
@@ -3342,6 +3889,8 @@ void solveGMRES(TimeWatch& watch, double& time_setup, double& time_solve, const 
     std::cout << Magenta << "[Solver] " << Cyan << "reindexed unknowns (Morton order), total=" << Green << new_idx << colorReset << std::endl;
   }
   log_stage("reindex unknowns (Morton)");
+  if (after_reindex_unknowns)
+    after_reindex_unknowns();
   copyToFMM(false);
 
   const bool reused_sources = this->createSourcesOnSurfaces();
@@ -3474,7 +4023,7 @@ void solveGMRES(TimeWatch& watch, double& time_setup, double& time_solve, const 
   for (const auto& p : points)
     for (const auto& [f_, d_] : p->dofs)
       if (d_.index >= 0) ++total_unknowns;
-  // Include midpoint DOFs for true quadratic elements (CORNER lines have 2 DOFs)
+  // Include midpoint DOFs for true quadratic elements (BCInterface lines have 2 DOFs)
   if (use_true_quadratic_element)
     for (auto* l : midpoint_lines)
       for (const auto& [f_, d_] : l->dofs)

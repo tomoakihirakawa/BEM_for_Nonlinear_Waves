@@ -95,7 +95,7 @@ inline void createOBJ(std::ofstream &ofs, Network &net) {
 
 inline bool isFlat(const netPp p, double minangle = M_PI / 180.) {
   if (p->getLines().empty())
-    return true; // 辺なし → flat 扱い（OMP 並列内で throw 禁止）
+    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "p->getLines().empty()");
   auto faces = p->getBoundaryFaces();
   for (auto i = 0; i < faces.size(); i++)
     for (auto j = i; j < faces.size(); j++)
@@ -251,7 +251,7 @@ inline Tddd findOptimalPositionByCriteriaOn(const networkPoint *p, const std::fu
         return false;
       // if (isFlat(TriangleNormal(base_X0, base_X1, base_X2), TriangleNormal(replace_X, base_X1, base_X2), acceptable_change_angle))
       if (p0 != p && p1 != p && p2 != p)
-        return false; // OMP 並列内で throw 禁止
+        throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "p0 != p && p1 != p && p2 != p");
       return true;
     });
   };
@@ -703,7 +703,7 @@ inline void flipIf(networkPoint *p, const Tdd &limit_Dirichlet, const Tdd &limit
     // ランダムにソート
     for (const auto &l : V) {
       auto [p0, p1] = l->getPoints();
-      if (!l->CORNER) {
+      if (!l->BCInterface) {
         if (force) {
           if (network_utility_detail::lineIsDirichletLocal(l)) {
             isfound = l->flipIfTopologicallyBetter(target_of_max_normal_diffD, acceptable_normal_change_by_flipD, s_mean == 0 ? 5 : s_mean);
@@ -754,7 +754,7 @@ inline void flipIf(Network &water, const Tdd &limit_Dirichlet, const Tdd &limit_
     // ランダムにソート
     for (const auto &l : RandomSample(V)) {
       auto [p0, p1] = l->getPoints();
-      if (!l->CORNER) {
+      if (!l->BCInterface) {
         if (force && (iteration == 0 || count < iteration)) {
           if (network_utility_detail::lineIsDirichletLocal(l)) {
             isfound = l->flipIfTopologicallyBetter(target_of_max_normal_diffD, acceptable_normal_change_by_flipD);
@@ -847,7 +847,7 @@ inline void mergeIf(Network &water, double threshold = 0.1, int repetitions = 10
           networkLine *candidate_line = lines[min_index];
 
           // 条件B: この候補の辺は、マージしても安全か？
-          if (candidate_line && !candidate_line->CORNER && candidate_line->isMergeable()) {
+          if (candidate_line && !candidate_line->BCInterface && candidate_line->isMergeable()) {
             line_to_merge = candidate_line;
             break;
           }

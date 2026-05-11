@@ -23,6 +23,9 @@ struct PenetrationReport {
   double worst_tolerance = 0.0;
   double worst_local_length = 0.0;
   std::string worst_body;
+  std::string worst_kind;
+  int worst_entity_index = -1;
+  int worst_nearest_face_index = -1;
 };
 
 double penetrationTolerance(const double h_local) {
@@ -98,15 +101,19 @@ std::vector<Network*> penetrationCandidateSolids(const std::vector<Network*>& fl
           report.worst_tolerance = tolerance;
           report.worst_local_length = h_local;
           report.worst_body = solid->getName();
+          report.worst_kind = "point";
+          report.worst_entity_index = p->index;
+          report.worst_nearest_face_index = near_f ? near_f->index : -1;
         }
         break;
       }
     }
     if (check_midpoints) {
-      // 要素タイプに依らず midpoint (l->X_mid) で貫入チェック。
-      // linear では X_mid は端点平均なので端点がクリアされていれば実質無害だが、
-      // 要素タイプによらず一貫した検査を行うため guard を外している。
+      // Midpoint DOFs exist only on true-quadratic elements.
       for (const auto* l : water->getBoundaryLines()) {
+        const bool has_true_quad = std::ranges::any_of(l->getBoundaryFaces(), [](const auto* f) { return f->isTrueQuadraticElement; });
+        if (!has_true_quad)
+          continue;
         const double h_local = localEdgeLength(l);
         const double tolerance = penetrationTolerance(h_local);
         for (const auto* solid : solids) {
@@ -122,6 +129,9 @@ std::vector<Network*> penetrationCandidateSolids(const std::vector<Network*>& fl
             report.worst_tolerance = tolerance;
             report.worst_local_length = h_local;
             report.worst_body = solid->getName();
+            report.worst_kind = "midpoint";
+            report.worst_entity_index = l->midpoint_index;
+            report.worst_nearest_face_index = near_f ? near_f->index : -1;
           }
           break;
         }
@@ -146,10 +156,13 @@ void throwIfStructurePenetrated(const std::vector<Network*>& fluids,
                      " on time_step " + std::to_string(time_step) +
                      " (points=" + std::to_string(report.point_count) +
                      ", mids=" + std::to_string(report.face_count) +
-                     ", max_distance=" + std::to_string(report.max_distance) +
-                     (report.worst_body.empty() ? "" : ", body=" + report.worst_body) +
-                     ", tolerance=" + std::to_string(report.worst_tolerance) +
-                     ", h_local=" + std::to_string(report.worst_local_length) + ")");
+	                     ", max_distance=" + std::to_string(report.max_distance) +
+	                     (report.worst_body.empty() ? "" : ", body=" + report.worst_body) +
+	                     (report.worst_kind.empty() ? "" : ", worst_kind=" + report.worst_kind) +
+	                     ", worst_entity=" + std::to_string(report.worst_entity_index) +
+	                     ", nearest_face=" + std::to_string(report.worst_nearest_face_index) +
+	                     ", tolerance=" + std::to_string(report.worst_tolerance) +
+	                     ", h_local=" + std::to_string(report.worst_local_length) + ")");
 }
 
 } // namespace BEM_Penetration

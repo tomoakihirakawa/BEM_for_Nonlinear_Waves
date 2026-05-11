@@ -4,12 +4,20 @@ cmake -DCMAKE_BUILD_TYPE=Release ../ -DSOURCE_FILE=main_time_domain.cpp
 
 */
 #include "pch.hpp"
+#include <array>
 #include <cctype>
+#include <cstdint>
 #include <csignal>
 #include <cstdlib>
 #include <cstring>
 #include <execinfo.h>
+#include <fstream>
+#include <iomanip>
+#include <limits>
+#include <optional>
+#include <sstream>
 #include <string>
+#include <vector>
 #include <unistd.h>
 
 #include "BEM_time_domain_types.hpp"
@@ -66,6 +74,8 @@ bool metal_m2l_sort_terms = false;
 #endif
 std::string nearfield_mode = "scalar";
 int g_p2m_quadrature_points = 6;
+int g_lu_far_dunavant_points = 0;
+int g_lu_near_dunavant_points = 0;
 double g_mac_theta = 0.25;
 
 int time_step;
@@ -84,7 +94,7 @@ int detachment_consecutive_steps = 3;
 
 JSONoutput jsonout;
 
-#include "../core/BEM.hpp"          // Core BEM: BoundaryValues, calculateVelocities, setBoundaryTypes, solveBVP
+#include "BEM.hpp"                  // Core BEM: BoundaryValues, calculateVelocities, setBoundaryTypes, solveBVP
 #include "BEM_inputfile_reader.hpp" // JSON settings parser
 #include "OutputCommon.hpp"         // Output context
 #include "OutputJSON.hpp"           // JSON output writer
@@ -117,11 +127,16 @@ void throwIfStructurePenetrated(const std::vector<Network*>&, const std::vector<
 // --- End separate TU forward declarations ---
 
 #include "BEM_remesh_main.hpp"        // Remeshing (split/collapse/flip)
+#include "BEM_remesh_logging.hpp"     // Shared remesh / mesh-preparation logs
 #include "BEM_mesh_relaxation.hpp"    // Pre-relaxation (flip + smoothing at t=0)
 #include "BEM_debug_helpers.hpp"      // Debug corner-point inspection, crash backtrace
 #include "BEM_rk_update.hpp"          // Absorption, RK push, interpolation relocation, mean-phi
 #include "BEM_initial_conditions.hpp" // Initial condition (IC) application at t=0
 #include "BEM_time_step_control.hpp"  // Step retry, dt control, body state sync
+#include "BEM_snapshot.hpp"           // Mesh preparation pipeline reference state
+#include "BEM_field_mapper.hpp"       // Mesh preparation pipeline field mapping
+#include "BEM_geometry_repair.hpp"    // Mesh preparation pipeline geometry repair
+#include "BEM_topology_modifier.hpp"  // Mesh preparation pipeline topology repair
 
 //# ============================================================================
 //# SECTION 3: main()
@@ -188,6 +203,8 @@ int main(int argc, char** argv) {
   const bool tetrahedralize = setting.remeshing.tetrahedralize;
   const bool surface_flip = setting.remeshing.surface_flip;
   const int grid_refinement = setting.remeshing.grid_refinement;
+  const auto mesh_pipeline = setting.time.mesh_preparation_pipeline;
+  const bool use_mesh_preparation_pipeline = mesh_pipeline.enabled;
   const std::filesystem::path output_directory = setting.common.output_directory;
   use_linear_element = setting.bem.element.linear;
   use_pseudo_quadratic_element = setting.bem.element.pseudo_quadratic;
@@ -209,6 +226,12 @@ int main(int argc, char** argv) {
       break;
     }
   }
+  if (use_mesh_preparation_pipeline && node_relocation_method != NodeRelocationMethod::none) {
+    std::cout << Yellow
+              << "[mesh:config] mesh preparation pipeline is enabled; legacy node relocation is disabled"
+              << colorReset << std::endl;
+    node_relocation_method = NodeRelocationMethod::none;
+  }
   {
     interpolation_midpoint_mode = InterpolationMidpointMode::nearest;
   }
@@ -229,9 +252,15 @@ int main(int argc, char** argv) {
   } else {
     if (use_true_quadratic_element)
       node_relocation_surface = NodeRelocationSurface::true_quadratic;
+    else if (use_mesh_preparation_pipeline)
+      node_relocation_surface = NodeRelocationSurface::linear;
     else
       node_relocation_surface = NodeRelocationSurface::pseudo_quadratic;
   }
+  if (use_mesh_preparation_pipeline && !setting.time.node_relocation.surface_explicitly_set)
+    std::cout << Green << "[mesh:config] node_relocation_surface=auto phase3_interpolation_surface="
+              << (node_relocation_surface == NodeRelocationSurface::true_quadratic ? "true_quadratic" : "linear")
+              << colorReset << std::endl;
   solver_type = setting.bem.solver.solver_type;
   coupling_type = setting.bem.solver.coupling_type;
   coupling_tol = setting.bem.solver.coupling_tol;
@@ -297,25 +326,39 @@ int main(int argc, char** argv) {
   // Resolve source directory from __FILE__ (works regardless of working directory).
   const std::filesystem::path source_dir = std::filesystem::path(__FILE__).parent_path();
   auto safe_copy = [&](const std::filesystem::path& src) {
-    if (std::filesystem::exists(src))
-      std::filesystem::copy_file(src, output_directory / src.filename(), std::filesystem::copy_options::overwrite_existing);
+    try {
+      if (std::filesystem::exists(src))
+        std::filesystem::copy_file(src, output_directory / src.filename(), std::filesystem::copy_options::overwrite_existing);
+    } catch (const std::filesystem::filesystem_error& e) {
+      std::cerr << "[source-copy] skip " << src << ": " << e.what() << std::endl;
+    }
   };
   safe_copy(source_dir / "main_time_domain.cpp");
   safe_copy(source_dir / "main.cpp");
   std::regex pattern("^BEM.*\\.hpp$");
-  for (auto& entry : std::filesystem::directory_iterator(source_dir))
-    if (std::regex_match(entry.path().filename().string(), pattern))
-      safe_copy(entry.path());
+  try {
+    for (auto& entry : std::filesystem::directory_iterator(source_dir))
+      if (std::regex_match(entry.path().filename().string(), pattern))
+        safe_copy(entry.path());
+  } catch (const std::filesystem::filesystem_error& e) {
+    std::cerr << "[source-copy] skip directory " << source_dir << ": " << e.what() << std::endl;
+  }
 
   PVDWriter cornerPointsPVD(output_directory / "cornerPointsPVD.pvd");
   PVDWriter DirichletSurfacePVD(output_directory / "DirichletSurface.pvd");
   PVDWriter vpm_pvd(output_directory / "vpm.pvd");
-  // patch PVD は FluidObject ごとに1つ。v1 では最初の FluidObject の名前を使う。
   const std::string water_name = FluidObject.empty() ? "" : FluidObject[0]->getName() + "_";
   PVDWriter candidate_patches_pvd((output_directory / (water_name + "candidate_patches.pvd")).string());
   PVDWriter remeshed_patches_pvd((output_directory / (water_name + "remeshed_patches.pvd")).string());
   PVDWriter trigger_edges_pvd((output_directory / (water_name + "trigger_edges.pvd")).string());
   PVDWriter edges_pvd((output_directory / (water_name + "edges.pvd")).string());
+  PVDWriter provider_source_of_truth_pvd(output_directory / "provider_source_of_truth_quadratic.pvd");
+  const std::string phase_water_name = FluidObject.empty() ? "water" : FluidObject[0]->getName();
+  std::filesystem::remove(output_directory / (phase_water_name + "_remeshed.pvd"));
+  std::filesystem::remove(output_directory / (phase_water_name + "_remeshed_repaired.pvd"));
+  PVDWriter water_after_phase0_pvd(output_directory / (phase_water_name + "_after_phase0.pvd"));
+  PVDWriter water_after_phase1_pvd(output_directory / (phase_water_name + "_after_phase1.pvd"));
+  PVDWriter water_after_phase2_pvd(output_directory / (phase_water_name + "_after_phase2.pvd"));
   Print("setting done");
 
   /*DOC_EXTRACT 0_1_BEM
@@ -592,6 +635,542 @@ int main(int argc, char** argv) {
                                               use_true_quadratic_element);
       };
 
+      auto dump_pipeline_mesh = [&](const std::string& tag, bool enabled) {
+        if (!enabled)
+          return;
+        for (auto* water : FluidObject) {
+          if (!water)
+            continue;
+          const auto filename = output_directory / (water->getName() + "_" + tag + "_" + std::to_string(time_step) + ".vtu");
+          OutputParaView::mk_vtu_quadratic(filename.string(), water->getBoundaryFaces(), dataForOutput(water, /*dt=*/0.0));
+        }
+      };
+
+      auto write_water_phase_snapshot = [&](Network* water, int step_retry,
+                                            const std::string& phase_tag,
+                                            PVDWriter& pvd) {
+        if (!water)
+          return;
+        const std::string filename =
+            water->getName() + "_" + phase_tag + "_t" + std::to_string(time_step) +
+            "_r" + std::to_string(step_retry) + ".vtu";
+        OutputParaView::mk_vtu_quadratic(
+            (output_directory / filename).string(),
+            water->getBoundaryFaces(),
+            dataForOutput(water, /*dt=*/0.0));
+        pvd.push(filename, simulation_time);
+        pvd.output();
+      };
+      auto write_all_water_phase_snapshots = [&](const std::string& phase_tag,
+                                                 int step_retry,
+                                                 PVDWriter& pvd) {
+        for (auto* water : FluidObject)
+          write_water_phase_snapshot(water, step_retry, phase_tag, pvd);
+      };
+
+      struct ProviderSourceOfTruthQuadraticCell {
+        std::array<Tddd, 6> nodes;
+        int reference_face_index = -1;
+        int body_object_index = -1;
+        int body_face_index = -1;
+        int source_type = 0; // 1: snapshot reference, 2: initial-condition reference, 3: body target
+        int bc_type = static_cast<int>(NodeFaceBoundaryType::Dirichlet);
+      };
+
+      auto provider_cell_midpoint_deviation = [](const std::array<Tddd, 6>& nodes) {
+        return std::max({Norm(nodes[3] - 0.5 * (nodes[0] + nodes[1])),
+                         Norm(nodes[4] - 0.5 * (nodes[1] + nodes[2])),
+                         Norm(nodes[5] - 0.5 * (nodes[2] + nodes[0]))});
+      };
+
+      auto append_provider_source_cell =
+          [](std::vector<ProviderSourceOfTruthQuadraticCell>& cells,
+             const std::array<Tddd, 6>& nodes,
+             int reference_face_index,
+             int body_object_index,
+             int body_face_index,
+             int source_type,
+             int bc_type) {
+            for (const auto& X : nodes)
+              if (!isFinite(X))
+                return;
+            cells.push_back({nodes, reference_face_index, body_object_index, body_face_index,
+                             source_type, bc_type});
+          };
+
+      auto write_provider_source_of_truth_quadratic_vtu =
+          [&](const std::filesystem::path& path,
+              const std::vector<ProviderSourceOfTruthQuadraticCell>& cells) {
+            std::ofstream ofs(path);
+            if (!ofs)
+              throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, path.string() + " can not be opened");
+
+            constexpr std::array<std::array<int, 3>, 4> subfaces = {{{0, 3, 5},
+                                                                      {3, 1, 4},
+                                                                      {5, 4, 2},
+                                                                      {3, 4, 5}}};
+            ofs << std::setprecision(17);
+            ofs << "<?xml version=\"1.0\"?>\n";
+            ofs << "<VTKFile type=\"UnstructuredGrid\" version=\"0.1\" byte_order=\"LittleEndian\">\n";
+            ofs << "  <UnstructuredGrid>\n";
+            ofs << "    <Piece NumberOfPoints=\"" << cells.size() * 6
+                << "\" NumberOfCells=\"" << cells.size() * subfaces.size() << "\">\n";
+            ofs << "      <Points>\n";
+            ofs << "        <DataArray type=\"Float64\" NumberOfComponents=\"3\" format=\"ascii\">\n";
+            for (const auto& cell : cells) {
+              for (const auto& X : cell.nodes) {
+                for (int i = 0; i < 3; ++i) {
+                  const double value = std::abs(X[i]) < 1E-14 ? 0.0 : X[i];
+                  ofs << value << ' ';
+                }
+              }
+            }
+            ofs << "\n";
+            ofs << "        </DataArray>\n";
+            ofs << "      </Points>\n";
+            ofs << "      <CellData Scalars=\"cell_scalars\">\n";
+            ofs << "        <DataArray type=\"Int32\" Name=\"reference_face_index\" format=\"ascii\">\n";
+            for (const auto& cell : cells)
+              for (std::size_t i = 0; i < subfaces.size(); ++i)
+                ofs << cell.reference_face_index << ' ';
+            ofs << "\n";
+            ofs << "        </DataArray>\n";
+            ofs << "        <DataArray type=\"Int32\" Name=\"body_object_index\" format=\"ascii\">\n";
+            for (const auto& cell : cells)
+              for (std::size_t i = 0; i < subfaces.size(); ++i)
+                ofs << cell.body_object_index << ' ';
+            ofs << "\n";
+            ofs << "        </DataArray>\n";
+            ofs << "        <DataArray type=\"Int32\" Name=\"body_face_index\" format=\"ascii\">\n";
+            for (const auto& cell : cells)
+              for (std::size_t i = 0; i < subfaces.size(); ++i)
+                ofs << cell.body_face_index << ' ';
+            ofs << "\n";
+            ofs << "        </DataArray>\n";
+            ofs << "        <DataArray type=\"Int32\" Name=\"source_type\" format=\"ascii\">\n";
+            for (const auto& cell : cells)
+              for (std::size_t i = 0; i < subfaces.size(); ++i)
+                ofs << cell.source_type << ' ';
+            ofs << "\n";
+            ofs << "        </DataArray>\n";
+            ofs << "        <DataArray type=\"Int32\" Name=\"bc_type\" format=\"ascii\">\n";
+            for (const auto& cell : cells)
+              for (std::size_t i = 0; i < subfaces.size(); ++i)
+                ofs << cell.bc_type << ' ';
+            ofs << "\n";
+            ofs << "        </DataArray>\n";
+            ofs << "        <DataArray type=\"Int32\" Name=\"subface_index\" format=\"ascii\">\n";
+            for (std::size_t c = 0; c < cells.size(); ++c)
+              for (std::size_t i = 0; i < subfaces.size(); ++i)
+                ofs << i << ' ';
+            ofs << "\n";
+            ofs << "        </DataArray>\n";
+            ofs << "        <DataArray type=\"Float64\" Name=\"midpoint_deviation\" format=\"ascii\">\n";
+            for (const auto& cell : cells)
+              for (std::size_t i = 0; i < subfaces.size(); ++i)
+                ofs << provider_cell_midpoint_deviation(cell.nodes) << ' ';
+            ofs << "\n";
+            ofs << "        </DataArray>\n";
+            ofs << "      </CellData>\n";
+            ofs << "      <Cells>\n";
+            ofs << "        <DataArray type=\"Int32\" Name=\"connectivity\" format=\"ascii\">\n";
+            for (std::size_t i = 0; i < cells.size(); ++i) {
+              const std::size_t base = i * 6;
+              for (const auto& sf : subfaces)
+                ofs << base + sf[0] << ' ' << base + sf[1] << ' ' << base + sf[2] << ' ';
+            }
+            ofs << "\n";
+            ofs << "        </DataArray>\n";
+            ofs << "        <DataArray type=\"Int32\" Name=\"offsets\" format=\"ascii\">\n";
+            int offset = 0;
+            for (std::size_t i = 0; i < cells.size() * subfaces.size(); ++i) {
+              offset += 3;
+              ofs << offset << ' ';
+            }
+            ofs << "\n";
+            ofs << "        </DataArray>\n";
+            ofs << "        <DataArray type=\"UInt8\" Name=\"types\" format=\"ascii\">\n";
+            for (std::size_t i = 0; i < cells.size() * subfaces.size(); ++i)
+              ofs << 5 << ' ';
+            ofs << "\n";
+            ofs << "        </DataArray>\n";
+            ofs << "      </Cells>\n";
+            ofs << "    </Piece>\n";
+            ofs << "  </UnstructuredGrid>\n";
+            ofs << "</VTKFile>\n";
+          };
+
+      auto dump_provider_source_of_truth_quadratic =
+          [&](const BEMMeshPipeline::ReferenceState& reference, int step_retry) {
+            std::vector<ProviderSourceOfTruthQuadraticCell> cells;
+            std::string source_tag;
+
+            if (const auto* snapshot = std::get_if<BEMMeshPipeline::SnapshotReferenceState>(&reference)) {
+              source_tag = "snapshot";
+              cells.reserve(snapshot->snap.faces.size());
+              for (std::size_t i = 0; i < snapshot->snap.faces.size(); ++i) {
+                const auto& face = snapshot->snap.faces[i];
+                append_provider_source_cell(cells, BEMMeshPipeline::snapshotFaceNodes(face),
+                                            static_cast<int>(i), -1, -1, 1,
+                                            static_cast<int>(face.bc_type));
+              }
+            } else if (const auto* ic = std::get_if<BEMMeshPipeline::InitialConditionReferenceState>(&reference)) {
+              source_tag = "ic";
+              std::size_t reserve_count = 0;
+              for (const auto* water : FluidObject)
+                if (water)
+                  reserve_count += water->getBoundaryFaces().size();
+              cells.reserve(reserve_count);
+
+              for (auto* water : FluidObject) {
+                if (!water || !water->ic_eta)
+                  continue;
+                auto project_ic = [&](Tddd X) {
+                  X[2] = water->ic_eta(X, ic->simulation_time);
+                  return X;
+                };
+                for (auto* f : water->getBoundaryFaces()) {
+                  if (!BEMMeshPipeline::faceHasDirichletSource(f))
+                    continue;
+                  auto [p0, p1, p2] = f->getPoints();
+                  auto [l0, l1, l2] = f->getLines();
+                  const std::array<Tddd, 6> nodes = {
+                      project_ic(p0->X), project_ic(p1->X), project_ic(p2->X),
+                      project_ic(BEMMeshPipeline::snapshotMidPosition(l0)),
+                      project_ic(BEMMeshPipeline::snapshotMidPosition(l1)),
+                      project_ic(BEMMeshPipeline::snapshotMidPosition(l2))};
+                  append_provider_source_cell(cells, nodes, f ? f->index : -1, -1, -1, 2,
+                                              static_cast<int>(NodeFaceBoundaryType::Dirichlet));
+                }
+              }
+            }
+
+            int body_object_index = 0;
+            auto append_body_target_surface = [&](Network* body) {
+              if (!body)
+                return;
+              for (auto* f : body->getBoundaryFaces()) {
+                if (!f)
+                  continue;
+                auto [p0, p1, p2] = f->getPoints();
+                auto [l0, l1, l2] = f->getLines();
+                if (!p0 || !p1 || !p2 || !l0 || !l1 || !l2)
+                  continue;
+                const std::array<Tddd, 6> nodes = {
+                    p0->X, p1->X, p2->X,
+                    BEMMeshPipeline::snapshotMidPosition(l0),
+                    BEMMeshPipeline::snapshotMidPosition(l1),
+                    BEMMeshPipeline::snapshotMidPosition(l2)};
+                append_provider_source_cell(cells, nodes, -1, body_object_index,
+                                            f->index, 3,
+                                            static_cast<int>(NodeFaceBoundaryType::Neumann));
+              }
+              ++body_object_index;
+            };
+            for (auto* body : RigidBodyObject)
+              append_body_target_surface(body);
+            for (auto* body : SoftBodyObject)
+              append_body_target_surface(body);
+
+            if (cells.empty()) {
+              std::cout << Yellow << "[mesh:provider] skip source-of-truth quadratic dump: no cells"
+                        << colorReset << std::endl;
+              return;
+            }
+
+            const std::filesystem::path filename =
+                "provider_source_of_truth_quadratic_" + source_tag +
+                "_t" + std::to_string(time_step) +
+                "_r" + std::to_string(step_retry) + ".vtu";
+            write_provider_source_of_truth_quadratic_vtu(output_directory / filename, cells);
+            provider_source_of_truth_pvd.push(filename.string(), simulation_time);
+            provider_source_of_truth_pvd.output();
+          };
+
+      auto refresh_pipeline_boundary_state = [&](const char* reason) {
+        for (auto* net : AllObjects)
+          net->setGeometricPropertiesForce();
+        _Pragma("omp parallel for") for (const auto& net : AllObjects) net->makeBuckets(net->getScale() / 10.);
+        refreshBoundaryStatesAndTypes(FluidObject, Join(RigidBodyObject, SoftBodyObject));
+        for (auto* water : FluidObject) {
+          computeAllBCInterfaceMidpointOffsets(water);
+        }
+        if (mesh_pipeline.verbose_debug) {
+          int total_interface = 0;
+          int no_contact = 0;
+          for (auto* water : FluidObject) {
+            if (!water)
+              continue;
+            for (auto* l : water->getBoundaryLines()) {
+              if (!l || !l->BCInterface)
+                continue;
+              ++total_interface;
+              if (getEffectiveContactFaces(l).empty())
+                ++no_contact;
+            }
+          }
+          std::cout << Green << "[mesh:boundary] refresh reason=" << reason
+                    << " bci_no_contact=" << no_contact << "/" << total_interface
+                    << colorReset << std::endl;
+        }
+      };
+
+      struct Phase1RawContactStats {
+        int point_total = 0;
+        int point_no_contact = 0;
+        int line_total = 0;
+        int line_no_contact = 0;
+
+        bool has_missing() const {
+          return point_no_contact > 0 || line_no_contact > 0;
+        }
+      };
+
+	      auto inspect_phase1_raw_contact = [&](int retry_index, bool write_csv) {
+	        Phase1RawContactStats stats;
+        std::ostringstream rows;
+
+        auto adjacent_faces_text = [](const std::vector<networkFace*>& faces) {
+          std::ostringstream oss;
+          bool first = true;
+          for (const auto* f : faces) {
+            if (!f)
+              continue;
+            if (!first)
+              oss << ';';
+            first = false;
+            oss << f->index;
+          }
+          return oss.str();
+        };
+
+        struct NearestBodyHit {
+          std::string body_name;
+          int face_index = -1;
+          double distance = std::numeric_limits<double>::infinity();
+        };
+
+        auto nearest_body_hit = [&](const Tddd& X) {
+          NearestBodyHit best;
+          for (auto* body : Join(RigidBodyObject, SoftBodyObject)) {
+            if (!body)
+              continue;
+            auto [f, near_x] = body->Nearest(X);
+            if (!f)
+              continue;
+            const double distance = Norm(X - near_x);
+            if (std::isfinite(distance) && distance < best.distance) {
+              best.body_name = body->getName();
+              best.face_index = f->index;
+              best.distance = distance;
+            }
+          }
+          return best;
+        };
+
+        auto append_common = [&](const char* kind, int index, const Tddd& X, double contact_range,
+                                 int raw_contact_count, int effective_contact_count,
+                                 Network* penetrated_body, const std::string& adjacent_faces,
+                                 const std::string& endpoints, bool dirichlet,
+                                 bool neumann, bool bcinterface, bool multiple) {
+          const auto nearest = nearest_body_hit(X);
+          rows << time_step << ',' << retry_index << ',' << kind << ',' << index << ','
+               << X[0] << ',' << X[1] << ',' << X[2] << ','
+               << contact_range << ',' << raw_contact_count << ','
+               << effective_contact_count << ','
+               << (penetrated_body ? penetrated_body->getName() : "") << ','
+               << nearest.body_name << ',' << nearest.face_index << ','
+               << (std::isfinite(nearest.distance) ? nearest.distance : -1.0) << ','
+               << adjacent_faces << ',' << endpoints << ','
+               << (dirichlet ? 1 : 0) << ',' << (neumann ? 1 : 0) << ','
+               << (bcinterface ? 1 : 0) << ',' << (multiple ? 1 : 0) << '\n';
+        };
+
+        for (auto* water : FluidObject) {
+          if (!water)
+            continue;
+          for (auto* p : water->getBoundaryPoints()) {
+            if (!p || !p->BCInterface)
+              continue;
+            ++stats.point_total;
+            const int raw_count = static_cast<int>(p->getContactFaces().size());
+            if (raw_count > 0)
+              continue;
+            ++stats.point_no_contact;
+            append_common("point", p->index, p->getPosition(), p->contact_range, raw_count,
+                          static_cast<int>(getEffectiveContactFaces(p).size()), p->penetratedBody,
+                          adjacent_faces_text(p->getBoundaryFaces()), "",
+                          p->Dirichlet, p->Neumann, p->BCInterface, p->isMultipleNode);
+          }
+
+          for (auto* l : water->getBoundaryLines()) {
+            if (!l || !l->BCInterface)
+              continue;
+            ++stats.line_total;
+            const int raw_count = static_cast<int>(l->getContactFaces().size());
+            if (raw_count > 0)
+              continue;
+            ++stats.line_no_contact;
+            auto [pA, pB] = l->getPoints();
+            std::ostringstream endpoints;
+            endpoints << (pA ? pA->index : -1) << ';' << (pB ? pB->index : -1);
+            append_common("line", l->midpoint_index, l->getPosition(), l->contact_range, raw_count,
+                          static_cast<int>(getEffectiveContactFaces(l).size()), l->penetratedBody,
+                          adjacent_faces_text(l->getBoundaryFaces()), endpoints.str(),
+                          l->Dirichlet, l->Neumann, l->BCInterface, l->isMultipleNode);
+          }
+        }
+
+        if (write_csv && stats.has_missing()) {
+          const auto path = output_directory /
+                            ("phase1_raw_contact_missing_t" + std::to_string(time_step) +
+                             "_retry" + std::to_string(retry_index) + ".csv");
+          std::ofstream ofs(path);
+          ofs << "time_step,retry,kind,index,x,y,z,contact_range,raw_contact_count,"
+                 "effective_contact_count,penetrated_body,nearest_body,nearest_face,"
+                 "nearest_distance,adjacent_faces,endpoints,dirichlet,neumann,bcinterface,multiple\n";
+          ofs << rows.str();
+          std::cout << Yellow << "[mesh:waterline] wrote raw contact diagnostic " << path
+                    << colorReset << std::endl;
+        }
+
+	        return stats;
+	      };
+
+	      auto write_phase1_waterline_quality_witness =
+	          [&](int retry_index, const BEMPreBVP::WaterlineMidpointStats& q) {
+	            const auto path = output_directory /
+	                              ("phase1_waterline_quality_witness_t" + std::to_string(time_step) +
+	                               "_retry" + std::to_string(retry_index) + ".csv");
+	            std::ofstream ofs(path);
+	            ofs << "time_step,retry,kind,face_index,subtri_index,value,limit,subtri_count,"
+	                   "min_angle_deg,max_aspect\n";
+	            ofs << time_step << ',' << retry_index << ",min_angle,"
+	                << q.min_angle_witness.face_index << ','
+	                << q.min_angle_witness.subtri_index << ','
+	                << q.min_angle_witness.value << ','
+	                << setting.remeshing.waterline_midpoint_min_angle_deg << ','
+	                << q.waterline_subtri_count << ','
+	                << q.subtri_min_angle_deg << ','
+	                << q.subtri_max_aspect << '\n';
+	            ofs << time_step << ',' << retry_index << ",max_aspect,"
+	                << q.max_aspect_witness.face_index << ','
+	                << q.max_aspect_witness.subtri_index << ','
+	                << q.max_aspect_witness.value << ','
+	                << setting.remeshing.waterline_midpoint_max_aspect << ','
+	                << q.waterline_subtri_count << ','
+	                << q.subtri_min_angle_deg << ','
+	                << q.subtri_max_aspect << '\n';
+	            std::cout << Yellow << "[mesh:waterline] wrote quality witness " << path
+	                      << colorReset << std::endl;
+	          };
+
+	      auto write_waterline_clamped_entities =
+	          [&](const std::string& tag, int retry_index,
+	              const BEMPreBVP::WaterlineRefreshSummary& refresh) {
+	            if (refresh.clamped_entities.empty())
+	              return;
+	            const auto path = output_directory /
+	                              ("clamped_entities_" + tag + "_t" +
+	                               std::to_string(time_step) + "_retry" +
+	                               std::to_string(retry_index) + ".csv");
+	            std::ofstream ofs(path);
+	            ofs << "time_step,retry,tag,line_index,endpoint0_index,endpoint1_index,"
+	                   "reference_face_index,body_face_index,free_gap,body_gap,move_ratio,"
+	                   "local_min_angle_before,local_min_angle_after,"
+	                   "local_max_aspect_before,local_max_aspect_after,mid_x,mid_y,mid_z\n";
+	            for (const auto& e : refresh.clamped_entities) {
+	              ofs << time_step << ',' << retry_index << ',' << tag << ','
+	                  << e.line_index << ','
+	                  << e.endpoint0_index << ','
+	                  << e.endpoint1_index << ','
+	                  << e.reference_face_index << ','
+	                  << e.body_face_index << ','
+	                  << e.free_gap << ','
+	                  << e.body_gap << ','
+	                  << e.move_ratio << ','
+	                  << e.local_min_angle_before << ','
+	                  << e.local_min_angle_after << ','
+	                  << e.local_max_aspect_before << ','
+	                  << e.local_max_aspect_after << ','
+	                  << e.midpoint[0] << ','
+	                  << e.midpoint[1] << ','
+	                  << e.midpoint[2] << '\n';
+	            }
+	            std::cout << Yellow << "[mesh:waterline] wrote clamped entities " << path
+	                      << colorReset << std::endl;
+	          };
+
+	      auto enforce_pre_bvp_guard = [&](const BEMPreBVP::Stats& guard_stats, int rk_step) {
+        if (guard_stats.has_numeric_failure()) {
+          throw step_failure("pre-BVP consistency guard found nonfinite/overflow active DOF values at RK_step " +
+                             std::to_string(rk_step));
+        }
+        if (guard_stats.bcinterface_points_no_contact > 0 ||
+            guard_stats.bcinterface_lines_no_contact > 0) {
+          std::ostringstream oss;
+          oss << "pre-BVP consistency guard found BCInterface entity without contact"
+              << " at RK_step " << rk_step
+              << " (points=" << guard_stats.bcinterface_points_no_contact
+              << ", lines=" << guard_stats.bcinterface_lines_no_contact << ")";
+          throw step_failure(oss.str());
+        }
+        if (setting.remeshing.waterline_protection_enabled && mesh_pipeline.waterline_geometry) {
+          const auto& q = guard_stats.waterline_midpoint_quality;
+          if (q.waterline_subtri_count > 0) {
+            const bool min_angle_bad =
+                !std::isfinite(q.subtri_min_angle_deg) ||
+                q.subtri_min_angle_deg < setting.remeshing.waterline_midpoint_min_angle_deg;
+            const bool aspect_bad =
+                !std::isfinite(q.subtri_max_aspect) ||
+                q.subtri_max_aspect > setting.remeshing.waterline_midpoint_max_aspect;
+	            if (min_angle_bad || aspect_bad) {
+	              std::ostringstream oss;
+	              oss << "pre-BVP waterline midpoint quality failed at RK_step " << rk_step
+	                  << " (subtri_count=" << q.waterline_subtri_count
+	                  << ", min_angle_deg=" << q.subtri_min_angle_deg
+	                  << ", max_aspect=" << q.subtri_max_aspect
+	                  << ", min_angle_limit=" << setting.remeshing.waterline_midpoint_min_angle_deg
+	                  << ", max_aspect_limit=" << setting.remeshing.waterline_midpoint_max_aspect
+	                  << "," << BEMPreBVP::waterline_midpoint_witness_summary(q) << ")";
+	              throw step_failure(oss.str());
+	            }
+          }
+          if (guard_stats.waterline_faces > 0) {
+            const bool face_min_angle_bad =
+                !std::isfinite(guard_stats.waterline_face_min_angle_deg) ||
+                guard_stats.waterline_face_min_angle_deg < setting.remeshing.waterline_face_min_angle_deg;
+            const bool face_aspect_bad =
+                !std::isfinite(guard_stats.waterline_face_aspect_max) ||
+                guard_stats.waterline_face_aspect_max > setting.remeshing.waterline_face_max_aspect;
+            if (face_min_angle_bad || face_aspect_bad) {
+              std::ostringstream oss;
+              oss << "pre-BVP waterline face quality failed at RK_step " << rk_step
+                  << " (faces=" << guard_stats.waterline_faces
+                  << ", min_angle_deg=" << guard_stats.waterline_face_min_angle_deg
+                  << ", max_aspect=" << guard_stats.waterline_face_aspect_max
+                  << ", min_angle_limit=" << setting.remeshing.waterline_face_min_angle_deg
+                  << ", max_aspect_limit=" << setting.remeshing.waterline_face_max_aspect
+                  << ")";
+              throw step_failure(oss.str());
+            }
+          }
+	          const auto& refresh = guard_stats.waterline_refresh;
+	          if (refresh.valid && refresh.clamped_count > 0 && refresh.max_move_ratio > 0.8) {
+	            write_waterline_clamped_entities("pre_bvp_rk" + std::to_string(rk_step), -1, refresh);
+	            std::cout << Yellow
+	                      << "[mesh:waterline] pre-BVP repair clamped but contact/quality remained acceptable"
+	                      << " rk_step=" << rk_step
+	                      << " clamped=" << refresh.clamped_count
+	                      << " max_move_ratio=" << refresh.max_move_ratio
+	                      << " midpoint_min_angle=" << q.subtri_min_angle_deg
+	                      << " midpoint_max_aspect=" << q.subtri_max_aspect
+	                      << colorReset << std::endl;
+	          }
+	        }
+	      };
+
+      bool mesh_prepared_for_rk = false;
       save_step_state();
       for (int step_retry = 0; step_retry <= StepRetryState::max_step_retries + (retry_state.degraded_mode ? 1 : 0); ++step_retry) {
         if (step_retry > 0)
@@ -599,34 +1178,242 @@ int main(int argc, char** argv) {
 
         try {
           //@ --- 3c-2a. Remesh + quality checks ---
-          _Pragma("omp parallel for") for (const auto& net : AllObjects) net->makeBuckets(net->getScale() / 10.);
-          refreshBoundaryStatesAndTypes(FluidObject, Join(RigidBodyObject, SoftBodyObject));
-          // 診断: remesh 前の penetration 状態をログ出力（throw しない）
-          try {
-            BEM_Penetration::throwIfStructurePenetrated(FluidObject, Join(RigidBodyObject, SoftBodyObject), time_step, "pre-remesh-diag", use_true_quadratic_element);
-          } catch (const step_failure& e) {
-            std::cout << Yellow << "[pre-remesh penetration] " << e.what() << colorReset << std::endl;
-          }
-          for (auto& water : FluidObject) {
-            remesh_for_main_loop(*water, time_step, setting.remeshing,
-                                 retry_state.degraded_mode,
-                                 output_directory.string(), simulation_time,
-                                 &candidate_patches_pvd, &remeshed_patches_pvd, &trigger_edges_pvd, &edges_pvd);
-            retry_state.collapse_repeatedly_rejected_faces(*water, step_retry);
-            if (!retry_state.degraded_mode) {
-              refreshFaceBadQualityHistory(*water, time_step, std::nullopt, 0.1, subsurface_altitude_reject);
-              monitorTinyFaceRelativeToLocalMean(*water, time_step, std::nullopt);
-              throwIfSubsurfaceFaceAltitudeTooSmall(*water, time_step, std::nullopt, subsurface_altitude_reject);
-              throwIfTinyFaceRelativeToLocalMean(*water, time_step, std::nullopt, 0.01);
-            }
-          }
-          refreshBoundaryStatesAndTypes(FluidObject, Join(RigidBodyObject, SoftBodyObject));
-          BEM_Penetration::throwIfStructurePenetrated(FluidObject, Join(RigidBodyObject, SoftBodyObject), time_step, "post-remesh", use_true_quadratic_element);
+          std::optional<BEMMeshPipeline::ReferenceState> mesh_reference;
+          bool initial_conditions_applied_by_pipeline = false;
+          const bool run_mesh_preparation_this_retry = !use_mesh_preparation_pipeline || !mesh_prepared_for_rk;
 
-          save_post_remesh_state();
+          if (run_mesh_preparation_this_retry) {
+            const bool is_initial_step = (time_step == 0 && start_time_step == 0);
+            const auto contact_objects = Join(RigidBodyObject, SoftBodyObject);
+            const auto geometry_projection_mode = use_true_quadratic_element
+                                                      ? BEMMeshPipeline::GeometryProjectionMode::TrueQuadraticFace
+                                                      : BEMMeshPipeline::GeometryProjectionMode::ReferenceQuadraticFace;
+
+            if (use_mesh_preparation_pipeline) {
+              _Pragma("omp parallel for") for (const auto& net : AllObjects) net->makeBuckets(net->getScale() / 10.);
+              refreshBoundaryStatesAndTypes(FluidObject, contact_objects);
+
+              if (is_initial_step) {
+                applyInitialConditions(FluidObject, RigidBodyObject, SoftBodyObject, AllObjects, use_true_quadratic_element, node_relocation_surface);
+                initial_conditions_applied_by_pipeline = true;
+                if (initial_mesh_pre_relax && initial_mesh_pre_relax_loop > 0 && initial_mesh_pre_relax_coef > 0.0) {
+                  const bool has_ic = std::ranges::any_of(FluidObject, [](const Network* w) { return w->ic_eta && w->ic_phi; });
+                  if (has_ic) {
+                    preRelaxMesh(FluidObject, AllObjects, contact_objects,
+                                 use_true_quadratic_element, node_relocation_surface, simulation_time,
+                                 {.loop = initial_mesh_pre_relax_loop, .coef = initial_mesh_pre_relax_coef, .output_tag = ""});
+                    applyInitialConditions(FluidObject, RigidBodyObject, SoftBodyObject, AllObjects, use_true_quadratic_element, node_relocation_surface);
+                  }
+                }
+              }
+
+              refresh_pipeline_boundary_state("phase0-reference");
+              mesh_reference.emplace(BEMMeshPipeline::makeReferenceState(FluidObject, time_step, start_time_step, simulation_time));
+              dump_provider_source_of_truth_quadratic(*mesh_reference, step_retry);
+              write_all_water_phase_snapshots("after_phase0", step_retry, water_after_phase0_pvd);
+              dump_pipeline_mesh("phase1_before_geometry_repair", mesh_pipeline.debug_dump_all_phases);
+              if (mesh_pipeline.dump_after_phase0 || mesh_pipeline.debug_dump_all_phases)
+                dump_pipeline_mesh(BEMMeshPipeline::isInitialConditionReference(*mesh_reference) ? "phase0_ic_source" : "phase0_snapshot_source", true);
+
+              const bool skip_initial_geometry_repair = is_initial_step;
+              if (mesh_pipeline.phase1_clung && skip_initial_geometry_repair) {
+                std::cout << Green << "[mesh:geometry] skip phase=phase1 reason=t0_initial_reference" << colorReset << std::endl;
+              } else if (mesh_pipeline.phase1_clung) {
+                BEMMeshPipeline::AdjustStats adjust_stats;
+                BEMMeshPipeline::RemeshLog::GeometryRepairSummary phase1_summary;
+                phase1_summary.phase = "phase1";
+                if (mesh_pipeline.geometry_projector_v2) {
+                  const auto repair_report = BEMMeshPipeline::GeometryRepair::repairCurrentSurfaceGeometryWithProjector(
+                      FluidObject, *mesh_reference, contact_objects, mesh_pipeline, geometry_projection_mode);
+                  adjust_stats = repair_report.stats;
+                  phase1_summary.repaired_points = repair_report.repaired_points;
+	                  phase1_summary.repaired_lines = repair_report.repaired_lines;
+	                  phase1_summary.quality_damaged = repair_report.quality_damaged_lines;
+	                  phase1_summary.damaged_faces = repair_report.quality_damaged_faces;
+	                  phase1_summary.penetration_rejected = repair_report.penetration_rejected_before_repair;
+                  BEMMeshPipeline::GeometryRepair::finalizeProjectedGeometryRepair(
+                      FluidObject, AllObjects, contact_objects, time_step,
+                      "post-mesh-pipeline-waterline-phase1", use_true_quadratic_element);
+                } else {
+                  adjust_stats = BEMMeshPipeline::GeometryRepair::repairCurrentSurfaceGeometry(
+                      FluidObject,
+                      mesh_pipeline.clung_max_iter,
+                      mesh_pipeline.clung_tol,
+                      mesh_pipeline.clung_move_limit_factor,
+                      node_relocation_debug_output ? &output_directory : nullptr);
+                }
+                phase1_summary.iterations = adjust_stats.iterations_done;
+                phase1_summary.max_move = adjust_stats.max_move_final;
+                phase1_summary.nodes_adjusted = adjust_stats.nodes_adjusted;
+                phase1_summary.lines_snapped = adjust_stats.lines_snapped;
+                BEMMeshPipeline::RemeshLog::printPipelineGeometryRepair(phase1_summary);
+                refresh_pipeline_boundary_state("after-phase1-geometry-repair");
+                dump_pipeline_mesh("phase1_after_geometry_repair", mesh_pipeline.dump_after_phase1 || mesh_pipeline.debug_dump_all_phases);
+              }
+
+              if (!skip_initial_geometry_repair) {
+                if (!mesh_pipeline.geometry_projector_v2) {
+                  BEMMeshPipeline::GeometryRepair::repairWaterlineMidpointsIfEnabled(
+                      FluidObject, AllObjects, contact_objects, *mesh_reference, mesh_pipeline,
+                      geometry_projection_mode, time_step, "post-mesh-pipeline-waterline-phase1",
+                      use_true_quadratic_element);
+                  refresh_pipeline_boundary_state("after-phase1-waterline-repair");
+                }
+	                if (setting.remeshing.waterline_protection_enabled) {
+	                  const auto& refresh = BEMPreBVP::latest_waterline_refresh_summary();
+                  const auto raw_contact_stats = inspect_phase1_raw_contact(step_retry, true);
+                  BEMPreBVP::WaterlineMidpointStats phase1_waterline_midpoint_quality;
+                  for (auto* water : FluidObject) {
+                    if (!water)
+                      continue;
+		                    BEMPreBVP::merge_waterline_midpoint_quality(
+		                        phase1_waterline_midpoint_quality,
+		                        BEMPreBVP::measure_waterline_midpoint_quality(water->getBoundaryFaces()));
+		                  }
+	                  if (raw_contact_stats.has_missing()) {
+	                    std::ostringstream oss;
+	                    oss << "phase1 waterline repair left BCInterface entity(s) without raw contact before remesh at time_step "
+		                        << time_step
+		                        << " (points=" << raw_contact_stats.point_no_contact << "/" << raw_contact_stats.point_total
+		                        << ", lines=" << raw_contact_stats.line_no_contact << "/" << raw_contact_stats.line_total << ")";
+		                    throw step_failure(oss.str());
+		                  }
+	                  const bool phase1_midpoint_quality_bad =
+	                      phase1_waterline_midpoint_quality.waterline_subtri_count > 0 &&
+	                      ((std::isfinite(phase1_waterline_midpoint_quality.subtri_min_angle_deg) &&
+	                        phase1_waterline_midpoint_quality.subtri_min_angle_deg <
+	                            setting.remeshing.waterline_midpoint_min_angle_deg) ||
+	                       (std::isfinite(phase1_waterline_midpoint_quality.subtri_max_aspect) &&
+	                        phase1_waterline_midpoint_quality.subtri_max_aspect >
+	                            setting.remeshing.waterline_midpoint_max_aspect));
+		                  if (phase1_midpoint_quality_bad) {
+		                    write_phase1_waterline_quality_witness(step_retry, phase1_waterline_midpoint_quality);
+		                    std::ostringstream oss;
+		                    oss << "phase1 waterline midpoint quality failed before remesh at time_step "
+		                        << time_step
+	                        << " (subtri_count=" << phase1_waterline_midpoint_quality.waterline_subtri_count
+	                        << ", min_angle_deg="
+	                        << phase1_waterline_midpoint_quality.subtri_min_angle_deg
+	                        << ", max_aspect="
+	                        << phase1_waterline_midpoint_quality.subtri_max_aspect
+	                        << ", min_angle_limit="
+	                        << setting.remeshing.waterline_midpoint_min_angle_deg
+	                        << ", max_aspect_limit="
+	                        << setting.remeshing.waterline_midpoint_max_aspect
+	                        << ", clamped=" << (refresh.valid ? refresh.clamped_count : 0)
+		                        << ", max_move_ratio=" << (refresh.valid ? refresh.max_move_ratio : 0.0)
+		                        << ", quality_damaged="
+		                        << (refresh.valid ? refresh.quality_damaged_after_repair : 0)
+		                        << "," << BEMPreBVP::waterline_midpoint_witness_summary(phase1_waterline_midpoint_quality)
+		                        << ")";
+		                    if (!mesh_pipeline.phase2_remesh) {
+		                      throw step_failure(oss.str());
+		                    }
+		                    std::cout << Yellow << "[mesh:waterline] " << oss.str()
+		                              << " action=defer_to_phase2_remesh"
+		                              << colorReset << std::endl;
+		                  }
+                  if (refresh.valid && refresh.clamped_count > 0 && refresh.max_move_ratio > 0.8) {
+                    write_waterline_clamped_entities("phase1", step_retry, refresh);
+                    if (refresh.quality_damaged_after_repair > 0) {
+                      std::ostringstream oss;
+                      oss << "phase1 waterline repair clamped and degraded quality before remesh at time_step "
+                          << time_step
+                          << " (clamped=" << refresh.clamped_count
+                          << ", max_move_ratio=" << refresh.max_move_ratio
+                          << ", quality_damaged=" << refresh.quality_damaged_after_repair
+                          << ", midpoint_min_angle="
+                          << phase1_waterline_midpoint_quality.subtri_min_angle_deg
+                          << ", midpoint_max_aspect="
+                          << phase1_waterline_midpoint_quality.subtri_max_aspect << ")";
+                      throw step_failure(oss.str());
+                    }
+	                    std::cout << Yellow
+	                              << "[mesh:waterline] phase1 repair clamped but contact/quality remained acceptable"
+	                              << " time_step=" << time_step
+	                              << " clamped=" << refresh.clamped_count
+	                              << " max_move_ratio=" << refresh.max_move_ratio
+	                              << " midpoint_min_angle="
+	                              << phase1_waterline_midpoint_quality.subtri_min_angle_deg
+	                              << " midpoint_max_aspect="
+	                              << phase1_waterline_midpoint_quality.subtri_max_aspect
+	                              << colorReset << std::endl;
+	                  }
+                }
+                dump_pipeline_mesh("phase1_after_waterline_repair", mesh_pipeline.dump_after_phase1 || mesh_pipeline.debug_dump_all_phases);
+              }
+              write_all_water_phase_snapshots("after_phase1", step_retry, water_after_phase1_pvd);
+            }
+
+            if (use_mesh_preparation_pipeline && mesh_pipeline.phase2_remesh && is_initial_step) {
+              std::cout << Green << "[mesh:topology] skip reason=t0_initial_reference" << colorReset << std::endl;
+              write_all_water_phase_snapshots("after_phase2", step_retry, water_after_phase2_pvd);
+            } else if (!use_mesh_preparation_pipeline || mesh_pipeline.phase2_remesh) {
+              _Pragma("omp parallel for") for (const auto& net : AllObjects) net->makeBuckets(net->getScale() / 10.);
+              refreshBoundaryStatesAndTypes(FluidObject, contact_objects);
+              auto remesh_settings = setting.remeshing;
+              remesh_settings.defer_scalar_interpolation = use_mesh_preparation_pipeline && mesh_pipeline.phase3_interpolate;
+              // Trial remesh が BoundaryGeometryTargetProvider を作るための材料。
+              // reference は Dirichlet/free-surface 側の参照形状、
+              // topology_repair_body_objects は Neumann/body 側の現在形状。
+              const auto topology_repair_body_objects = contact_objects;
+              const BEMMeshPipeline::RemeshTrialGeometryInputs trial_geometry_inputs{
+                  mesh_reference ? &*mesh_reference : nullptr,
+                  &topology_repair_body_objects,
+                  &mesh_pipeline,
+                  geometry_projection_mode,
+                  static_cast<std::uint64_t>(std::max(time_step, 0) + 1)};
+              const auto* trial_geometry_inputs_ptr =
+                  (use_mesh_preparation_pipeline && mesh_reference && mesh_pipeline.geometry_projector_v2)
+                      ? &trial_geometry_inputs
+                      : nullptr;
+              if (use_mesh_preparation_pipeline && mesh_pipeline.phase2_remesh)
+                BEMMeshPipeline::RemeshLog::printPipelineTopologyRun("phase2");
+              for (auto& water : FluidObject) {
+                BEMMeshPipeline::TopologyModifier::applyLocalRemesh(
+                    *water, time_step, remesh_settings,
+                    retry_state.degraded_mode,
+                    output_directory.string(), simulation_time,
+                    &candidate_patches_pvd, &remeshed_patches_pvd,
+                    &trigger_edges_pvd, &edges_pvd,
+                    trial_geometry_inputs_ptr,
+                    use_mesh_preparation_pipeline ? "phase2" : "");
+                retry_state.collapse_repeatedly_rejected_faces(*water, step_retry);
+                write_water_phase_snapshot(water, step_retry, "after_phase2", water_after_phase2_pvd);
+                if (!retry_state.degraded_mode) {
+                  refreshFaceBadQualityHistory(*water, time_step, std::nullopt, 0.1, subsurface_altitude_reject);
+                  monitorTinyFaceRelativeToLocalMean(*water, time_step, std::nullopt);
+                  throwIfSubsurfaceFaceAltitudeTooSmall(*water, time_step, std::nullopt, subsurface_altitude_reject);
+                  throwIfTinyFaceRelativeToLocalMean(*water, time_step, std::nullopt, 0.01);
+                }
+              }
+            }
+
+            refreshBoundaryStatesAndTypes(FluidObject, contact_objects);
+            BEM_Penetration::throwIfStructurePenetrated(FluidObject, contact_objects, time_step, use_mesh_preparation_pipeline ? "post-mesh-preparation" : "post-remesh", use_true_quadratic_element);
+
+            if (use_mesh_preparation_pipeline && mesh_reference && mesh_pipeline.phase3_interpolate) {
+              BEMMeshPipeline::FieldMapper::mapFieldsFromReferenceState(
+                  FluidObject, *mesh_reference, node_relocation_surface,
+                  mesh_pipeline.pseudo_quadratic_policy);
+              if (mesh_pipeline.dump_after_phase3)
+                dump_pipeline_mesh("phase3_interpolate", true);
+            }
+
+            if (use_mesh_preparation_pipeline) {
+              BEMPreBVP::Options guard_options;
+              guard_options.print_ok_summary = true;
+              guard_options.print_waterline_midpoint_quality = mesh_pipeline.waterline_geometry;
+              const auto guard_stats = BEMPreBVP::inspect(FluidObject, time_step, 0, guard_options);
+              enforce_pre_bvp_guard(guard_stats, 0);
+            }
+
+            save_post_remesh_state();
+            mesh_prepared_for_rk = use_mesh_preparation_pipeline;
+          }
 
           //@ --- 3c-2b. Initial conditions (t=0 only) ---
-          if (time_step == 0 && start_time_step == 0) {
+          if (!use_mesh_preparation_pipeline && time_step == 0 && start_time_step == 0 && !initial_conditions_applied_by_pipeline) {
             applyInitialConditions(FluidObject, RigidBodyObject, SoftBodyObject, AllObjects, use_true_quadratic_element, node_relocation_surface);
 
             // Post-IC mesh quality recovery: IC projects X_mid to wave surface,
@@ -674,6 +1461,7 @@ int main(int argc, char** argv) {
             std::cout << Yellow << " (limited by geometry)" << colorReset;
           std::cout << std::endl;
 
+          vpm.refreshKinematicsForDt([&](const std::array<double, 3>& x) { return getBEMVelocityAt_cached(x, FluidObject); });
           vpm.constrainDt(dt);
           if (dt < 1E-13)
             dt = 1E-13;
@@ -726,14 +1514,13 @@ int main(int argc, char** argv) {
           };
 
           auto rebuild_fluid_nodes = [&]() {
-            // 要素タイプに依らず全ての boundary line を含める。
-            // BIE DOF か否かによる区別は phi push 内で行う（位置の update は常時）。
             fluid_nodes.clear();
             for (auto* water : FluidObject) {
               for (auto* p : water->getPoints())
                 fluid_nodes.push_back(p);
               for (auto* l : water->getBoundaryLines())
-                fluid_nodes.push_back(l);
+                if (l->hasActiveBieDof())
+                  fluid_nodes.push_back(l);
             }
           };
 
@@ -753,15 +1540,13 @@ int main(int argc, char** argv) {
                 PrintLap(watch, "makeBuckets");
               refreshBoundaryStatesAndTypes(FluidObject, Join(RigidBodyObject, SoftBodyObject));
               for (auto& water : FluidObject) {
-                water->setMinDepthFromCORNER();
-                if (use_true_quadratic_element)
-                  computeAllCornerMidpointOffsets(water);
+                water->setMinDepthFromBCInterface();
+                computeAllBCInterfaceMidpointOffsets(water);
                 const auto collapse_result = collapseCornerConnectedNeumannLinesAfterBoundaryTypes(*water, time_step);
                 if (collapse_result.changed) {
                   refreshBoundaryStatesAndTypes(water, Join(RigidBodyObject, SoftBodyObject));
-                  water->setMinDepthFromCORNER();
-                  if (use_true_quadratic_element)
-                    computeAllCornerMidpointOffsets(water);
+                  water->setMinDepthFromBCInterface();
+                  computeAllBCInterfaceMidpointOffsets(water);
                   std::cout << Magenta << "[corner_neumann_post_type] recategorized after " << collapse_result.collapsed << " collapse(s)" << colorReset << std::endl;
                 } else
                   logCornerConnectedNeumannLinesAfterBoundaryTypes(water, "post-setBoundaryTypes");
@@ -777,12 +1562,11 @@ int main(int argc, char** argv) {
               /* -------------------------------------------------------------------------- */
 
               //& --- 3c-2d. RK initialization ---
-              // X の積分は要素タイプに依らず全 entity で必要（linear でも X_mid は
-              // RK で進化させるべき）。phi は BIE DOF を持つものだけ。
               auto RK_init = [&](auto entity) {
-                entity->RK_X.initialize(dt, simulation_time, entity->getPosition(), RK_order);
-                if (entity->hasActiveBieDof())
+                if (entity->hasActiveBieDof()) {
                   entity->RK_phi.initialize(dt, simulation_time, std::get<0>(entity->phiphin), RK_order);
+                  entity->RK_X.initialize(dt, simulation_time, entity->getPosition(), RK_order);
+                }
               };
               for (auto& water : FluidObject) {
                 for (auto* p : water->getPoints())
@@ -839,6 +1623,14 @@ int main(int argc, char** argv) {
 
             //^ --- VPM Coupling: subtract vortex-induced velocity from Neumann BC ---
             vpm.subtractFromNeumannBC(FluidObject);
+
+            {
+              BEMPreBVP::Options guard_options;
+              guard_options.print_ok_summary = use_mesh_preparation_pipeline && RK_step == 1;
+              guard_options.print_waterline_midpoint_quality = mesh_pipeline.waterline_geometry;
+              const auto guard_stats = BEMPreBVP::inspect(FluidObject, time_step, RK_step, guard_options);
+              enforce_pre_bvp_guard(guard_stats, RK_step);
+            }
 
             for (auto water : FluidObject)
               dumpDebugCornerPointState(water, "pre-BVP.solve", time_step, RK_step);
@@ -897,18 +1689,28 @@ int main(int argc, char** argv) {
                 std::cout << "name = " << net->getName() << std::endl;
                 std::cout << "net->velocityTranslational() = " << net->velocityTranslational() << std::endl;
 
-                // Phase 2 (2026-04-12): mooring advance migrated to
-                // LumpedCableSystem. The 2-stage API (advanceRKStage +
-                // commitRKStep) replaces the inlined per-line loop, the
-                // velocity-BC computation, and the trailing nextPositionOnBody
-                // overwrite. The fairlead-velocity calculation and rigid-body
-                // transform are now encapsulated inside CableAttachment.
-                if (net->cable_system) {
-                  net->cable_system->advanceRKStage(
-                      simulation_time,
-                      net->RK_COM.getTimeAtNextStep() - simulation_time);
+                for (auto& mooring : net->mooringLines) {
+                  //! mooring->lastPoint は，浮体ともに動く．
+                  auto Xcurrent = mooring->lastPoint->X;
+                  mooring->lastPoint->X_last = Xcurrent;
+                  Tddd V = (nextPositionOnBody(net, mooring->lastPoint) - Xcurrent) / (net->RK_COM.getTimeAtNextStep() - simulation_time);
+                  mooring->simulate(simulation_time, net->RK_COM.getTimeAtNextStep() - simulation_time, [&](networkPoint* p) {
+                    if (p == mooring->firstPoint) {
+                      p->acceleration.fill(0);
+                      p->velocity.fill(0);
+                    } else if (p == mooring->lastPoint) {
+                      p->acceleration.fill(0);
+                      p->velocity[0] = V[0];
+                      p->velocity[1] = V[1];
+                      p->velocity[2] = V[2];
+                    }
+                  });
+
                   if (net->RK_Q.finished)
-                    net->cable_system->commitRKStep();
+                    mooring->applyMooringSimulationResult();
+
+                  for (const auto& p : mooring->getPoints())
+                    mooring->lastPoint->setX(nextPositionOnBody(net, mooring->lastPoint));
                 }
               }
 
@@ -982,18 +1784,28 @@ int main(int argc, char** argv) {
                 std::cout << "name = " << net->getName() << std::endl;
                 std::cout << "net->velocityTranslational() = " << net->velocityTranslational() << std::endl;
 
-                // Phase 2 (2026-04-12): see the corresponding pre-solve block
-                // above for the detailed migration note. This post-solve block
-                // calls the same advanceRKStage + conditional commitRKStep
-                // pattern, this time with the body's RK accumulator already
-                // pushed forward by net->RK_COM.push(V) above (so the cable
-                // sees the post-acceleration body state).
-                if (net->cable_system) {
-                  net->cable_system->advanceRKStage(
-                      simulation_time,
-                      net->RK_COM.getTimeAtNextStep() - simulation_time);
+                for (auto& mooring : net->mooringLines) {
+                  //! mooring->lastPoint は，浮体ともに動く．
+                  auto Xcurrent = mooring->lastPoint->X;
+                  mooring->lastPoint->X_last = Xcurrent;
+                  Tddd V = (nextPositionOnBody(net, mooring->lastPoint) - Xcurrent) / (net->RK_COM.getTimeAtNextStep() - simulation_time);
+                  mooring->simulate(simulation_time, net->RK_COM.getTimeAtNextStep() - simulation_time, [&](networkPoint* p) {
+                    if (p == mooring->firstPoint) {
+                      p->acceleration.fill(0);
+                      p->velocity.fill(0);
+                    } else if (p == mooring->lastPoint) {
+                      p->acceleration.fill(0);
+                      p->velocity[0] = V[0];
+                      p->velocity[1] = V[1];
+                      p->velocity[2] = V[2];
+                    }
+                  });
+
                   if (net->RK_Q.finished)
-                    net->cable_system->commitRKStep();
+                    mooring->applyMooringSimulationResult();
+
+                  for (const auto& p : mooring->getPoints())
+                    mooring->lastPoint->setX(nextPositionOnBody(net, mooring->lastPoint));
                 }
               }
               // 人工的な粘性で結果が一致するようになるかどうかチェックする．
@@ -1039,14 +1851,12 @@ int main(int argc, char** argv) {
             applyAbsorptionAndPush(fluid_nodes, mean_phi,
                                    node_relocation_method == NodeRelocationMethod::ALE);
 
-            //& --- Inactive line (BIE DOF なし): phi_mid のみ端点平均で代入 ---
-            // 位置 X_mid は BIE DOF 有無に依らず applyAbsorptionAndPush で push され、
-            // 後段の interpolation relocation で X_reloc に移動する。ここでは
-            // phi_mid が BIE 未知数でない場合に端点平均で妥当な値を与えるだけ。
+            //& --- Inactive line: 頂点の線形補間で値を維持 ---
             for (auto* water : FluidObject)
               for (auto* l : water->getBoundaryLines())
                 if (!l->hasActiveBieDof()) {
                   auto [pA, pB] = l->getPoints();
+                  l->setXSingle(0.5 * (pA->X + pB->X));
                   l->phiphin[0] = 0.5 * (std::get<0>(pA->phiphin) + std::get<0>(pB->phiphin));
                 }
 
@@ -1084,7 +1894,9 @@ int main(int argc, char** argv) {
           // POST-RK4 interpolation relocation:
           // use X_reloc computed by setNodeVelocity(), project it onto the
           // current RK-updated mesh, interpolate phi there, then move nodes.
-          if (node_relocation_method == NodeRelocationMethod::interpolation && time_step % node_relocation_period == 0) {
+          if (!use_mesh_preparation_pipeline &&
+              node_relocation_method == NodeRelocationMethod::interpolation &&
+              time_step % node_relocation_period == 0) {
             applyInterpolationRelocation(FluidObject, use_true_quadratic_element, node_relocation_surface, interpolation_midpoint_mode);
             if (bem_verbose())
               PrintLap(watch, "Interpolation relocation completed");
@@ -1099,6 +1911,7 @@ int main(int argc, char** argv) {
           // Contract: setBodyVelocity() must be called before postRKStep().
           setBodyVelocity(Join(RigidBodyObject, SoftBodyObject));
           vpm.postRKStep(dt, FluidObject, RigidBodyObject);
+          vpm.refreshKinematicsForDt([&](const std::array<double, 3>& x) { return getBEMVelocityAt_cached(x, FluidObject); });
 
           subtractMeanPhi(Buckets_Fluid_Faces.data1D, fluid_nodes);
 

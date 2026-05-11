@@ -1,11 +1,9 @@
 #ifndef BEM_H
 #define BEM_H
 
-#include "BEM_legacy_globals.hpp"
 #include "BEM_BoundaryValues.hpp"
-#include "BEM_output_info.hpp"
-#include "BEM_setBoundaryTypes.hpp"
 #include "BEM_calculateVelocities.hpp"
+#include "BEM_setBoundaryTypes.hpp"
 #include "BEM_solveBVP.hpp"
 #include "Network.hpp"
 #include "dunavant_rules.hpp"
@@ -68,10 +66,10 @@ void remesh(Network& water, const Tdd& limit_angle_D, const Tdd& limit_angle_N, 
           */
           //@ case5 ２点の平均，移動位置は，ノイマンを崩さない方向：ノイマン面の法線方向成分には移動しない．
           auto [a, b] = l->getPoints();
-          if (!(a->CORNER && b->CORNER)) {
-            if (a->CORNER)
+          if (!(a->BCInterface && b->BCInterface)) {
+            if (a->BCInterface)
               b = a;
-            else if (b->CORNER)
+            else if (b->BCInterface)
               a = b;
           }
           phiphin = (a->phiphin + b->phiphin) / 2.;
@@ -110,23 +108,22 @@ std::unordered_map<networkPoint*, V> init_map(const Network* network, const V& v
   return m;
 }
 
-// DOF-keyed init: includes both points and boundary line midpoints.
-// Line entries are always included so edge-node BC and contact state can be
-// visualized even in linear mode (where lines aren't BIE DOFs).
+// DOF-keyed init: includes both points and (optionally) boundary line midpoints
 template <typename V>
 std::unordered_map<BEM_DOF_Base*, V> init_dof_map(const Network* network, const V& value) {
   std::unordered_map<BEM_DOF_Base*, V> m;
   for (auto* p : network->getPoints())
     m[p] = value;
-  for (auto* l : network->getBoundaryLines())
-    m[l] = value;
+  if (use_true_quadratic_element)
+    for (auto* l : network->getBoundaryLines())
+      m[l] = value;
   return m;
 }
 
 // boundary condition value for ParaView output (point/line 共通)
-// 0=CORNER, 1=multiple Neumann, 2=Neumann, 3=multiple Dirichlet, 4=Dirichlet
+// 0=BCInterface, 1=multiple Neumann, 2=Neumann, 3=multiple Dirichlet, 4=Dirichlet
 inline double boundaryConditionValue(const auto* entity) {
-  if (entity->CORNER) return 0.;
+  if (entity->BCInterface) return 0.;
   if (entity->isMultipleNode && entity->Neumann) return 1.;
   if (entity->Neumann) return 2.;
   if (entity->isMultipleNode && entity->Dirichlet) return 3.;
@@ -139,6 +136,8 @@ VV_VarForOutput dataForOutput(const Network* water, const double dt) {
 
     const Tddd tdd0 = {1E+30, 1E+30, 1E+30};
     const double d0 = 1E+30;
+    constexpr double output_sharpq_feature_angle = 60.0 * M_PI / 180.0;
+    constexpr double output_sharpq_feature_angle_deg = 60.0;
 
     const uomap_DOF_Tddd dof_tdd0 = init_dof_map(water, tdd0);
     const uomap_DOF_d dof_d0 = init_dof_map(water, d0);
@@ -185,7 +184,7 @@ VV_VarForOutput dataForOutput(const Network* water, const double dt) {
     uomap_DOF_d P_diag = dof_d0;
     uomap_DOF_d P_isAbsorbed = dof_d0;
     uomap_DOF_d P_isAbsorbed_SDF = dof_d0;
-    uomap_DOF_d P_minDepthFromCORNER = dof_d0;
+    uomap_DOF_d P_minDepthFromBCInterface = dof_d0;
     uomap_DOF_d P_minDepthFromMultipleNode = dof_d0;
     uomap_DOF_d P_almost_solid_angle = dof_d0;
     uomap_DOF_d P_penetration_dist = dof_d0;
@@ -193,6 +192,9 @@ VV_VarForOutput dataForOutput(const Network* water, const double dt) {
     uomap_DOF_d P_contact_faces_count = dof_d0;
     uomap_DOF_d P_body_vertices_count = dof_d0;
     uomap_DOF_d P_isInContact_pass_count = dof_d0;
+    uomap_DOF_d P_SharpQ = dof_d0;
+    uomap_DOF_d P_SharpQ_direct = dof_d0;
+    uomap_DOF_d P_SharpQ_incident_edge_angle_max_deg = dof_d0;
     uomap_DOF_d P_pf_neumann_count = dof_d0;
     uomap_DOF_d P_pf_dirichlet_count = dof_d0;
     uomap_DOF_d P_pf_total_count = dof_d0;
@@ -212,17 +214,15 @@ VV_VarForOutput dataForOutput(const Network* water, const double dt) {
     uomap_DOF_d P_lf_pressure_detachment_eligible_count = dof_d0;
     uomap_DOF_d P_lf_detached_by_pressure_count = dof_d0;
 
-    // Curvature-based mesh density control
-    uomap_DOF_d P_geom_kmax = dof_d0;
-    uomap_DOF_d P_geom_k1 = dof_d0;
-    uomap_DOF_d P_geom_k2 = dof_d0;
-    uomap_DOF_d P_geom_curvature_valid = dof_d0;
-    uomap_DOF_Tddd P_geom_PD1 = dof_tdd0;
-    uomap_DOF_Tddd P_geom_PD2 = dof_tdd0;
-
     uomap_F_d F_lagrangian_surface_nearest_mean;
     uomap_F_d F_lagrangian_surface_nearest_max;
     uomap_F_d F_lagrangian_surface_global_fallback;
+    uomap_F_d F_SharpQ_face_edge_count;
+    uomap_F_d F_SharpQ_face_point_count;
+    uomap_F_d F_SharpQ_face_has_any;
+    uomap_F_d F_SharpQ_face_direct_edge_count;
+    uomap_F_d F_SharpQ_face_max_edge_angle_deg;
+    uomap_F_d F_SharpQ_face_direct_has_any;
 
     auto lag_position = [](const networkPoint* p) -> Tddd {
       // Compare the corrected surface against the same-step pure Lagrangian
@@ -250,6 +250,43 @@ VV_VarForOutput dataForOutput(const Network* water, const double dt) {
           if (g)
             ret.emplace(g);
       return ret;
+    };
+
+    auto line_max_boundary_normal_angle_deg = [](const networkLine* l) {
+      if (!l)
+        return 0.0;
+      const auto faces = l->getBoundaryFaces();
+      double max_angle = 0.0;
+      for (std::size_t i = 0; i < faces.size(); ++i) {
+        if (!faces[i])
+          continue;
+        for (std::size_t j = i + 1; j < faces.size(); ++j) {
+          if (!faces[j])
+            continue;
+          const double c = std::clamp(Dot(faces[i]->normal, faces[j]->normal), -1.0, 1.0);
+          max_angle = std::max(max_angle, std::acos(c) * 180.0 / M_PI);
+        }
+      }
+      return max_angle;
+    };
+    auto line_direct_sharp = [&](const networkLine* l) {
+      return line_max_boundary_normal_angle_deg(l) > output_sharpq_feature_angle_deg;
+    };
+    auto point_direct_sharp = [&](const networkPoint* p) {
+      if (!p)
+        return false;
+      for (auto* l : p->getBoundaryLines())
+        if (line_direct_sharp(l))
+          return true;
+      return false;
+    };
+    auto point_max_incident_edge_angle_deg = [&](const networkPoint* p) {
+      double max_angle = 0.0;
+      if (!p)
+        return max_angle;
+      for (auto* l : p->getBoundaryLines())
+        max_angle = std::max(max_angle, line_max_boundary_normal_angle_deg(l));
+      return max_angle;
     };
 
     auto nearest_distance_to_lagrangian_faces = [&](const Tddd& X,
@@ -316,6 +353,33 @@ VV_VarForOutput dataForOutput(const Network* water, const double dt) {
         F_lagrangian_surface_nearest_mean[f] = lagrangian_surface_nearest_mean[i];
         F_lagrangian_surface_nearest_max[f] = lagrangian_surface_nearest_max[i];
         F_lagrangian_surface_global_fallback[f] = lagrangian_surface_global_fallback[i];
+      }
+
+      for (auto* f : faces) {
+        if (!f)
+          continue;
+        double sharp_edges = 0.;
+        double sharp_points = 0.;
+        double direct_sharp_edges = 0.;
+        double max_edge_angle = 0.;
+        for (auto* l : f->getLines())
+          if (l && l->SharpQ(output_sharpq_feature_angle))
+            sharp_edges += 1.;
+        for (auto* l : f->getLines()) {
+          const double edge_angle = line_max_boundary_normal_angle_deg(l);
+          max_edge_angle = std::max(max_edge_angle, edge_angle);
+          if (edge_angle > output_sharpq_feature_angle_deg)
+            direct_sharp_edges += 1.;
+        }
+        for (auto* p : f->getPoints())
+          if (p && p->SharpQ(output_sharpq_feature_angle))
+            sharp_points += 1.;
+        F_SharpQ_face_edge_count[f] = sharp_edges;
+        F_SharpQ_face_point_count[f] = sharp_points;
+        F_SharpQ_face_has_any[f] = (sharp_edges > 0. || sharp_points > 0.) ? 1. : 0.;
+        F_SharpQ_face_direct_edge_count[f] = direct_sharp_edges;
+        F_SharpQ_face_max_edge_angle_deg[f] = max_edge_angle;
+        F_SharpQ_face_direct_has_any[f] = direct_sharp_edges > 0. ? 1. : 0.;
       }
     }
 
@@ -428,13 +492,16 @@ VV_VarForOutput dataForOutput(const Network* water, const double dt) {
             P_pf_pressure_detachment_eligible_count[p] = pf_pressure_detachment_eligible_count;
             P_pf_detached_by_pressure_count[p] = pf_detached_by_pressure_count;
           }
-          // boundary condition: 0=CORNER, 1=multiple Neumann, 2=Neumann, 3=multiple Dirichlet, 4=Dirichlet
+          // boundary condition: 0=BCInterface, 1=multiple Neumann, 2=Neumann, 3=multiple Dirichlet, 4=Dirichlet
           P_BC[p] = boundaryConditionValue(p);
           P_diag[p] = p->diag_coeff_BEM;
           P_direction_info_count[p] = p->debug_direction_info_count;
           P_contact_faces_count[p] = p->debug_contact_faces_count;
           P_body_vertices_count[p] = p->debug_body_vertices_count;
           P_isInContact_pass_count[p] = p->debug_isInContact_pass_count;
+          P_SharpQ[p] = p->SharpQ(output_sharpq_feature_angle) ? 1. : 0.;
+          P_SharpQ_direct[p] = point_direct_sharp(p) ? 1. : 0.;
+          P_SharpQ_incident_edge_angle_max_deg[p] = point_max_incident_edge_angle_deg(p);
           P_position[p] = ToX(p);
           P_pressure[p] = p->pressure_BEM;
           P_DphiDt[p] = p->DphiDt(p->u_reloc, 0.);
@@ -452,16 +519,9 @@ VV_VarForOutput dataForOutput(const Network* water, const double dt) {
           P_b_diff_RHS_FMM[p] = p->b_diff_RHS_FMM;
           P_b_RHS_FMM[p] = p->b_RHS_FMM;
           P_b_RHS_Direct[p] = p->b_RHS_Direct;
-          P_minDepthFromCORNER[p] = p->minDepthFromCORNER;
+          P_minDepthFromBCInterface[p] = p->minDepthFromBCInterface;
           P_minDepthFromMultipleNode[p] = p->minDepthFromMultipleNode;
           P_almost_solid_angle[p] = p->almost_solid_angle;
-          // Curvature-based mesh density
-          P_geom_kmax[p] = p->geom_curvature.kmax;
-          P_geom_k1[p] = p->geom_curvature.k1;
-          P_geom_k2[p] = p->geom_curvature.k2;
-          P_geom_curvature_valid[p] = p->geom_curvature.valid ? 1.0 : 0.0;
-          P_geom_PD1[p] = p->geom_curvature.PD1;
-          P_geom_PD2[p] = p->geom_curvature.PD2;
         } catch (const std::exception& e) {
           const int fail_idx = output_eval_fail_count.fetch_add(1) + 1;
           P_position[p] = ToX(p);
@@ -469,13 +529,16 @@ VV_VarForOutput dataForOutput(const Network* water, const double dt) {
           P_phin[p] = std::get<1>(p->phiphin);
           P_velocity_convergence[p] = {1E+30, 1E+30, 1E+30};
           P_BC[p] = boundaryConditionValue(p);
+          P_SharpQ[p] = p->SharpQ(output_sharpq_feature_angle) ? 1. : 0.;
+          P_SharpQ_direct[p] = point_direct_sharp(p) ? 1. : 0.;
+          P_SharpQ_incident_edge_angle_max_deg[p] = point_max_incident_edge_angle_deg(p);
           if (fail_idx <= 5) {
 #pragma omp critical
             {
               std::cerr << Yellow << "[Output] field eval failed at p->X=" << p->X
                         << " (Dirichlet=" << p->Dirichlet
                         << ", Neumann=" << p->Neumann
-                        << ", CORNER=" << p->CORNER << "): "
+                        << ", BCInterface=" << p->BCInterface << "): "
                         << e.what() << colorReset << std::endl;
             }
           }
@@ -491,17 +554,25 @@ VV_VarForOutput dataForOutput(const Network* water, const double dt) {
       throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, e.what());
     };
 
-    // --- Line midpoint data ---
-    // Always populate per-line output (BC, contact state, etc.) so that linear
-    // runs can visualize edge-node BC. Fields that are only meaningful when
-    // lines are BIE DOFs (phi, phin, ...) may hold stale/default values in
-    // linear mode — the edge-node BC itself is computed for every line.
-    {
+    // --- Line midpoint data (true quadratic elements) ---
+    if (use_true_quadratic_element) {
       for (auto* l : water->getBoundaryLines()) {
         auto [pA, pB] = l->getPoints();
         // Direct midpoint values
         P_phi[l] = l->phiphin[0];
-        P_phin[l] = l->phiphin[1];
+        if (auto* d0 = l->findActiveBieDof(nullptr))
+          P_phin[l] = d0->phin;
+        else {
+          double wa = 0., wp = 0.;
+          for (auto* f : l->getBoundaryFaces())
+            if (f) {
+              if (auto* df = l->findActiveBieDof(f)) {
+                wp += df->phin * f->area;
+                wa += f->area;
+              }
+            }
+          P_phin[l] = (wa > 0.) ? wp / wa : l->phiphin[1];
+        }
         P_phi_t[l] = l->phiphin_t[0];
         P_phin_t[l] = l->phiphin_t[1];
         P_diag[l] = l->diag_coeff_BEM;
@@ -513,6 +584,9 @@ VV_VarForOutput dataForOutput(const Network* water, const double dt) {
         P_contact_faces_count[l] = l->debug_contact_faces_count;
         P_body_vertices_count[l] = l->debug_body_vertices_count;
         P_isInContact_pass_count[l] = l->debug_isInContact_pass_count;
+        P_SharpQ[l] = l->SharpQ(output_sharpq_feature_angle) ? 1. : 0.;
+        P_SharpQ_direct[l] = line_direct_sharp(l) ? 1. : 0.;
+        P_SharpQ_incident_edge_angle_max_deg[l] = line_max_boundary_normal_angle_deg(l);
         P_position[l] = l->getPosition();
         P_vecToSurface[l] = l->vecToSurface;
         P_clungSurface[l] = l->clungSurface;
@@ -600,15 +674,9 @@ VV_VarForOutput dataForOutput(const Network* water, const double dt) {
         avg_d(P_ContactFaces);
         avg_d(P_ContactFaces_maxdist);
         avg_d(P_penetration_dist);
-        avg_d(P_minDepthFromCORNER);
+        avg_d(P_minDepthFromBCInterface);
         avg_d(P_minDepthFromMultipleNode);
         avg_d(P_almost_solid_angle);
-        avg_d(P_geom_kmax);
-        avg_d(P_geom_k1);
-        avg_d(P_geom_k2);
-        avg_d(P_geom_curvature_valid);
-        avg_v(P_geom_PD1);
-        avg_v(P_geom_PD2);
         avg_d(P_phin_t_from_Hessian);
         avg_d(P_facesNeuamnn);
         avg_v(P_accelNeumann);
@@ -684,32 +752,26 @@ VV_VarForOutput dataForOutput(const Network* water, const double dt) {
           {"contact_faces_count", P_contact_faces_count},
           {"body_vertices_count", P_body_vertices_count},
           {"isInContact_pass_count", P_isInContact_pass_count},
+          {"SharpQ", P_SharpQ},
+          {"SharpQ_direct", P_SharpQ_direct},
+          {"SharpQ_incident_edge_angle_max_deg", P_SharpQ_incident_edge_angle_max_deg},
+          {"SharpQ_face_edge_count", F_SharpQ_face_edge_count},
+          {"SharpQ_face_point_count", F_SharpQ_face_point_count},
+          {"SharpQ_face_has_any", F_SharpQ_face_has_any},
+          {"SharpQ_face_direct_edge_count", F_SharpQ_face_direct_edge_count},
+          {"SharpQ_face_max_edge_angle_deg", F_SharpQ_face_max_edge_angle_deg},
+          {"SharpQ_face_direct_has_any", F_SharpQ_face_direct_has_any},
           {"pressure", P_pressure},
-          // Note: component_id CellData is added conditionally below
           //  {"P_V2ContactFaces0", P_V2ContactFaces0},
           //  {"P_V2ContactFaces1", P_V2ContactFaces1},
           //  {"P_V2ContactFaces2", P_V2ContactFaces2},
           //  {"P_V2ContactFaces3", P_V2ContactFaces3},
           //  {"P_V2ContactFaces4", P_V2ContactFaces4},
           //  {"P_V2ContactFaces5", P_V2ContactFaces5},
-          //  {"P_minDepthFromCORNER", P_minDepthFromCORNER},
+          //  {"P_minDepthFromBCInterface", P_minDepthFromBCInterface},
           //  {"P_minDepthFromMultipleNode", P_minDepthFromMultipleNode},
           //  {"P_almost_solid_angle", P_almost_solid_angle}
-          {"geom_kmax", P_geom_kmax},
-          {"geom_k1", P_geom_k1},
-          {"geom_k2", P_geom_k2},
-          {"geom_curvature_valid", P_geom_curvature_valid},
-          {"geom_PD1", P_geom_PD1},
-          {"geom_PD2", P_geom_PD2},
       };
-      // Multi-part rigid body: add component_id as CellData
-      if (!water->component_names.empty()) {
-        uomap_F_d F_component_id;
-        for (const auto& f : water->getBoundaryFaces())
-          F_component_id[const_cast<networkFace*>(f)] = static_cast<double>(f->component_id);
-        data.push_back({"component_id", F_component_id});
-      }
-
       return data;
     } catch (const error_message&) {
       throw;
@@ -823,7 +885,7 @@ void show_info(const Network& net) {
   int total = 0, total_c_face = 0, c = 0, n = 0, d = 0;
   for (const auto& p : net.getPoints()) {
     total++;
-    if (p->CORNER) {
+    if (p->BCInterface) {
       c++;
       total_c_face += p->getBoundaryFaces().size();
     } else if (p->Neumann)
@@ -837,8 +899,8 @@ void show_info(const Network& net) {
   int doublenode = total - c + total_c_face;
   std::cout << "Total case double-node : " << doublenode << std::endl;
   std::cout << "node reduction : " << (double)(doublenode - total) / (double)doublenode << std::endl;
-  std::cout << "CORNER : " << c << std::endl;
-  std::cout << "Total CORNER faces : " << total_c_face << std::endl;
+  std::cout << "BCInterface : " << c << std::endl;
+  std::cout << "Total BCInterface faces : " << total_c_face << std::endl;
   std::cout << "Neumann : " << n << std::endl;
   std::cout << "Dirichlet : " << d << std::endl;
 };

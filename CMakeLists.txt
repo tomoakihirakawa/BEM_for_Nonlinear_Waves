@@ -153,25 +153,14 @@ set(EXTRA_SOURCES
     "${PROJECT_SOURCE_DIR}/lib/src/networkLine.cpp"
     "${PROJECT_SOURCE_DIR}/lib/src/networkFace.cpp"
     "${PROJECT_SOURCE_DIR}/lib/src/networkTetra.cpp"
-    "${PROJECT_SOURCE_DIR}/bem/core/BEM_inputfile_reader.cpp"
     "${PROJECT_SOURCE_DIR}/bem/time_domain/BEM_checkpoint.cpp"
     "${PROJECT_SOURCE_DIR}/bem/time_domain/BEM_penetration.cpp"
     "${PROJECT_SOURCE_DIR}/bem/time_domain/BEM_collision.cpp"
     "${PROJECT_SOURCE_DIR}/bem/time_domain/BEM_remesh_main.cpp"
+    "${PROJECT_SOURCE_DIR}/bem/time_domain/BEM_remesh_local_patch.cpp"
+    "${PROJECT_SOURCE_DIR}/bem/time_domain/BEM_remesh_global_passes.cpp"
+    "${PROJECT_SOURCE_DIR}/bem/time_domain/BEM_remesh_scenario_engine.cpp"
 )
-
-if(BASE_NAME STREQUAL "main_time_domain")
-  list(APPEND EXTRA_SOURCES
-      "${PROJECT_SOURCE_DIR}/bem/core/OutputJSON.cpp"
-      "${PROJECT_SOURCE_DIR}/bem/core/OutputParaview.cpp"
-      "${PROJECT_SOURCE_DIR}/bem/core/BEM_internal_flow.cpp"
-      "${PROJECT_SOURCE_DIR}/bem/core/BEM_debug_helpers.cpp"
-      "${PROJECT_SOURCE_DIR}/bem/time_domain/BEM_mesh_relaxation.cpp"
-      "${PROJECT_SOURCE_DIR}/bem/time_domain/BEM_initial_conditions.cpp"
-      "${PROJECT_SOURCE_DIR}/bem/time_domain/BEM_time_step_control.cpp"
-      "${PROJECT_SOURCE_DIR}/bem/time_domain/BEM_rk_update.cpp"
-  )
-endif()
 
 set(VALID_SOURCES ${SOURCE_FILE})
 foreach(SRC ${EXTRA_SOURCES})

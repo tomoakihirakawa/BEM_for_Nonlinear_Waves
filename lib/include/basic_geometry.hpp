@@ -1501,6 +1501,48 @@ struct IntersectionSphereTriangleLimitedToNormalRegion {
 
 inline double AbsMax3(const Tddd& v) { return std::max({std::abs(v[0]), std::abs(v[1]), std::abs(v[2])}); }
 
+inline bool PrepareAnisotropicNearestMetric(const Tddd& anisotropic_axis,
+                                            const double normal_axis_length,
+                                            const double tangent_axis_length,
+                                            Tddd& unit_axis,
+                                            double& inv_normal_axis2,
+                                            double& inv_tangent_axis2) {
+  const double axis_scale = AbsMax3(anisotropic_axis);
+  if (!std::isfinite(axis_scale) || !(axis_scale > 0.0))
+    return false;
+
+  const double axis_norm = Norm(anisotropic_axis);
+  const double normal_axis = std::abs(normal_axis_length);
+  const double tangent_axis = std::abs(tangent_axis_length);
+  if (!std::isfinite(axis_norm) || !(axis_norm > 0.0) ||
+      !std::isfinite(normal_axis) || !(normal_axis > 0.0) ||
+      !std::isfinite(tangent_axis) || !(tangent_axis > 0.0))
+    return false;
+
+  unit_axis = anisotropic_axis / axis_norm;
+  inv_normal_axis2 = 1.0 / (normal_axis * normal_axis);
+  inv_tangent_axis2 = 1.0 / (tangent_axis * tangent_axis);
+  return std::isfinite(inv_normal_axis2) && std::isfinite(inv_tangent_axis2);
+}
+
+inline double AnisotropicNearestMetricDot(const Tddd& u,
+                                          const Tddd& v,
+                                          const Tddd& unit_axis,
+                                          const double inv_normal_axis2,
+                                          const double inv_tangent_axis2) {
+  const double un = Dot(u, unit_axis);
+  const double vn = Dot(v, unit_axis);
+  return (Dot(u, v) - un * vn) * inv_tangent_axis2 + un * vn * inv_normal_axis2;
+}
+
+inline double AnisotropicNearestMetricNormSquared(const Tddd& v,
+                                                  const Tddd& unit_axis,
+                                                  const double inv_normal_axis2,
+                                                  const double inv_tangent_axis2) {
+  const double q = AnisotropicNearestMetricDot(v, v, unit_axis, inv_normal_axis2, inv_tangent_axis2);
+  return (std::isfinite(q) && q > 0.0) ? q : 0.0;
+}
+
 inline std::tuple<double, Tddd> Nearest_(const Tddd& X, const T2Tddd& ab) {
   const auto& a = std::get<0>(ab);
   const auto& b = std::get<1>(ab);
@@ -1549,6 +1591,45 @@ inline std::tuple<double, Tddd> Nearest_(const Tddd& X, const T2Tddd& ab) {
     return {1.0, a};
 
   return {t, b + d * t};
+}
+
+inline std::tuple<double, Tddd> NearestAnisotropic_(const Tddd& X,
+                                                    const T2Tddd& ab,
+                                                    const Tddd& anisotropic_axis,
+                                                    const double normal_axis_length,
+                                                    const double tangent_axis_length) {
+  Tddd unit_axis = {0., 0., 0.};
+  double inv_normal_axis2 = 0.0;
+  double inv_tangent_axis2 = 0.0;
+  if (!PrepareAnisotropicNearestMetric(anisotropic_axis, normal_axis_length, tangent_axis_length,
+                                       unit_axis, inv_normal_axis2, inv_tangent_axis2))
+    return Nearest_(X, ab);
+
+  const auto& a = std::get<0>(ab);
+  const auto& b = std::get<1>(ab);
+  const Tddd d = a - b; // b -> a
+  const Tddd xb = X - b;
+  const double den = AnisotropicNearestMetricDot(d, d, unit_axis, inv_normal_axis2, inv_tangent_axis2);
+  const double num = AnisotropicNearestMetricDot(xb, d, unit_axis, inv_normal_axis2, inv_tangent_axis2);
+  if (!(den > 0.0) || !std::isfinite(den) || !std::isfinite(num))
+    return Nearest_(X, ab);
+
+  const double t = num / den;
+  if (!std::isfinite(t))
+    return Nearest_(X, ab);
+  if (t <= 0.0)
+    return {0.0, b};
+  if (t >= 1.0)
+    return {1.0, a};
+  return {t, b + d * t};
+}
+
+inline Tddd NearestAnisotropic(const Tddd& X,
+                               const T2Tddd& ab,
+                               const Tddd& anisotropic_axis,
+                               const double normal_axis_length,
+                               const double tangent_axis_length) {
+  return std::get<1>(NearestAnisotropic_(X, ab, anisotropic_axis, normal_axis_length, tangent_axis_length));
 }
 
 inline Tdd Nearest_(const T2Tddd& ab, const T2Tddd& AB) {
@@ -1850,6 +1931,73 @@ inline std::tuple<double, double, Tddd /*to nearest*/, Tddd /*normal vec*/> Near
   }
 };
 // ...existing code...
+
+inline std::tuple<double, double, Tddd /*to nearest*/, Tddd /*normal vec*/> NearestAnisotropic_(const Tddd& X,
+                                                                                                const T3Tddd& abc,
+                                                                                                const Tddd& anisotropic_axis,
+                                                                                                const double normal_axis_length,
+                                                                                                const double tangent_axis_length) {
+  Tddd unit_axis = {0., 0., 0.};
+  double inv_normal_axis2 = 0.0;
+  double inv_tangent_axis2 = 0.0;
+  if (!PrepareAnisotropicNearestMetric(anisotropic_axis, normal_axis_length, tangent_axis_length,
+                                       unit_axis, inv_normal_axis2, inv_tangent_axis2))
+    return Nearest_(X, abc);
+
+  const auto [a, b, c] = abc;
+  const auto edge1 = b - a;
+  const auto edge2 = c - a;
+  const auto normal = Cross(edge1, edge2);
+  const double normal2 = Dot(normal, normal);
+  const Tddd unit_normal = (std::isfinite(normal2) && normal2 > 1.0e-20) ? normal * (1.0 / std::sqrt(normal2)) : Tddd{0., 0., 0.};
+
+  auto nearest_edge = [&]() {
+    auto [t_ab, P_ab] = NearestAnisotropic_(X, T2Tddd{a, b}, unit_axis, normal_axis_length, tangent_axis_length);
+    auto [t_bc, P_bc] = NearestAnisotropic_(X, T2Tddd{b, c}, unit_axis, normal_axis_length, tangent_axis_length);
+    auto [t_ca, P_ca] = NearestAnisotropic_(X, T2Tddd{c, a}, unit_axis, normal_axis_length, tangent_axis_length);
+
+    const double d_ab = AnisotropicNearestMetricNormSquared(X - P_ab, unit_axis, inv_normal_axis2, inv_tangent_axis2);
+    const double d_bc = AnisotropicNearestMetricNormSquared(X - P_bc, unit_axis, inv_normal_axis2, inv_tangent_axis2);
+    const double d_ca = AnisotropicNearestMetricNormSquared(X - P_ca, unit_axis, inv_normal_axis2, inv_tangent_axis2);
+
+    if (d_ab <= d_bc && d_ab <= d_ca)
+      return std::tuple<double, double, Tddd, Tddd>{t_ab, 1.0 - t_ab, P_ab, unit_normal};
+    if (d_bc <= d_ca)
+      return std::tuple<double, double, Tddd, Tddd>{0.0, t_bc, P_bc, unit_normal};
+    return std::tuple<double, double, Tddd, Tddd>{1.0 - t_ca, 0.0, P_ca, unit_normal};
+  };
+
+  if (!(normal2 > 1.0e-20) || !std::isfinite(normal2))
+    return nearest_edge();
+
+  const Tddd rhs = X - a;
+  const double g00 = AnisotropicNearestMetricDot(edge1, edge1, unit_axis, inv_normal_axis2, inv_tangent_axis2);
+  const double g01 = AnisotropicNearestMetricDot(edge1, edge2, unit_axis, inv_normal_axis2, inv_tangent_axis2);
+  const double g11 = AnisotropicNearestMetricDot(edge2, edge2, unit_axis, inv_normal_axis2, inv_tangent_axis2);
+  const double b0 = AnisotropicNearestMetricDot(edge1, rhs, unit_axis, inv_normal_axis2, inv_tangent_axis2);
+  const double b1 = AnisotropicNearestMetricDot(edge2, rhs, unit_axis, inv_normal_axis2, inv_tangent_axis2);
+  const double det = g00 * g11 - g01 * g01;
+  const double gram_scale = std::max({std::abs(g00 * g11), std::abs(g01 * g01), 1.0});
+  if (!std::isfinite(det) || !(std::abs(det) > 64.0 * std::numeric_limits<double>::epsilon() * gram_scale))
+    return nearest_edge();
+
+  const double u = (b0 * g11 - b1 * g01) / det;
+  const double v = (g00 * b1 - g01 * b0) / det;
+  const double w = 1.0 - u - v;
+  if (std::isfinite(u) && std::isfinite(v) && std::isfinite(w) &&
+      u >= 0.0 && v >= 0.0 && w >= 0.0)
+    return {w, u, a + edge1 * u + edge2 * v, unit_normal};
+
+  return nearest_edge();
+}
+
+inline Tddd NearestAnisotropic(const Tddd& X,
+                               const T3Tddd& abc,
+                               const Tddd& anisotropic_axis,
+                               const double normal_axis_length,
+                               const double tangent_axis_length) {
+  return std::get<2>(NearestAnisotropic_(X, abc, anisotropic_axis, normal_axis_length, tangent_axis_length));
+}
 
 inline Tddd Nearest(const Tddd& X, const T3Tddd& abc) { return std::get<2>(Nearest_(X, abc)); };
 

@@ -14,7 +14,7 @@
 #include <utility>
 #include <vector>
 
-#include "BEM_frequency_domain.hpp"
+#include "BEM_freqency_domain.hpp"
 #include "basic_vectors.hpp"
 #include "rootFinding.hpp"
 
@@ -23,6 +23,9 @@ namespace bem_frequency_domain {
 struct FaceField {
   std::array<Complex, 3> phi{};
   std::array<Complex, 3> phin{};
+  std::array<Complex, 3> phi_mid{};
+  std::array<Complex, 3> phin_mid{};
+  bool has_midpoints = false;
 };
 
 struct LinearSolution {
@@ -116,20 +119,67 @@ inline Complex incident_phin_hat(const WaterWaveTheory &wave, const Tddd &x, con
   return grad[0] * normal[0] + grad[1] * normal[1] + grad[2] * normal[2];
 }
 
-inline Complex get_phi_on_face(const networkPoint *p, const networkFace *f) {
-  if (!p)
+inline Complex get_phi_on_dof(const BEM_DOF_Base *node, const networkFace *f) {
+  if (!node)
     return Complex{0.0, 0.0};
-  if (auto* d = p->findActiveBieDofOrDefault(const_cast<networkFace *>(f)))
+  if (auto* d = const_cast<BEM_DOF_Base *>(node)->findActiveBieDofOrDefault(const_cast<networkFace *>(f)))
     return Complex{d->phi, 0.0};
-  return Complex{std::get<0>(p->phiphin), 0.0};
+  return Complex{std::get<0>(node->phiphin), 0.0};
+}
+
+inline Complex get_phin_on_dof(const BEM_DOF_Base *node, const networkFace *f) {
+  if (!node)
+    return Complex{0.0, 0.0};
+  if (auto* d = const_cast<BEM_DOF_Base *>(node)->findActiveBieDofOrDefault(const_cast<networkFace *>(f)))
+    return Complex{d->phin, 0.0};
+  return Complex{std::get<1>(node->phiphin), 0.0};
+}
+
+inline Complex get_phi_on_face(const networkPoint *p, const networkFace *f) {
+  return get_phi_on_dof(static_cast<const BEM_DOF_Base *>(p), f);
 }
 
 inline Complex get_phin_on_face(const networkPoint *p, const networkFace *f) {
-  if (!p)
-    return Complex{0.0, 0.0};
-  if (auto* d = p->findActiveBieDofOrDefault(const_cast<networkFace *>(f)))
-    return Complex{d->phin, 0.0};
-  return Complex{std::get<1>(p->phiphin), 0.0};
+  return get_phin_on_dof(static_cast<const BEM_DOF_Base *>(p), f);
+}
+
+inline bool face_field_is_quadratic(const networkFace *f, const FaceField &field) {
+  return f && f->isTrueQuadraticElement && field.has_midpoints;
+}
+
+inline std::array<Complex, 6> phi6(const FaceField &field) {
+  return {field.phi[0], field.phi[1], field.phi[2],
+          field.phi_mid[0], field.phi_mid[1], field.phi_mid[2]};
+}
+
+inline std::array<Complex, 6> phin6(const FaceField &field) {
+  return {field.phin[0], field.phin[1], field.phin[2],
+          field.phin_mid[0], field.phin_mid[1], field.phin_mid[2]};
+}
+
+inline T6Tddd face_x6(const networkFace *f) {
+  auto [p0, p1, p2] = f->getPoints();
+  auto [l0, l1, l2] = f->getLines();
+  return {p0->X, p1->X, p2->X, l0->X_mid, l1->X_mid, l2->X_mid};
+}
+
+inline Complex dot_shape6(const auto &n6, const std::array<Complex, 6> &values) {
+  Complex out{0.0, 0.0};
+  for (std::size_t i = 0; i < 6; ++i)
+    out += n6[i] * values[i];
+  return out;
+}
+
+inline Complex interpolate_phi_on_face(const networkFace *f, const FaceField &field, double b0, double b1, double b2) {
+  if (face_field_is_quadratic(f, field))
+    return dot_shape6(f->trueQuadN6(b0, b1), phi6(field));
+  return b0 * field.phi[0] + b1 * field.phi[1] + b2 * field.phi[2];
+}
+
+inline Complex interpolate_phin_on_face(const networkFace *f, const FaceField &field, double b0, double b1, double b2) {
+  if (face_field_is_quadratic(f, field))
+    return dot_shape6(f->trueQuadN6(b0, b1), phin6(field));
+  return b0 * field.phin[0] + b1 * field.phin[1] + b2 * field.phin[2];
 }
 
 inline std::array<Complex, 3> face_gradient(const networkFace *f, const FaceField &field) {
@@ -169,6 +219,12 @@ inline LinearSolution capture_linear_solution(double omega, const std::unordered
     FaceField field;
     field.phi = {get_phi_on_face(p0, f), get_phi_on_face(p1, f), get_phi_on_face(p2, f)};
     field.phin = {get_phin_on_face(p0, f), get_phin_on_face(p1, f), get_phin_on_face(p2, f)};
+    if (f->isTrueQuadraticElement) {
+      auto [l0, l1, l2] = f->getLines();
+      field.has_midpoints = true;
+      field.phi_mid = {get_phi_on_dof(l0, f), get_phi_on_dof(l1, f), get_phi_on_dof(l2, f)};
+      field.phin_mid = {get_phin_on_dof(l0, f), get_phin_on_dof(l1, f), get_phin_on_dof(l2, f)};
+    }
     sol.face_field.emplace(f, field);
   }
   populate_face_gradients(sol);
@@ -188,6 +244,9 @@ inline LinearSolution combine_linear_solutions(double omega,
     FaceField sum;
     sum.phi = {Complex{0.0, 0.0}, Complex{0.0, 0.0}, Complex{0.0, 0.0}};
     sum.phin = {Complex{0.0, 0.0}, Complex{0.0, 0.0}, Complex{0.0, 0.0}};
+    sum.phi_mid = {Complex{0.0, 0.0}, Complex{0.0, 0.0}, Complex{0.0, 0.0}};
+    sum.phin_mid = {Complex{0.0, 0.0}, Complex{0.0, 0.0}, Complex{0.0, 0.0}};
+    sum.has_midpoints = field.has_midpoints;
     for (const auto &[part, weight] : parts) {
       if (!part)
         continue;
@@ -197,6 +256,10 @@ inline LinearSolution combine_linear_solutions(double omega,
       for (std::size_t i = 0; i < 3; ++i) {
         sum.phi[i] += weight * it->second.phi[i];
         sum.phin[i] += weight * it->second.phin[i];
+        if (sum.has_midpoints) {
+          sum.phi_mid[i] += weight * it->second.phi_mid[i];
+          sum.phin_mid[i] += weight * it->second.phin_mid[i];
+        }
       }
     }
     out.face_field.emplace(f, sum);
@@ -228,20 +291,17 @@ struct SolutionIndex {
 inline SolutionIndex build_solution_index(const Solution &sol) {
   SolutionIndex idx;
   idx.index.reserve(sol.n);
-  for (std::size_t i = 0; i < sol.n; ++i) {
-    const auto &d = sol.id_by_index[i];
-    if (d.is_point()) // Line DOFs are not indexed for QTF (postprocess is point-only)
-      idx.index.emplace(Id{d.point, d.face}, i);
-  }
+  for (std::size_t i = 0; i < sol.n; ++i)
+    idx.index.emplace(sol.id_by_index[i], i);
   return idx;
 }
 
-inline Complex lookup_phi(const Solution &sol, const SolutionIndex &idx, const networkPoint *p, const networkFace *f) {
-  Id key{const_cast<networkPoint *>(p), const_cast<networkFace *>(f)};
+inline Complex lookup_phi(const Solution &sol, const SolutionIndex &idx, const BEM_DOF_Base *node, const networkFace *f) {
+  Id key{const_cast<BEM_DOF_Base *>(node), const_cast<networkFace *>(f)};
   auto it = idx.index.find(key);
   if (it != idx.index.end())
     return sol.phi[it->second];
-  key = {const_cast<networkPoint *>(p), nullptr};
+  key = {const_cast<BEM_DOF_Base *>(node), nullptr};
   it = idx.index.find(key);
   if (it != idx.index.end())
     return sol.phi[it->second];
@@ -251,18 +311,15 @@ inline Complex lookup_phi(const Solution &sol, const SolutionIndex &idx, const n
 inline LinearSolution capture_linear_solution(double omega, const Solution &sol, const std::unordered_set<networkFace *> &faces) {
   std::unordered_map<Id, std::size_t, IdHash, IdEq> index;
   index.reserve(sol.n);
-  for (std::size_t i = 0; i < sol.n; ++i) {
-    const auto &d = sol.id_by_index[i];
-    if (d.is_point())
-      index.emplace(Id{d.point, d.face}, i);
-  }
+  for (std::size_t i = 0; i < sol.n; ++i)
+    index.emplace(sol.id_by_index[i], i);
 
-  auto lookup = [&](const networkPoint *p, const networkFace *f, const std::vector<Complex> &vals) -> Complex {
-    Id key{const_cast<networkPoint *>(p), const_cast<networkFace *>(f)};
+  auto lookup = [&](const BEM_DOF_Base *node, const networkFace *f, const std::vector<Complex> &vals) -> Complex {
+    Id key{const_cast<BEM_DOF_Base *>(node), const_cast<networkFace *>(f)};
     auto it = index.find(key);
     if (it != index.end())
       return vals[it->second];
-    key = {const_cast<networkPoint *>(p), nullptr};
+    key = {const_cast<BEM_DOF_Base *>(node), nullptr};
     it = index.find(key);
     if (it != index.end())
       return vals[it->second];
@@ -277,6 +334,12 @@ inline LinearSolution capture_linear_solution(double omega, const Solution &sol,
     FaceField field;
     field.phi = {lookup(p0, f, sol.phi), lookup(p1, f, sol.phi), lookup(p2, f, sol.phi)};
     field.phin = {lookup(p0, f, sol.phin), lookup(p1, f, sol.phin), lookup(p2, f, sol.phin)};
+    if (f->isTrueQuadraticElement) {
+      auto [l0, l1, l2] = f->getLines();
+      field.has_midpoints = true;
+      field.phi_mid = {lookup(l0, f, sol.phi), lookup(l1, f, sol.phi), lookup(l2, f, sol.phi)};
+      field.phin_mid = {lookup(l0, f, sol.phin), lookup(l1, f, sol.phin), lookup(l2, f, sol.phin)};
+    }
     out.face_field.emplace(f, field);
   }
   populate_face_gradients(out);
@@ -300,6 +363,20 @@ inline LinearSolution build_incident_solution(const WaterWaveTheory &wave, const
         incident_phin_hat(wave, p1->X, f->normal),
         incident_phin_hat(wave, p2->X, f->normal),
     };
+    if (f->isTrueQuadraticElement) {
+      auto [l0, l1, l2] = f->getLines();
+      field.has_midpoints = true;
+      field.phi_mid = {
+          incident_phi_hat(wave, l0->X_mid),
+          incident_phi_hat(wave, l1->X_mid),
+          incident_phi_hat(wave, l2->X_mid),
+      };
+      field.phin_mid = {
+          incident_phin_hat(wave, l0->X_mid, f->normal),
+          incident_phin_hat(wave, l1->X_mid, f->normal),
+          incident_phin_hat(wave, l2->X_mid, f->normal),
+      };
+    }
     sol.face_field.emplace(f, field);
   }
   populate_face_gradients(sol);
@@ -350,7 +427,8 @@ inline std::vector<WaterlineSegment> collect_waterline_segments(const Network &w
 inline std::array<Complex, 6> integrate_linear_pressure_force(const LinearSolution &sol,
                                                               const std::unordered_set<networkFace *> &faces,
                                                               const Tddd &com,
-                                                              double rho) {
+                                                              double rho,
+                                                              double moment_sign = 1.0) {
   const Complex I(0.0, 1.0);
   const Complex coef = I * sol.omega * rho;
 
@@ -374,12 +452,42 @@ inline std::array<Complex, 6> integrate_linear_pressure_force(const LinearSoluti
     const auto &x0 = p0->X;
     const auto &x1 = p1->X;
     const auto &x2 = p2->X;
-    const auto &n = f->normal;
-
     const Complex p_hat0 = coef * field.phi[0];
     const Complex p_hat1 = coef * field.phi[1];
     const Complex p_hat2 = coef * field.phi[2];
 
+    if (face_field_is_quadratic(f, field)) {
+      const auto p6 = phi6(field);
+      const auto X6 = face_x6(f);
+      constexpr std::array<bool, 3> all_true{true, true, true};
+      for (const auto &[x0q, x1q, w0w1] : __GWGW10__Tuple) {
+        const auto bary = ModTriShape<3>(x0q, x1q);
+        const double b0 = bary[0], b1 = bary[1];
+        const auto N6 = f->trueQuadN6(b0, b1);
+        const auto N6_geo = TriShape<6>(b0, b1, all_true);
+        const auto dN_dt0 = D_TriShape<6, 1, 0>(b0, b1, all_true);
+        const auto dN_dt1 = D_TriShape<6, 0, 1>(b0, b1, all_true);
+        const Complex p_hat = coef * dot_shape6(N6, p6);
+        const Tddd xq = Dot(N6_geo, X6);
+        const Tddd area_vec = Cross(Dot(dN_dt0, X6), Dot(dN_dt1, X6));
+        const double weight = w0w1 * (1.0 - x0q);
+        const std::array<Complex, 3> df = {
+            p_hat * area_vec[0] * weight,
+            p_hat * area_vec[1] * weight,
+            p_hat * area_vec[2] * weight,
+        };
+        out[0] += df[0];
+        out[1] += df[1];
+        out[2] += df[2];
+        const Tddd rq = xq - com;
+        out[3] += moment_sign * (rq[1] * df[2] - rq[2] * df[1]);
+        out[4] += moment_sign * (rq[2] * df[0] - rq[0] * df[2]);
+        out[5] += moment_sign * (rq[0] * df[1] - rq[1] * df[0]);
+      }
+      continue;
+    }
+
+    const auto &n = f->normal;
     for (const auto &l : bary) {
       const double l0 = l[0], l1 = l[1], l2 = l[2];
       const Complex p_hat = l0 * p_hat0 + l1 * p_hat1 + l2 * p_hat2;
@@ -396,9 +504,9 @@ inline std::array<Complex, 6> integrate_linear_pressure_force(const LinearSoluti
           rq[2] * fq[0] - rq[0] * fq[2],
           rq[0] * fq[1] - rq[1] * fq[0],
       };
-      out[3] += w * tq[0] * f->area;
-      out[4] += w * tq[1] * f->area;
-      out[5] += w * tq[2] * f->area;
+      out[3] += moment_sign * w * tq[0] * f->area;
+      out[4] += moment_sign * w * tq[1] * f->area;
+      out[5] += moment_sign * w * tq[2] * f->area;
     }
   }
 

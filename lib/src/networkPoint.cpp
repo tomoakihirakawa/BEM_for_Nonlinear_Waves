@@ -26,6 +26,65 @@ inline bool isPointFaceDirichletLocal(const networkPoint* p, const networkFace* 
   return !isPointFaceNeumannLocal(p, f);
 }
 
+inline bool containsPointLocal(const networkFace* f, const networkPoint* p) {
+  if (!f || !p)
+    return false;
+  for (auto* q : f->getPoints())
+    if (q == p)
+      return true;
+  return false;
+}
+
+inline networkFace* chooseBoundaryBeginFaceLocal(const networkPoint* p, networkLine* line) {
+  auto* p1 = (*line)(p);
+  if (!p1)
+    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "line is not connected to point");
+
+  auto boundary_faces = line->getBoundaryFaces();
+  if (boundary_faces.empty())
+    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "line has no boundary face");
+
+  networkFace* begin_face = nullptr;
+  for (auto* f : boundary_faces) {
+    if (!containsPointLocal(f, p))
+      continue;
+    if (f->getPointFront(line) == p1) {
+      if (begin_face)
+        throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "ambiguous boundary begin face");
+      begin_face = f;
+    }
+  }
+
+  if (begin_face)
+    return begin_face;
+
+  for (auto* f : boundary_faces)
+    if (containsPointLocal(f, p))
+      return f;
+
+  throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "line boundary faces do not contain point");
+}
+
+inline networkFace* nextBoundaryFaceLocal(const networkPoint* p, networkLine* next_line, networkFace* current_face) {
+  if (!next_line)
+    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "next line is null");
+  if ((*next_line)(p) == nullptr)
+    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "next line is not connected to point");
+
+  auto candidates = next_line->getBoundaryFaces(current_face);
+  if (candidates.empty())
+    return nullptr;
+  if (candidates.size() > 1)
+    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "non-manifold boundary line");
+
+  auto* next_face = candidates.front();
+  if (!next_face || !next_face->BoundaryQ())
+    return nullptr;
+  if (!containsPointLocal(next_face, p))
+    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "next boundary face does not contain point");
+  return next_face;
+}
+
 } // namespace
 /* --------------------------------- SUFACE --------------------------------- */
 
@@ -269,7 +328,7 @@ bool isInContact(const networkPoint* p, const networkFace* f_normal, const std::
 };
 
 void networkPoint::setContactRange(const std::vector<Network*>& objects) {
-  this->contact_range = 0.5 * localEdgeLength(this);
+  this->contact_range = 0.4 * localEdgeLength(this);
 };
 
 // \label{addContactFaces}
@@ -345,58 +404,62 @@ std::vector<networkFace*> selectionOfFaces(const networkPoint* const p, const st
   return ret;
 };
 
-V_netFp networkPoint::getFacesSort() const {
-  V_netFp ret = {*this->Faces.begin()};
-  netFp f;
-  netLp l;
-  int count = 0;
-  /*
-   *        *-------*
-   *       / \    /  \
-   *      / f \  /    \
-   *     *-- l -0------*
-   *      \    / \    /
-   *       \  /   \  /
-   *        *-------*
-   */
-  do {
-    f = *ret.rbegin();
-    l = std::get<2>(f->getLinesTupleFrom(this));
-    if ((*l)(f) != ret[0])
-      ret.emplace_back((*l)(f));
-    else
-      break;
-  } while (count++ < 1000);
-  return ret;
+V_netFp networkPoint::getBoundaryFacesSort() const {
+  auto boundary_faces = this->getBoundaryFaces();
+  if (boundary_faces.empty())
+    return {};
+
+  auto choose_oriented_line = [&](const bool border_only) -> networkLine* {
+    for (auto* f : boundary_faces)
+      for (auto* l : f->getLines()) {
+        auto* p1 = l ? (*l)(this) : nullptr;
+        if (!p1 || l->getBoundaryFaces().empty())
+          continue;
+        if (border_only && l->getBoundaryFaces().size() >= 2)
+          continue;
+        if (f->getPointFront(l) == p1)
+          return l;
+      }
+    return nullptr;
+  };
+
+  if (auto* l = choose_oriented_line(/*border_only=*/true))
+    return this->getBoundaryFacesSort(l);
+  if (auto* l = choose_oriented_line(/*border_only=*/false))
+    return this->getBoundaryFacesSort(l);
+
+  throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "boundary point has no boundary line");
 };
 /* ------------------------------------------------------ */
-// 追加2021/09/02
-V_netFp networkPoint::getFacesSort(networkLine* const line) const {
+V_netFp networkPoint::getBoundaryFacesSort(networkLine* const line) const {
   try {
-    auto p1 = (*line)(this);
-    if (!p1)
-      throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "");
-    networkFace* begin_face;
-    // 左回りの面を選ぶ．その面からスタート
-    for (const auto& f : line->getFaces())
-      if (f->getPointFront(line) == p1) {
-        begin_face = f;
-        break;
-      }
+    if (!line)
+      throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "line is null");
 
+    auto* begin_face = chooseBoundaryBeginFaceLocal(this, line);
     V_netFp ret = {begin_face};
     ret.reserve(10);
+
+    networkFace* current_face = begin_face;
+    networkLine* current_line = line;
     int c = 0;
-    networkLine* next_line = line;
-    do {
-      next_line = begin_face->getLineBack(next_line);
-      if (next_line != line)
-        ret.emplace_back(begin_face = (*next_line)(begin_face));
-      else
+    for (; c < 1000; ++c) {
+      auto* next_line = current_face->getLineBack(current_line);
+      if (next_line == line)
         break;
-    } while (c++ < 1000);
+
+      auto* next_face = nextBoundaryFaceLocal(this, next_line, current_face);
+      if (!next_face)
+        break;
+      if (std::ranges::find(ret, next_face) != ret.end())
+        throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "boundary face loop does not return to start line");
+
+      ret.emplace_back(next_face);
+      current_face = next_face;
+      current_line = next_line;
+    }
     if (c >= 1000)
-      throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "");
+      throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "boundary face sort did not converge");
 
     return ret;
   } catch (const error_message&) {
@@ -406,12 +469,44 @@ V_netFp networkPoint::getFacesSort(networkLine* const line) const {
   };
 };
 /* ------------------------------------------------------ */
-V_netFp networkPoint::getFaces(networkLine* line) const { return getFacesSort(line); };
+std::vector<networkLine*> networkPoint::getBoundaryLinesSort(networkLine* const line) const {
+  try {
+    if (!line)
+      throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "line is null");
+    if ((*line)(this) == nullptr)
+      throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "line is not connected to point");
+
+    auto faces = this->getBoundaryFacesSort(line);
+    std::vector<networkLine*> ret = {line};
+    ret.reserve(faces.size() + 1);
+
+    auto* current_line = line;
+    for (auto* f : faces) {
+      auto* next_line = f->getLineBack(current_line);
+      if (!next_line)
+        throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "next line is null");
+      if (next_line == line)
+        break;
+      if ((*next_line)(this) == nullptr)
+        throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "next line is not connected to point");
+      ret.emplace_back(next_line);
+      current_line = next_line;
+    }
+
+    return ret;
+  } catch (const error_message&) {
+    throw;
+  } catch (const std::exception& e) {
+    throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, e.what());
+  };
+};
+/* ------------------------------------------------------ */
+V_netFp networkPoint::getFaces(networkLine* line) const { return getBoundaryFacesSort(line); };
 V_netPp networkPoint::getNeighborsSort2() const {
   V_netPp ret;
   netPp p;
   netLp l;
-  for (const auto& f : getFacesSort()) {
+  for (const auto& f : getBoundaryFacesSort()) {
     p = std::get<1>(f->getPoints(this));
     ret.emplace_back(p);
     l = f->getLineOpposite(this);
@@ -445,10 +540,11 @@ V_d networkPoint::getAngles() const {
 V_d networkPoint::getAngles(networkLine* const base_line) const {
   if (!base_line)
     return this->getAngles();
-  V_d ret(this->Faces.size());
-  int i = 0;
-  for (const auto& f : this->getFacesSort(base_line))
-    ret[i++] = f->getAngle(this);
+  const auto faces = this->getBoundaryFacesSort(base_line);
+  V_d ret;
+  ret.reserve(faces.size());
+  for (const auto& f : faces)
+    ret.emplace_back(f->getAngle(this));
   return ret;
 };
 
@@ -531,7 +627,7 @@ Tddd networkPoint::getNormalNeumannAreaAveraged() const {
 Tddd networkPoint::getNormalDirichlet_BEM() const { return getNormalDirichletAreaAveraged(); };
 Tddd networkPoint::getNormalNeumann_BEM() const { return getNormalNeumannAreaAveraged(); };
 Tddd networkPoint::getNormal_BEM() const {
-  if (this->CORNER)
+  if (this->BCInterface)
     return Normalize((getNormalDirichlet_BEM() + getNormalNeumann_BEM()) / 2.);
   else {
     return getNormalAreaAveraged();

@@ -1,9 +1,13 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
+#include <cstddef>
 #include <execution>
 #include <limits>
+#include <numeric>
 #include <ranges>
+#include <vector>
 
 #include "lib_Fourier.hpp"
 #include "lib_multipole_expansion.hpp"
@@ -219,6 +223,344 @@ B.rebuild_tree_if_needed();
 // Buckets is derived from CoordinateBounds
 // N <= 8, 10だと破綻することがあった．
 //! ./fast ./input_files/Goring1979_DT0d05_MESHwater0d04refined.obj_ELEMlinear_ALEpseudo_quad_ALEPERIOD1
+template <class T>
+struct BoundingVolumeHierarchy {
+  struct NearestResult {
+    T item{};
+    Tddd point = {0., 0., 0.};
+    double distance2 = std::numeric_limits<double>::infinity();
+    bool found = false;
+  };
+
+private:
+  struct AABB {
+    T3Tdd bounds{{{1E+20, -1E+20}, {1E+20, -1E+20}, {1E+20, -1E+20}}};
+  };
+
+  struct Record {
+    T item{};
+    AABB bounds;
+    Tddd center = {0., 0., 0.};
+  };
+
+  struct Node {
+    AABB bounds;
+    int left = -1;
+    int right = -1;
+    std::size_t begin = 0;
+    std::size_t end = 0;
+    bool leaf = true;
+  };
+
+  std::vector<Record> records_;
+  std::vector<Node> nodes_;
+  std::size_t leaf_size_ = 8;
+
+  static double coordinate(const Tddd& x, const int axis) {
+    if (axis == 0)
+      return std::get<0>(x);
+    if (axis == 1)
+      return std::get<1>(x);
+    return std::get<2>(x);
+  }
+
+  static const Tdd& axisMinMax(const AABB& bounds, const int axis) {
+    return bounds.bounds[static_cast<std::size_t>(axis)];
+  }
+
+  static double axisLength(const AABB& bounds, const int axis) {
+    const auto& mm = axisMinMax(bounds, axis);
+    return std::get<1>(mm) - std::get<0>(mm);
+  }
+
+  static int longestAxis(const AABB& bounds) {
+    const double lx = axisLength(bounds, 0);
+    const double ly = axisLength(bounds, 1);
+    const double lz = axisLength(bounds, 2);
+    if (lx >= ly && lx >= lz)
+      return 0;
+    if (ly >= lz)
+      return 1;
+    return 2;
+  }
+
+  static AABB makeAABB(const CoordinateBounds& bounds) {
+    return AABB{bounds.getBounds()};
+  }
+
+  static void mergeInto(AABB& into, const AABB& from) {
+    for (int axis = 0; axis < 3; ++axis) {
+      auto& dst = into.bounds[static_cast<std::size_t>(axis)];
+      const auto& src = from.bounds[static_cast<std::size_t>(axis)];
+      dst[0] = std::min(dst[0], src[0]);
+      dst[1] = std::max(dst[1], src[1]);
+    }
+  }
+
+  static AABB mergedBounds(const std::vector<Record>& records, const std::size_t begin, const std::size_t end) {
+    AABB bounds;
+    for (std::size_t i = begin; i < end; ++i)
+      mergeInto(bounds, records[i].bounds);
+    return bounds;
+  }
+
+  int buildNode(const std::size_t begin, const std::size_t end) {
+    const int node_index = static_cast<int>(nodes_.size());
+    nodes_.push_back(Node{});
+    nodes_[static_cast<std::size_t>(node_index)].begin = begin;
+    nodes_[static_cast<std::size_t>(node_index)].end = end;
+    nodes_[static_cast<std::size_t>(node_index)].bounds = mergedBounds(records_, begin, end);
+    nodes_[static_cast<std::size_t>(node_index)].leaf = (end - begin) <= leaf_size_;
+
+    if (!nodes_[static_cast<std::size_t>(node_index)].leaf) {
+      const int axis = longestAxis(nodes_[static_cast<std::size_t>(node_index)].bounds);
+      const std::size_t mid = begin + (end - begin) / 2;
+      std::nth_element(records_.begin() + static_cast<std::ptrdiff_t>(begin),
+                       records_.begin() + static_cast<std::ptrdiff_t>(mid),
+                       records_.begin() + static_cast<std::ptrdiff_t>(end),
+                       [axis](const Record& a, const Record& b) {
+                         return coordinate(a.center, axis) < coordinate(b.center, axis);
+                       });
+      nodes_[static_cast<std::size_t>(node_index)].left = buildNode(begin, mid);
+      nodes_[static_cast<std::size_t>(node_index)].right = buildNode(mid, end);
+    }
+
+    return node_index;
+  }
+
+public:
+  void clear() {
+    records_.clear();
+    nodes_.clear();
+  }
+
+  bool empty() const { return records_.empty(); }
+  std::size_t size() const { return records_.size(); }
+
+  template <class BoundsGetter>
+  void setVector(const std::vector<T>& items, BoundsGetter bounds_getter, const std::size_t leaf_size = 8) {
+    clear();
+    leaf_size_ = std::max<std::size_t>(1, leaf_size);
+    records_.reserve(items.size());
+    const std::size_t leaf_count = std::max<std::size_t>(1, (items.size() + leaf_size_ - 1) / leaf_size_);
+    nodes_.reserve(2 * leaf_count);
+    for (const auto& item : items) {
+      CoordinateBounds bounds(bounds_getter(item));
+      records_.push_back(Record{item, makeAABB(bounds), bounds.getCenter()});
+    }
+    if (!records_.empty())
+      buildNode(0, records_.size());
+  }
+
+  static double distanceSquaredPointToBounds(const Tddd& x, const AABB& bounds) {
+    double dist2 = 0.;
+    for (int axis = 0; axis < 3; ++axis) {
+      const auto& mm = axisMinMax(bounds, axis);
+      const double xi = coordinate(x, axis);
+      double d = 0.;
+      if (xi < std::get<0>(mm))
+        d = std::get<0>(mm) - xi;
+      else if (xi > std::get<1>(mm))
+        d = xi - std::get<1>(mm);
+      dist2 += d * d;
+    }
+    return dist2;
+  }
+
+  static double distanceSquaredBoundsToBounds(const AABB& a, const AABB& b) {
+    double dist2 = 0.;
+    for (int axis = 0; axis < 3; ++axis) {
+      const auto& amm = axisMinMax(a, axis);
+      const auto& bmm = axisMinMax(b, axis);
+      double d = 0.;
+      if (std::get<1>(amm) < std::get<0>(bmm))
+        d = std::get<0>(bmm) - std::get<1>(amm);
+      else if (std::get<1>(bmm) < std::get<0>(amm))
+        d = std::get<0>(amm) - std::get<1>(bmm);
+      dist2 += d * d;
+    }
+    return dist2;
+  }
+
+  static double distanceSquaredPointToBounds(const Tddd& x, const CoordinateBounds& bounds) {
+    return distanceSquaredPointToBounds(x, makeAABB(bounds));
+  }
+
+  template <class NearestPointGetter>
+  NearestResult nearest(const Tddd& x, NearestPointGetter nearest_point_getter) const {
+    NearestResult best;
+    if (nodes_.empty())
+      return best;
+
+    std::array<int, 256> stack{};
+    std::vector<int> overflow_stack;
+    std::size_t sp = 0;
+    stack[sp++] = 0;
+
+    auto push_node_index = [&](const int child) {
+      if (sp < stack.size())
+        stack[sp++] = child;
+      else
+        overflow_stack.push_back(child);
+    };
+
+    auto pop_node_index = [&]() {
+      if (sp > 0)
+        return stack[--sp];
+      const int child = overflow_stack.back();
+      overflow_stack.pop_back();
+      return child;
+    };
+
+    while (sp > 0 || !overflow_stack.empty()) {
+      const int node_index = pop_node_index();
+      const Node& node = nodes_[static_cast<std::size_t>(node_index)];
+      if (distanceSquaredPointToBounds(x, node.bounds) > best.distance2)
+        continue;
+
+      if (node.leaf) {
+        for (std::size_t i = node.begin; i < node.end; ++i) {
+          if (distanceSquaredPointToBounds(x, records_[i].bounds) > best.distance2)
+            continue;
+          const Tddd point = nearest_point_getter(records_[i].item);
+          const double dist2 = NormSquared(point - x);
+          if (dist2 < best.distance2) {
+            best.item = records_[i].item;
+            best.point = point;
+            best.distance2 = dist2;
+            best.found = true;
+          }
+        }
+        continue;
+      }
+
+      const int left = node.left;
+      const int right = node.right;
+      if (left >= 0 && right >= 0) {
+        const double left_lower = distanceSquaredPointToBounds(x, nodes_[static_cast<std::size_t>(left)].bounds);
+        const double right_lower = distanceSquaredPointToBounds(x, nodes_[static_cast<std::size_t>(right)].bounds);
+
+        auto push_node = [&](const int child, const double lower) {
+          if (lower <= best.distance2)
+            push_node_index(child);
+        };
+
+        if (left_lower < right_lower) {
+          push_node(right, right_lower);
+          push_node(left, left_lower);
+        } else {
+          push_node(left, left_lower);
+          push_node(right, right_lower);
+        }
+      } else {
+        if (left >= 0) {
+          const double lower = distanceSquaredPointToBounds(x, nodes_[static_cast<std::size_t>(left)].bounds);
+          if (lower <= best.distance2)
+            push_node_index(left);
+        }
+        if (right >= 0) {
+          const double lower = distanceSquaredPointToBounds(x, nodes_[static_cast<std::size_t>(right)].bounds);
+          if (lower <= best.distance2)
+            push_node_index(right);
+        }
+      }
+    }
+
+    return best;
+  }
+
+  template <class Visitor>
+  void apply(const Tddd& x, const double radius, Visitor&& visitor) const {
+    if (nodes_.empty() || !(radius >= 0.0))
+      return;
+
+    const double radius2 = radius * radius;
+    std::vector<int> stack;
+    stack.reserve(nodes_.size());
+    stack.push_back(0);
+
+    while (!stack.empty()) {
+      const int node_index = stack.back();
+      stack.pop_back();
+      const Node& node = nodes_[static_cast<std::size_t>(node_index)];
+      if (distanceSquaredPointToBounds(x, node.bounds) > radius2)
+        continue;
+
+      if (node.leaf) {
+        for (std::size_t i = node.begin; i < node.end; ++i) {
+          if (distanceSquaredPointToBounds(x, records_[i].bounds) <= radius2)
+            visitor(records_[i].item);
+        }
+        continue;
+      }
+
+      if (node.left >= 0)
+        stack.push_back(node.left);
+      if (node.right >= 0)
+        stack.push_back(node.right);
+    }
+  }
+
+  template <class Visitor>
+  void applyPairsWithin(const BoundingVolumeHierarchy<T>& other,
+                        const double radius,
+                        Visitor&& visitor) const {
+    if (nodes_.empty() || other.nodes_.empty() || !(radius >= 0.0))
+      return;
+
+    const double radius2 = radius * radius;
+    std::vector<std::pair<int, int>> stack;
+    stack.reserve(nodes_.size() + other.nodes_.size());
+    stack.emplace_back(0, 0);
+
+    auto push_pair_if_close = [&](const int ia, const int ib) {
+      if (ia < 0 || ib < 0)
+        return;
+      const auto& na = nodes_[static_cast<std::size_t>(ia)];
+      const auto& nb = other.nodes_[static_cast<std::size_t>(ib)];
+      if (distanceSquaredBoundsToBounds(na.bounds, nb.bounds) <= radius2)
+        stack.emplace_back(ia, ib);
+    };
+
+    while (!stack.empty()) {
+      const auto [ia, ib] = stack.back();
+      stack.pop_back();
+
+      const auto& na = nodes_[static_cast<std::size_t>(ia)];
+      const auto& nb = other.nodes_[static_cast<std::size_t>(ib)];
+      if (distanceSquaredBoundsToBounds(na.bounds, nb.bounds) > radius2)
+        continue;
+
+      if (na.leaf && nb.leaf) {
+        for (std::size_t i = na.begin; i < na.end; ++i) {
+          for (std::size_t j = nb.begin; j < nb.end; ++j) {
+            if (distanceSquaredBoundsToBounds(records_[i].bounds, other.records_[j].bounds) <= radius2)
+              visitor(records_[i].item, other.records_[j].item);
+          }
+        }
+        continue;
+      }
+
+      if (na.leaf) {
+        push_pair_if_close(ia, nb.left);
+        push_pair_if_close(ia, nb.right);
+        continue;
+      }
+
+      if (nb.leaf) {
+        push_pair_if_close(na.left, ib);
+        push_pair_if_close(na.right, ib);
+        continue;
+      }
+
+      push_pair_if_close(na.left, nb.left);
+      push_pair_if_close(na.left, nb.right);
+      push_pair_if_close(na.right, nb.left);
+      push_pair_if_close(na.right, nb.right);
+    }
+  }
+};
+
 template <typename T /*Stored Object*/, int N = 0>
 struct Buckets : public CoordinateBounds {
 
@@ -528,67 +870,11 @@ struct Buckets : public CoordinateBounds {
 
   //% ----------------------------------------------- */
 
-  //! 既存subtreeの構造的整合を回復する。
-  //! hasChildren()==true の bucket で、非空セルに child がない場合に child を補完する。
-  //! grow_condition とは無関係に、既にsplitされたsubtreeを再帰的に閉じる。
-  bool repairPartialSubtree() {
-    if (!this->hasChildren())
-      return false;
-
-    bool changed = false;
-
-    for (int i = 0; i < this->xsize; ++i)
-      for (int j = 0; j < this->ysize; ++j)
-        for (int k = 0; k < this->zsize; ++k) {
-          if (this->data[i][j][k].empty()) {
-            // 空セルの子は不要 — shrink で消すべきだが念のため
-            if (this->children[i][j][k] != nullptr) {
-              delete this->children[i][j][k];
-              this->children[i][j][k] = nullptr;
-              changed = true;
-            }
-          } else if (this->children[i][j][k] == nullptr) {
-            // 非空セルなのに child がない → 補完
-            auto* child = new Buckets<T, N>(getBounds({i, j, k}), this->dL * (0.5 + 1e-13));
-            child->setGrowCondition(this->grow_condition);
-            child->setLevel(this->level + 1, this->max_level);
-            child->parent = this;
-            for (auto& p : this->data[i][j][k]) {
-              if (!child->add(p->X, p))
-                child->add_bypass_insideQ(p->X, p);
-            }
-            this->children[i][j][k] = child;
-            changed = true;
-          }
-        }
-
-    // 再帰: 子が既にsubtreeを持っている場合、またはgrow_conditionを満たす場合に修復を続行
-    for (auto& vi : this->children)
-      for (auto& vj : vi)
-        for (auto& vk : vj)
-          if (vk != nullptr) {
-            if (vk->hasChildren() || (vk->grow_condition(vk) && vk->level < vk->max_level))
-              changed = vk->repairPartialSubtree() || changed;
-          }
-
-    return changed;
-  }
-
-  //% ----------------------------------------------- */
-
   bool grow(bool recursive = true) {
     bool changed = false;
 
-    // Phase 1: 既存subtreeの穴埋め（grow_conditionとは無関係）
-    if (this->hasChildren())
-      changed = this->repairPartialSubtree();
-
-    // Phase 2: 新規split（grow_conditionに基づく）
-    if (!this->grow_condition(this) || this->level >= this->max_level) {
-      if (changed && this->level == 0)
-        this->rebuildHierarchyLists();
-      return changed;
-    }
+    if (!this->grow_condition(this) || this->level >= this->max_level)
+      return false;
 
     // 子配列確保 (一度だけ)
     if (!this->hasChildren())
@@ -601,15 +887,13 @@ struct Buckets : public CoordinateBounds {
         for (int k = 0; k < this->zsize; ++k)
           ijk_list.emplace_back(std::array<int, 3>{i, j, k});
 
-    // 未生成セルに対して child を生成
-    bool local_changed = false;
-#pragma omp parallel for reduction(|| : local_changed)
+    // 1) 未生成セルに対して child を生成
+#pragma omp parallel for
     for (const auto& [i, j, k] : ijk_list) {
       if (this->data[i][j][k].empty()) {
         if (this->children[i][j][k] != nullptr) {
           delete this->children[i][j][k]; // 既存の子は削除
           this->children[i][j][k] = nullptr;
-          local_changed = true;
         }
       } else if (children[i][j][k] == nullptr) {
         auto* child = new Buckets<T, N>(getBounds({i, j, k}), this->dL * (0.5 + 1e-13));
@@ -622,18 +906,22 @@ struct Buckets : public CoordinateBounds {
             child->add_bypass_insideQ(p->X, p);
         }
         children[i][j][k] = child;
-        local_changed = true;
+        changed = true; // 少なくとも1つの子が生成された
       }
     }
-    changed = changed || local_changed;
 
-    // 再帰: 直接の子のみ走査（各子の grow(true) が更に深く再帰する）
-    // traverseTree だと全 descendant を回し、各 child->grow(true) も再帰するため重複訪問になる
+    // 2) 再帰 (必要なら)
     if (recursive) {
-      traverseChildren([&](Buckets<T, N>*& child) {
-        if (child != nullptr && (child->hasChildren() || (child->grow_condition(child) && child->level < child->max_level)))
-          changed = child->grow(true) || changed;
-      });
+      if (this->level <= 2)
+        traverseTreeParallel([&](Buckets<T, N>* child) {
+          if (child->grow_condition(child) && child->level < child->max_level)
+            changed = child->grow(true) || changed; // 再帰的に成長
+        });
+      else
+        traverseTree([&](Buckets<T, N>* child) {
+          if (child->grow_condition(child) && child->level < child->max_level)
+            changed = child->grow(true) || changed; // 再帰的に成長
+        });
     }
 
     // ルートなら階層リストを再構築
@@ -1103,27 +1391,14 @@ struct Buckets : public CoordinateBounds {
         this->rebuildHierarchyLists();
       std::cout << "After grow: " << this->deepest_level_buckets.size() << " deepest level buckets." << std::endl;
     }
-    // rebin後のリーフソース数検証 — mismatch時はfull rebuildにfallback
+    // rebin後のリーフソース数検証
     {
       std::size_t total_leaf_sources = 0;
       for (auto* b : this->deepest_level_buckets)
         total_leaf_sources += b->data1D.size();
-      if (total_leaf_sources != this->data1D.size()) {
+      if (total_leaf_sources != this->data1D.size())
         std::cerr << Red << "[rebin] WARNING: leaf sources (" << total_leaf_sources
-                  << ") != total sources (" << this->data1D.size()
-                  << "). Falling back to full rebuild." << colorReset << std::endl;
-        // 子ツリーを全削除（rootのdata/data1Dは保持）
-        for (auto& vi : this->children)
-          for (auto& vj : vi)
-            for (auto& vk : vj)
-              if (vk != nullptr) {
-                delete vk;
-                vk = nullptr;
-              }
-        this->children.clear();
-        // rootのdata1Dから木を再構築
-        this->generateTree();
-      }
+                  << ") != total sources (" << this->data1D.size() << ")" << colorReset << std::endl;
     }
     return escaped;
   }

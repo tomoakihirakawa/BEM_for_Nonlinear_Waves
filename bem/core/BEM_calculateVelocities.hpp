@@ -4,6 +4,7 @@
 #include "BEM_BoundaryValues.hpp"
 #include "BEM_midpoint_debug.hpp"
 #include "Network.hpp"
+#include "basic_surface_geometry.hpp"
 #include "minMaxOfFunctions.hpp"
 #include <filesystem>
 
@@ -40,14 +41,18 @@ inline void writeNodeRelocationQuadraticDebugVTU(
       const auto pos = point_position_of(p);
       const auto it_corr = point_correction.find(p);
       const auto it_near = point_nearest.find(p);
-      all_points.push_back({pos, (it_corr != point_correction.end()) ? it_corr->second : Tddd{0., 0., 0.}, (it_near != point_nearest.end()) ? it_near->second : Tddd{0., 0., 0.}});
+      all_points.push_back({pos,
+                            (it_corr != point_correction.end()) ? it_corr->second : Tddd{0., 0., 0.},
+                            (it_near != point_nearest.end()) ? it_near->second : Tddd{0., 0., 0.}});
     };
     auto push_midpoint = [&](networkLine* l) {
       auto [pa, pb] = l->getPoints();
       const auto pos = 0.5 * (point_position_of(pa) + point_position_of(pb));
       const auto it_corr = line_correction.find(l);
       const auto it_near = line_nearest.find(l);
-      all_points.push_back({pos, (it_corr != line_correction.end()) ? it_corr->second : Tddd{0., 0., 0.}, (it_near != line_nearest.end()) ? it_near->second : Tddd{0., 0., 0.}});
+      all_points.push_back({pos,
+                            (it_corr != line_correction.end()) ? it_corr->second : Tddd{0., 0., 0.},
+                            (it_near != line_nearest.end()) ? it_near->second : Tddd{0., 0., 0.}});
     };
 
     push_vertex(p0);
@@ -66,7 +71,10 @@ inline void writeNodeRelocationQuadraticDebugVTU(
   fprintf(fp, "<Points>\n");
   fprintf(fp, "<DataArray NumberOfComponents='3' type='Float32' Name='Position' format='ascii'>\n");
   for (const auto& p : all_points)
-    fprintf(fp, "%s %s %s ", NumtoString(std::get<0>(p.position)).c_str(), NumtoString(std::get<1>(p.position)).c_str(), NumtoString(std::get<2>(p.position)).c_str());
+    fprintf(fp, "%s %s %s ",
+            NumtoString(std::get<0>(p.position)).c_str(),
+            NumtoString(std::get<1>(p.position)).c_str(),
+            NumtoString(std::get<2>(p.position)).c_str());
   fprintf(fp, "\n</DataArray>\n");
   fprintf(fp, "</Points>\n");
 
@@ -81,7 +89,10 @@ inline void writeNodeRelocationQuadraticDebugVTU(
     fprintf(fp, "<DataArray NumberOfComponents='3' type='Float32' Name='%s' format='ascii'>\n", name);
     for (const auto& p : all_points) {
       const auto v = getter(p);
-      fprintf(fp, "%s %s %s ", NumtoString(std::get<0>(v)).c_str(), NumtoString(std::get<1>(v)).c_str(), NumtoString(std::get<2>(v)).c_str());
+      fprintf(fp, "%s %s %s ",
+              NumtoString(std::get<0>(v)).c_str(),
+              NumtoString(std::get<1>(v)).c_str(),
+              NumtoString(std::get<2>(v)).c_str());
     }
     fprintf(fp, "\n</DataArray>\n");
   };
@@ -378,6 +389,7 @@ inline constexpr auto t0t1_high = UniformPointsOnTriangle_00_10_01<15>(); // 136
 /* -------------------------------------------------------------------------- */
 /*     Dirichlet面上の最近点探索                                               */
 /* -------------------------------------------------------------------------- */
+
 // refineNearestParam は basic_surface_geometry.hpp に移動済み
 
 // pseudo-quadratic補間によるDirichlet面上の最近点
@@ -385,7 +397,9 @@ inline constexpr auto t0t1_high = UniformPointsOnTriangle_00_10_01<15>(); // 136
 // 均一分布なので頂点インデックスは0固定で面全体をカバーできる
 // out_param: 非nullなら最近点の(t0, t1)パラメタを書き出す
 inline Tddd NearestOnDirichletFace_pseudo(const Tddd& X_shifted, const networkFace* f, const auto& t0t1_param, Tdd* out_param, auto getPos) {
-  auto points = f->dodecaPoints[0]->interpolate(t0t1_param, [&](networkPoint* q) -> Tddd { return getPos(q); });
+  auto* face = const_cast<networkFace*>(f);
+  face->ensureDodecaPoints();
+  auto points = face->dodecaPoints[0]->interpolate(t0t1_param, [&](networkPoint* q) -> Tddd { return getPos(q); });
   double nearest_dist = 1E+20, dist = 0.;
   Tddd X_nearest = {1E+20, 1E+20, 1E+20};
   std::size_t best_idx = 0;
@@ -398,7 +412,7 @@ inline Tddd NearestOnDirichletFace_pseudo(const Tddd& X_shifted, const networkFa
   }
   Tdd best_param = t0t1_param[best_idx];
   // Newton精緻化
-  auto& dode = f->dodecaPoints[0];
+  auto& dode = face->dodecaPoints[0];
   best_param = refineNearestParam(X_shifted, best_param, [&](double t0, double t1) -> Tddd { return dode->interpolate(t0, t1, getPos); }, [&](double t0, double t1, int i, int j) -> Tddd {
         if (i == 1 && j == 0) return dode->template D_interpolate<1, 0>(t0, t1, getPos);
         if (i == 0 && j == 1) return dode->template D_interpolate<0, 1>(t0, t1, getPos);
@@ -468,7 +482,7 @@ inline Tddd NearestOnDirichletFace(const Tddd& X_shifted, const networkFace* f, 
 
 // networkPoint* / networkLine* 共通のスナッピング関数
 // X_shifted: 補正済み予測位置（点: RK_with_Ubuff(p), 辺: 頂点平均）
-// entity: networkPoint* or networkLine* （Dirichlet/Neumann/CORNER/contact_range等の共通インターフェースを持つ）
+// entity: networkPoint* or networkLine* （Dirichlet/Neumann/BCInterface/contact_range等の共通インターフェースを持つ）
 template <typename Entity>
 inline Tddd vectorToNextSurface(Entity entity, Tddd X_shifted) {
 
@@ -496,7 +510,7 @@ inline Tddd vectorToNextSurface(Entity entity, Tddd X_shifted) {
     networkFace* closest_face = nullptr;
     Tdd best_face_param = {0., 0.};
 
-    //! CORNERは２段階処理する必要がある．まずDirichlet面に張り付く．その後，Neumann面に張り付く．
+    //! BCInterfaceは２段階処理する必要がある．まずDirichlet面に張り付く．その後，Neumann面に張り付く．
     //! Dirichlet境界面への接近ベクトルを計算
     if (has_dirichlet_state) {
       //! Neumann面には後で境界条件が付与されるので問題ない
@@ -517,7 +531,7 @@ inline Tddd vectorToNextSurface(Entity entity, Tddd X_shifted) {
         entity->relocation_param = best_face_param;
         if (!has_neumann_state)
           return vecToDirichlet;
-        X_shifted += vecToDirichlet; // for CORNER, shift the position to the closest Dirichlet surface
+        X_shifted += vecToDirichlet; // for BCInterface, shift the position to the closest Dirichlet surface
       } else {
         if (!has_neumann_state)
           return {0., 0., 0.};
@@ -648,7 +662,7 @@ $\frac{D\phi}{Dt}=\frac{\partial\phi}{\partial t}+\frac{d{\mathbfit\chi}}{dt} \c
 // \label{BEM:calculateVecToSurface}
 inline Tddd DistorsionMeasureWeightedSmoothingVector_modified(const networkPoint* p, const std::array<double, 3>& current_pX, std::function<Tddd(const networkPoint*)> position) {
   const int max_sum_depth = 20;
-  auto faces = p->CORNER ? p->getFacesDirichlet() : p->getBoundaryFaces();
+  auto faces = p->BCInterface ? p->getFacesDirichlet() : p->getBoundaryFaces();
   thread_local std::vector<double> weights;
   weights.clear();
   thread_local std::vector<Tddd> positions;
@@ -750,9 +764,9 @@ inline Tddd DistorsionMeasureWeightedSmoothingVector_modified(const networkPoint
 /* -------------------------------------------------------------------------- */
 
 inline void calculateVecToSurface(const Network& net,
-                                  const int loop,
-                                  const double coefIN,
-                                  const std::filesystem::path* debug_output_directory = nullptr) {
+                           const int loop,
+                           const double coefIN,
+                           const std::filesystem::path* debug_output_directory = nullptr) {
   auto points = ToVector(net.getPoints());
   const std::size_t n_points = points.size();
   const bool enable_stage_debug = loop > 0 && debug_output_directory && !debug_output_directory->empty();
@@ -887,7 +901,7 @@ inline void calculateVecToSurface(const Network& net,
   constexpr double convergence_tol = 1e-10; // 全体収束判定の閾値
 
   auto noThroughCondition = [&](const networkPoint* p, Tddd vec) {
-    if (p->Neumann || p->CORNER)
+    if (p->Neumann || p->BCInterface)
       vec = Chop(vec, RK_with_Ubuff_Normal(p));
     return vec;
   };
@@ -930,7 +944,7 @@ inline void calculateVecToSurface(const Network& net,
   std::vector<std::tuple<networkLine*, networkPoint*, Tddd, networkPoint*, Tddd>> linear_midpoint_endpoint_corrections; // (line, pA, penaltyA, pB, penaltyB)
   linear_midpoint_endpoint_corrections.reserve(lines.size());
   for (const auto* l : lines) {
-    if (l->Neumann || l->CORNER)
+    if (l->Neumann || l->BCInterface)
       linear_midpoint_endpoint_corrections.emplace_back(const_cast<networkLine*>(l), l->Point_A, std::array<double, 3>{0., 0., 0.}, l->Point_B, std::array<double, 3>{0., 0., 0.});
   }
 
@@ -1029,9 +1043,10 @@ inline void calculateVecToSurface(const Network& net,
 
   /* -------------------------------------------------------------------------- */
   /*  midpoint relocation: 頂点の品質改善後、midpointを面上にスナッピング         */
-  /*  linear 辺も含む: 端点平均が凸壁を貫入するのを防止                          */
   /* -------------------------------------------------------------------------- */
   for (auto* l : net.getBoundaryLines()) {
+    if (!l->hasActiveBieDof())
+      continue;
     l->vecToSurface.fill(0.);
     l->clungSurface.fill(0.);
   }
@@ -1039,6 +1054,8 @@ inline void calculateVecToSurface(const Network& net,
   // midpointの面スナッピング: 頂点の補正に追従 + Neumann面制約
   int corner_mid_count = 0, dirichlet_mid_count = 0;
   for (auto* l : net.getBoundaryLines()) {
+    if (!l->hasActiveBieDof())
+      continue;
     auto [pA, pB] = l->getPoints();
     auto X_shidted = 0.5 * (RK_with_Ubuff(pA) + RK_with_Ubuff(pB));
 
@@ -1052,7 +1069,7 @@ inline void calculateVecToSurface(const Network& net,
     Tddd final_pos = RK_without_Ubuff(l) + l->vecToSurface;
     double shift = Norm(final_pos - X_shidted);
     double relative_shift = (edge_len > 1e-20) ? shift / edge_len : 0.;
-    if (l->CORNER) {
+    if (l->BCInterface) {
       ++corner_mid_count;
     } else if (l->Dirichlet) {
       ++dirichlet_mid_count;
@@ -1125,7 +1142,7 @@ inline void setNodeVelocity(const Network& net,
     p->u_reloc = p->u_total;
     // CAUTIION : 以下のようにNeuamnnだけことなる時間発展の方法を使うのはよくないようだ．
     // 基本的にラグランジュ的に時間発展させ，修正も同じ状態に対して行うのが安全だ．
-    // CORNERで見られた，内部との若干のズレもこのあたりが原因の可能性がある．
+    // BCInterfaceで見られた，内部との若干のズレもこのあたりが原因の可能性がある．
     // if (p->Neumann)
     //   p->u_reloc = velocity_of_Body(std::get<0>(getEffectiveNearestContactFace(p)), getPosition(p));
     p->vecToSurface.fill(0.);
@@ -1153,7 +1170,7 @@ inline void setNodeVelocity(const Network& net,
       std::cout << "p->vecToSurface = " << p->vecToSurface << std::endl;
       std::cout << "p->Dirichlet = " << p->Dirichlet << std::endl;
       std::cout << "p->Neumann = " << p->Neumann << std::endl;
-      std::cout << "p->CORNER = " << p->CORNER << std::endl;
+      std::cout << "p->BCInterface = " << p->BCInterface << std::endl;
       throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "");
     }
   }
@@ -1187,10 +1204,9 @@ inline void setNodeVelocity(const Network& net,
   for (const auto& p : net.getPoints())
     setRelocFromVecToSurface(p);
 
-  // 要素タイプに依らず全 line の X_reloc を計算（可視化・接触判定・非貫入
-  // チェックで使われる幾何位置は BIE DOF 有無と独立に保つ）。
   for (auto* l : net.getBoundaryLines())
-    setRelocFromVecToSurface(l);
+    if (l->hasActiveBieDof())
+      setRelocFromVecToSurface(l);
 
   dumpDebugMidpointLineState(&net, "post-ale-relocation", -1, -1);
 }

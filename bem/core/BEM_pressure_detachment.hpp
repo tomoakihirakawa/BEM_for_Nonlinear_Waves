@@ -38,7 +38,7 @@ inline bool pressureDetachmentEligible(const networkFace* f) {
   // Rationale:
   // When a target wave is imposed by absorber/node-relocation, the free surface can
   // move numerically while the contacted wall itself remains fixed. In that case the
-  // CORNER should stay constrained to the wall geometry, and a transient negative
+  // BCInterface should stay constrained to the wall geometry, and a transient negative
   // pressure must not flip the boundary to Dirichlet. Pressure-based peeling is
   // therefore allowed only when the supporting body is actually movable.
   return !found_supporting_body;

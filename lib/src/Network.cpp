@@ -2,8 +2,12 @@
 #include "basic_surface_geometry.hpp"
 #include "pch.hpp"
 
+#include <algorithm>
+#include <atomic>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
+#include <iostream>
 #include <limits>
 
 namespace {
@@ -11,15 +15,120 @@ namespace {
 using ContactFaceCandidate = std::tuple<networkFace*, Tddd, double>;
 
 constexpr int max_contact_faces = 10;
+constexpr int contact_face_sample_divisions = 10; // (N+1)(N+2)/2 = 66 samples per candidate triangle.
 constexpr double normal_angle_diff_detection_range = 60 * M_PI / 180;
+constexpr double node_face_region_tolerance = 1e-8;
+constexpr double bcinterface_contact_tangent_axis_factor = 0.75;
+constexpr double bcinterface_contact_normal_axis_factor = 1.0;
+constexpr double insideq_normal_barycentric_margin = 0.02;
+constexpr double insideq_normal_max_distance_factor = 3.0;
+constexpr double insideq_normal_ambiguity_distance_factor = 0.05;
+constexpr double insideq_normal_large_angle_cos = 0.5; // cos(60 deg)
+
+struct InsideQFastNormalStats {
+  std::atomic<std::uint64_t> attempts{0};
+  std::atomic<std::uint64_t> fast_inside{0};
+  std::atomic<std::uint64_t> fast_outside{0};
+  std::atomic<std::uint64_t> fallback_no_bvh{0};
+  std::atomic<std::uint64_t> fallback_invalid{0};
+  std::atomic<std::uint64_t> fallback_near_surface{0};
+  std::atomic<std::uint64_t> fallback_edge{0};
+  std::atomic<std::uint64_t> fallback_far{0};
+  std::atomic<std::uint64_t> fallback_ambiguous_normal{0};
+  std::atomic<std::uint64_t> fallback_small_signed_gap{0};
+  std::atomic<std::uint64_t> validation_checks{0};
+  std::atomic<std::uint64_t> validation_mismatches{0};
+};
+
+InsideQFastNormalStats insideq_fast_normal_stats;
+
+bool envFlagEnabled(const char* name, const bool default_value) {
+  const char* value = std::getenv(name);
+  if (!value)
+    return default_value;
+  return std::strcmp(value, "0") != 0 &&
+         std::strcmp(value, "false") != 0 &&
+         std::strcmp(value, "FALSE") != 0 &&
+         std::strcmp(value, "off") != 0 &&
+         std::strcmp(value, "OFF") != 0;
+}
+
+bool insideQFastNormalEnabled() {
+  static const bool enabled = envFlagEnabled("BEM_INSIDEQ_FAST_NORMAL", true);
+  return enabled;
+}
+
+bool insideQFastNormalValidateEnabled() {
+  static const bool enabled = envFlagEnabled("BEM_INSIDEQ_FAST_NORMAL_VALIDATE", false);
+  return enabled;
+}
+
+bool insideQFastNormalStatsEnabled() {
+  static const bool enabled = envFlagEnabled("BEM_INSIDEQ_FAST_NORMAL_STATS", false);
+  return enabled || insideQFastNormalValidateEnabled();
+}
+
+void printInsideQFastNormalStats() {
+  const auto attempts = insideq_fast_normal_stats.attempts.load();
+  if (attempts == 0)
+    return;
+  std::cerr << "[InsideQFastNormal] attempts=" << attempts
+            << " fast_inside=" << insideq_fast_normal_stats.fast_inside.load()
+            << " fast_outside=" << insideq_fast_normal_stats.fast_outside.load()
+            << " fallback={no_bvh:" << insideq_fast_normal_stats.fallback_no_bvh.load()
+            << ",invalid:" << insideq_fast_normal_stats.fallback_invalid.load()
+            << ",near_surface:" << insideq_fast_normal_stats.fallback_near_surface.load()
+            << ",edge:" << insideq_fast_normal_stats.fallback_edge.load()
+            << ",far:" << insideq_fast_normal_stats.fallback_far.load()
+            << ",ambiguous_normal:" << insideq_fast_normal_stats.fallback_ambiguous_normal.load()
+            << ",small_signed_gap:" << insideq_fast_normal_stats.fallback_small_signed_gap.load()
+            << "} validation_checks=" << insideq_fast_normal_stats.validation_checks.load()
+            << " validation_mismatches=" << insideq_fast_normal_stats.validation_mismatches.load()
+            << std::endl;
+}
+
+void ensureInsideQFastNormalStatsPrinter() {
+  static const bool registered = [] {
+    if (insideQFastNormalStatsEnabled())
+      std::atexit(printInsideQFastNormalStats);
+    return true;
+  }();
+  (void)registered;
+}
+
+void countInsideQFastFallback(std::atomic<std::uint64_t>& counter) {
+  if (insideQFastNormalStatsEnabled())
+    counter.fetch_add(1, std::memory_order_relaxed);
+}
+
+double faceMaxEdgeLength(const networkFace* face) {
+  if (!face)
+    return 0.0;
+  const auto tri = face->getXVertices();
+  const auto& x0 = std::get<0>(tri);
+  const auto& x1 = std::get<1>(tri);
+  const auto& x2 = std::get<2>(tri);
+  return std::max({Norm(x1 - x0), Norm(x2 - x1), Norm(x0 - x2)});
+}
+
+double bcinterfaceContactBroadRange(double contact_range) {
+  if (!(contact_range > 0.0) || !std::isfinite(contact_range))
+    return 0.0;
+  return std::max(bcinterface_contact_tangent_axis_factor,
+                  bcinterface_contact_normal_axis_factor) *
+         contact_range;
+}
 
 template <int N>
-double directedHausdorffDistanceImpl(const V_netFp& query_faces, const V_netFp& target_faces) {
+DirectedHausdorffDistanceResult directedHausdorffDistanceWithLimitImpl(const V_netFp& query_faces,
+                                                                       const V_netFp& target_faces,
+                                                                       const double limit) {
   constexpr auto t0t1_samples = UniformPointsOnTriangle_00_10_01<N>();
 
-  double max_distance = 0.;
+  DirectedHausdorffDistanceResult result;
   bool has_query_face = false;
   bool has_valid_target = false;
+  const bool use_limit = std::isfinite(limit);
 
   for (auto* f : query_faces) {
     if (!f)
@@ -36,16 +145,120 @@ double directedHausdorffDistanceImpl(const V_netFp& query_faces, const V_netFp& 
     const auto X012 = ToX(f);
     for (const auto& [t0, t1] : t0t1_samples) {
       const auto x = X012[0] * t0 + X012[1] * t1 + X012[2] * (1. - t0 - t1);
-      const auto x_nearest = ::Nearest(x, filtered_target_faces);
-      max_distance = std::max(max_distance, Norm(x - x_nearest));
+      const auto [x_nearest, nearest_face] = ::Nearest_(x, filtered_target_faces);
+      ++result.samples;
+      ++result.nearest_calls;
+      const double d = Norm(x - x_nearest);
+      if (std::isfinite(d) && d > result.distance) {
+        result.distance = d;
+        result.has_witness = true;
+        result.query_point = x;
+        result.nearest_point = x_nearest;
+        result.query_face_index = f ? f->index : -1;
+        result.target_face_index = nearest_face ? nearest_face->index : -1;
+      }
+      if (use_limit && result.distance > limit) {
+        result.exceeded = true;
+        return result;
+      }
     }
   }
 
   if (!has_query_face)
-    return 0.;
-  if (!has_valid_target)
-    return std::numeric_limits<double>::infinity();
-  return max_distance;
+    return result;
+  if (!has_valid_target) {
+    result.distance = std::numeric_limits<double>::infinity();
+    result.exceeded = use_limit;
+  }
+  return result;
+}
+
+template <int N>
+double directedHausdorffDistanceImpl(const V_netFp& query_faces, const V_netFp& target_faces) {
+  return directedHausdorffDistanceWithLimitImpl<N>(
+             query_faces, target_faces, std::numeric_limits<double>::infinity())
+      .distance;
+}
+
+template <int N>
+DirectedHausdorffDistanceResult directedHausdorffDistanceWithLimitImpl(const V_netFp& query_faces,
+                                                                       const V_Netp& target_networks,
+                                                                       const double limit) {
+  constexpr auto t0t1_samples = UniformPointsOnTriangle_00_10_01<N>();
+
+  DirectedHausdorffDistanceResult result;
+  bool has_query_face = false;
+  bool has_valid_target = false;
+  const bool use_limit = std::isfinite(limit);
+
+  for (auto* f : query_faces) {
+    if (!f)
+      continue;
+    has_query_face = true;
+    const auto* query_network = f->getNetwork();
+
+    std::vector<Network*> filtered_targets;
+    filtered_targets.reserve(target_networks.size());
+    for (auto* target : target_networks) {
+      if (!target || target == query_network)
+        continue;
+      if (target->getBoundaryFaces().empty())
+        continue;
+      filtered_targets.emplace_back(target);
+    }
+    if (filtered_targets.empty())
+      continue;
+    has_valid_target = true;
+
+    const auto X012 = ToX(f);
+    for (const auto& [t0, t1] : t0t1_samples) {
+      const auto x = X012[0] * t0 + X012[1] * t1 + X012[2] * (1. - t0 - t1);
+      networkFace* nearest_face = nullptr;
+      Tddd x_nearest = {0., 0., 0.};
+      double nearest_distance = std::numeric_limits<double>::infinity();
+      for (auto* target : filtered_targets) {
+        const auto [candidate_face, candidate_x] = target->Nearest(x);
+        ++result.nearest_calls;
+        if (!candidate_face)
+          continue;
+        const double d = Norm(x - candidate_x);
+        if (std::isfinite(d) && d < nearest_distance) {
+          nearest_distance = d;
+          nearest_face = candidate_face;
+          x_nearest = candidate_x;
+        }
+      }
+
+      ++result.samples;
+      if (nearest_face && nearest_distance > result.distance) {
+        result.distance = nearest_distance;
+        result.has_witness = true;
+        result.query_point = x;
+        result.nearest_point = x_nearest;
+        result.query_face_index = f ? f->index : -1;
+        result.target_face_index = nearest_face ? nearest_face->index : -1;
+      }
+      if (use_limit && result.distance > limit) {
+        result.exceeded = true;
+        return result;
+      }
+    }
+  }
+
+  if (!has_query_face)
+    return result;
+  if (!has_valid_target) {
+    result.distance = std::numeric_limits<double>::infinity();
+    result.exceeded = use_limit;
+  }
+  return result;
+}
+
+template <int N>
+double directedHausdorffDistanceImpl(const V_netFp& query_faces, const V_Netp& target_networks) {
+  return directedHausdorffDistanceWithLimitImpl<N>(
+             query_faces, target_networks, std::numeric_limits<double>::infinity())
+      .distance;
 }
 
 V_netFp uniqueValidFaces(const V_netFp& faces) {
@@ -83,7 +296,7 @@ std::vector<ContactFaceCandidate> collectBroadPhaseCandidates(const ContactDetec
   const auto& pos = detectable.getPosition();
   std::vector<ContactFaceCandidate> candidates;
   for (const auto& object : objects) {
-    object->BucketSurfaces.apply(pos, detectable.contact_range, [&](networkFace* const& f) {
+    object->applyBoundaryFacesNear(pos, detectable.contact_range, [&](networkFace* const& f) {
       if (!include_self_network && f->getNetwork() == detectable.getNetwork())
         return;
       if (std::ranges::any_of(candidates, [&](const auto& candidate) { return f == std::get<0>(candidate); }))
@@ -114,7 +327,7 @@ std::vector<ContactFaceCandidate> selectNarrowPhaseCandidates(const ContactDetec
       continue;
 
     const auto [fi, _, distance] = candidates[i];
-    const auto angle = contactAcceptanceAngle(distance, detectable.contact_range, 60., 30.);
+    const auto angle = contactAcceptanceAngle(distance, detectable.contact_range, 70., 50.);
     if (std::ranges::none_of(check_faces, [&](const auto& f) { return isFlat(fi->normal, -f->normal, angle); })) {
       keep[i] = false;
       continue;
@@ -141,20 +354,280 @@ std::vector<ContactFaceCandidate> selectNarrowPhaseCandidates(const ContactDetec
   return filtered;
 }
 
-void mapBoundaryFacesToNearestContactFaces(ContactDetectable& detectable,
-                                           const std::vector<networkFace*>& surfaces,
-                                           const std::vector<ContactFaceCandidate>& contact_faces) {
+void appendUniqueContactFace(std::vector<networkFace*>& contact_faces, networkFace* contact_face) {
+  if (!contact_face)
+    return;
+  if (std::ranges::none_of(contact_faces, [&](const auto* f) { return f == contact_face; }))
+    contact_faces.emplace_back(contact_face);
+}
+
+std::array<double, 3> barycentricOnTrianglePlane(const Tddd& x, const T3Tddd& tri) {
+  const auto& [a, b, c] = tri;
+  const auto v0 = b - a;
+  const auto v1 = c - a;
+  const auto v2 = x - a;
+  const double d00 = Dot(v0, v0);
+  const double d01 = Dot(v0, v1);
+  const double d11 = Dot(v1, v1);
+  const double d20 = Dot(v2, v0);
+  const double d21 = Dot(v2, v1);
+  const double denom = d00 * d11 - d01 * d01;
+  if (!(std::abs(denom) > 1e-30))
+    return {std::numeric_limits<double>::quiet_NaN(),
+            std::numeric_limits<double>::quiet_NaN(),
+            std::numeric_limits<double>::quiet_NaN()};
+  const double v = (d11 * d20 - d01 * d21) / denom;
+  const double w = (d00 * d21 - d01 * d20) / denom;
+  return {1.0 - v - w, v, w};
+}
+
+int vertexIndexInFace(const networkFace* face, const networkPoint* point) {
+  if (!face || !point)
+    return -1;
+  const auto& points = face->getPoints();
+  for (int i = 0; i < 3; ++i)
+    if (points[i] == point)
+      return i;
+  return -1;
+}
+
+int oppositeVertexIndexForLineInFace(const networkFace* face, const networkLine* line) {
+  if (!face || !line)
+    return -1;
+  const auto& points = face->getPoints();
+  const auto [p0, p1] = line->getPoints();
+  int endpoint_count = 0;
+  int opposite = -1;
+  for (int i = 0; i < 3; ++i) {
+    if (points[i] == p0 || points[i] == p1)
+      ++endpoint_count;
+    else
+      opposite = i;
+  }
+  return (endpoint_count == 2) ? opposite : -1;
+}
+
+bool sampleIsInNodeFaceRegion(const ContactDetectable& detectable,
+                              const networkFace* water_face,
+                              const Tddd& sample) {
+  if (!water_face)
+    return false;
+  const auto bary = barycentricOnTrianglePlane(sample, ToX(water_face));
+  if (!isFinite(bary))
+    return false;
+
+  if (const auto* point = dynamic_cast<const networkPoint*>(&detectable)) {
+    const int vertex_index = vertexIndexInFace(water_face, point);
+    if (vertex_index < 0)
+      return false;
+    for (int i = 0; i < 3; ++i) {
+      if (i == vertex_index)
+        continue;
+      if (bary[i] < -node_face_region_tolerance)
+        return false;
+    }
+    return true;
+  }
+
+  if (const auto* line = dynamic_cast<const networkLine*>(&detectable)) {
+    const int opposite_index = oppositeVertexIndexForLineInFace(water_face, line);
+    if (opposite_index < 0)
+      return false;
+    return bary[opposite_index] >= -node_face_region_tolerance;
+  }
+
+  return false;
+}
+
+bool candidateSupportsNodeFace(const ContactDetectable& detectable,
+                               const networkFace* water_face,
+                               const networkFace* contact_face) {
+  if (!water_face || !contact_face || !(detectable.contact_range > 0.0))
+    return false;
+
+  constexpr auto samples = UniformPointsOnTriangle_00_10_01<contact_face_sample_divisions>();
+  const auto contact_tri = ToX(contact_face);
+  for (const auto& [t0, t1] : samples) {
+    const auto y = contact_tri[0] * t0 + contact_tri[1] * t1 + contact_tri[2] * (1.0 - t0 - t1);
+    const double distance = Norm(y - detectable.getPosition());
+    if (distance > detectable.contact_range)
+      continue;
+    if (!sampleIsInNodeFaceRegion(detectable, water_face, y))
+      continue;
+    const double angle = contactAcceptanceAngle(distance, detectable.contact_range, 70., 50.);
+    if (isFlat(contact_face->normal, -water_face->normal, angle))
+      return true;
+  }
+  return false;
+}
+
+// Preserve the legacy contact assignment first, then add contacts detected by
+// sampling the opponent face. The sampled path is intentionally additive: it is
+// for recovering contacts that the closest-point/narrow-phase path misses, not
+// for narrowing or replacing contacts that were already accepted.
+void mapBoundaryFacesToContactFaces(ContactDetectable& detectable,
+                                    const std::vector<networkFace*>& surfaces,
+                                    const std::vector<ContactFaceCandidate>& legacy_contact_faces,
+                                    const std::vector<ContactFaceCandidate>& sampled_contact_candidates) {
   for (const auto& f : surfaces) {
     auto& d = detectable.dof(f);
     d.contact_opponent_faces.clear();
-    for (const auto& F_X : contact_faces) {
+
+    for (const auto& F_X : legacy_contact_faces) {
       auto* contact_face = std::get<0>(F_X);
       if (isFlat(f->normal, contact_face->normal, normal_angle_diff_detection_range) ||
-          isFlat(f->normal, -contact_face->normal, normal_angle_diff_detection_range)) {
-        d.contact_opponent_faces.push_back(contact_face);
+          isFlat(f->normal, -contact_face->normal, normal_angle_diff_detection_range))
+        appendUniqueContactFace(d.contact_opponent_faces, contact_face);
+    }
+
+    for (const auto& F_X : sampled_contact_candidates) {
+      auto* contact_face = std::get<0>(F_X);
+      if (candidateSupportsNodeFace(detectable, f, contact_face))
+        appendUniqueContactFace(d.contact_opponent_faces, contact_face);
+    }
+  }
+}
+
+bool hasRawContactFaces(const ContactDetectable& detectable) {
+  return !detectable.getContactFaces().empty();
+}
+
+bool isBCInterfaceWaterlineEntity(const ContactDetectable& detectable) {
+  if (const auto* p = dynamic_cast<const networkPoint*>(&detectable))
+    return p->BCInterface;
+  if (const auto* l = dynamic_cast<const networkLine*>(&detectable))
+    return l->BCInterface;
+  return false;
+}
+
+const char* contactDetectableKind(const ContactDetectable& detectable) {
+  if (dynamic_cast<const networkPoint*>(&detectable))
+    return "point";
+  if (dynamic_cast<const networkLine*>(&detectable))
+    return "line";
+  return "entity";
+}
+
+bool isAdjacentWaterFace(const std::vector<networkFace*>& surfaces, const networkFace* face) {
+  return std::ranges::any_of(surfaces, [&](const auto* f) { return f == face; });
+}
+
+bool addBCInterfaceNearestContactFallback(ContactDetectable& detectable,
+                                          const std::vector<Network*>& objects,
+                                          const bool include_self_network,
+                                          const std::vector<networkFace*>& surfaces) {
+  if (!isBCInterfaceWaterlineEntity(detectable) ||
+      hasRawContactFaces(detectable) ||
+      surfaces.empty() ||
+      !(detectable.contact_range > 0.0) ||
+      !std::isfinite(detectable.contact_range))
+    return false;
+
+  networkFace* nearest_face = nullptr;
+  Tddd nearest_x = {0., 0., 0.};
+  double nearest_distance = std::numeric_limits<double>::infinity();
+  double nearest_metric_distance = std::numeric_limits<double>::infinity();
+  auto* const own_network = detectable.getNetwork();
+  const auto& x = detectable.getPosition();
+  const double broad_range = bcinterfaceContactBroadRange(detectable.contact_range);
+
+  for (auto* object : objects) {
+    if (!object)
+      continue;
+    if (!include_self_network && object == own_network)
+      continue;
+    object->applyBoundaryFacesNear(x, broad_range, [&](networkFace* const& face) {
+      if (!face)
+        return;
+      if (!include_self_network && face->getNetwork() == own_network)
+        return;
+      if (isAdjacentWaterFace(surfaces, face))
+        return;
+      const auto y = NearestAnisotropic(
+          x, face,
+          std::max(bcinterface_contact_normal_axis_factor * detectable.contact_range, 1e-12),
+          std::max(bcinterface_contact_tangent_axis_factor * detectable.contact_range, 1e-12));
+      const double distance = Norm(y - x);
+      const double metric_distance =
+          contactAnisotropicDistance(x, y, face->normal, detectable.contact_range,
+                                     bcinterface_contact_normal_axis_factor,
+                                     bcinterface_contact_tangent_axis_factor);
+      if (!std::isfinite(distance) || !std::isfinite(metric_distance) ||
+          metric_distance > detectable.contact_range)
+        return;
+      if (metric_distance < nearest_metric_distance ||
+          (metric_distance == nearest_metric_distance && distance < nearest_distance)) {
+        nearest_face = face;
+        nearest_x = y;
+        nearest_distance = distance;
+        nearest_metric_distance = metric_distance;
+      }
+    });
+  }
+
+  if (!nearest_face)
+    return false;
+
+  int assigned_dofs = 0;
+  for (auto* water_face : surfaces) {
+    if (!water_face || water_face->getNetwork() == nearest_face->getNetwork())
+      continue;
+    appendUniqueContactFace(detectable.dof(water_face).contact_opponent_faces, nearest_face);
+    ++assigned_dofs;
+  }
+  if (assigned_dofs <= 0)
+    return false;
+
+  detectable.penetratedBody = nearest_face->getNetwork();
+  static std::atomic<int> fallback_count{0};
+  static std::atomic<int> fallback_point_count{0};
+  static std::atomic<int> fallback_line_count{0};
+  const int count = ++fallback_count;
+  const std::string kind = contactDetectableKind(detectable);
+  if (kind == "point")
+    ++fallback_point_count;
+  else if (kind == "line")
+    ++fallback_line_count;
+  const double range_ratio =
+      (detectable.contact_range > 0.0 && std::isfinite(detectable.contact_range))
+          ? nearest_metric_distance / detectable.contact_range
+          : std::numeric_limits<double>::infinity();
+  const char* detail_env = std::getenv("BEM_DEBUG_BCI_CONTACT_FALLBACK");
+  const bool detail_log = detail_env && std::strcmp(detail_env, "0") != 0;
+  const bool should_log = detail_log || count <= 5 || count % 5000 == 0;
+#pragma omp critical(bcinterface_contact_fallback_log)
+  {
+    static double max_dist = 0.0;
+    static double max_metric_dist = 0.0;
+    static double max_range_ratio = 0.0;
+    max_dist = std::max(max_dist, nearest_distance);
+    max_metric_dist = std::max(max_metric_dist, nearest_metric_distance);
+    max_range_ratio = std::max(max_range_ratio, range_ratio);
+    if (should_log) {
+      std::cout << "[BCInterface contact fallback summary]"
+                << " count=" << count
+                << " point_count=" << fallback_point_count.load()
+                << " line_count=" << fallback_line_count.load()
+                << " max_dist=" << max_dist
+                << " max_metric_dist=" << max_metric_dist
+                << " max_range_ratio=" << max_range_ratio
+                << std::endl;
+      if (detail_log) {
+        std::cout << "[BCInterface contact fallback detail]"
+                  << " kind=" << kind
+                  << " entity_network=" << (own_network ? own_network->getName() : "null")
+                  << " body_network=" << (nearest_face->getNetwork() ? nearest_face->getNetwork()->getName() : "null")
+                  << " face=" << nearest_face->index
+                  << " dist=" << nearest_distance
+                  << " metric_dist=" << nearest_metric_distance
+                  << " range=" << detectable.contact_range
+                  << " assigned_dofs=" << assigned_dofs
+                  << std::endl;
       }
     }
   }
+  (void)nearest_x;
+  return true;
 }
 
 } // namespace
@@ -168,13 +641,16 @@ void ContactDetectable::addContactFaces(const std::vector<Network*>& objects, bo
   auto surfaces = this->getBoundaryFaces();
   const auto broad_phase = collectBroadPhaseCandidates(*this, objects, include_self_network, check_faces);
   const auto narrow_phase = selectNarrowPhaseCandidates(*this, check_faces, broad_phase);
-  mapBoundaryFacesToNearestContactFaces(*this, surfaces, narrow_phase);
+  // narrow_phase reproduces the old behavior; broad_phase is reused below so
+  // the sampled test can add missed contacts from all nearby candidate faces.
+  mapBoundaryFacesToContactFaces(*this, surfaces, narrow_phase, broad_phase);
+  addBCInterfaceNearestContactFallback(*this, objects, include_self_network, surfaces);
 }
 
 /* -------------------------------------------------------------------------- */
 
 Network::Network(const std::string& filename, const std::string& name_IN)
-    : CoordinateBounds(Tddd{{0., 0., 0.}}), RigidBodyDynamics(), name(name_IN), filename(filename), BucketFaces(CoordinateBounds(Tddd{{0., 0., 0.}}), 1.), BucketSurfaces(CoordinateBounds(Tddd{{0., 0., 0.}}), 1.), BucketPoints(CoordinateBounds(Tddd{{0., 0., 0.}}), 1.), BucketTetras(CoordinateBounds(Tddd{{0., 0., 0.}}), 1.), IGNORE(false), grid_pull_depth(0), velocity_name_start({"fixed", 0.}), inputJSON(), octreeOfFaces(nullptr), octreeOfPoints(nullptr), surfaceNet(nullptr) {
+    : CoordinateBounds(Tddd{{0., 0., 0.}}), RigidBodyDynamics(), name(name_IN), filename(filename), BucketPoints(CoordinateBounds(Tddd{{0., 0., 0.}}), 1.), BucketTetras(CoordinateBounds(Tddd{{0., 0., 0.}}), 1.), IGNORE(false), grid_pull_depth(0), velocity_name_start({"fixed", 0.}), inputJSON(), octreeOfFaces(nullptr), octreeOfPoints(nullptr), surfaceNet(nullptr) {
   if (filename.contains(".obj") || filename.contains(".off")) {
     Load3DFile objLoader(filename);
     if (!objLoader.f_v.empty())
@@ -247,7 +723,7 @@ bool Network::erase(networkLine* l) {
 
 void Network::makeBuckets(const double spacing) {
   this->makeBucketPoints(spacing);
-  this->makeBucketFaces(spacing);
+  this->makeFaceBVH(spacing);
   this->makeBucketTetras(spacing);
 };
 
@@ -283,44 +759,35 @@ void Network::makeBucketTetras(double spacing) {
   VerbosePrint(this->getName(), " makeBucketTetras done");
 };
 
-/*面は点と違って，複数のバケツ（セル）と接することがある*/
-void Network::makeBucketFaces(double spacing) {
+void Network::makeFaceBVH(double spacing) {
   if (spacing > 1E+10)
     spacing = this->getScale() / 10.;
-  VerbosePrint(this->getName(), " makeBucketFaces(", spacing, ")");
+  VerbosePrint(this->getName(), " makeFaceBVH(", spacing, ")");
   this->setGeometricPropertiesForce();
   VerbosePrint("setGeometricProperties done");
-  this->BucketFaces.clear();
-  VerbosePrint("BucketFaces.clear done");
-  this->BucketSurfaces.clear();
-  VerbosePrint("BucketSurfaces.clear done");
-  this->BucketFaces.initialize(this->scaledBounds(expand_bounds), spacing);
-  VerbosePrint("BucketFaces.initialize done");
-  this->BucketSurfaces.initialize(this->scaledBounds(expand_bounds), spacing);
-  VerbosePrint("BucketSurfaces.initialize done");
+  this->makeBoundingVolumeHierarchyForFaces();
+  this->makeBoundingVolumeHierarchyForBoundaryFaces();
+  VerbosePrint(this->getName(), " makeFaceBVH done");
+};
 
-  auto insert = [&spacing](networkFace* f, Buckets<networkFace*>& bucket) {
-    //! add extra points to make sure that the face is included in the bucket
-    auto [inserted, ijk] = bucket.addAndGetIndices(Mean(f->getXVertices()), f);
-    if (inserted && ::InsideQ(f->bounds, bucket.getBounds(ijk).bounds))
-      return;
+void Network::makeBoundingVolumeHierarchyForFaces() {
+  this->FaceBVHReady = false;
+  const auto faces = ToVector(this->getFaces());
+  this->FaceBVH.setVector(faces,
+                          [](networkFace* f) {
+                            return f ? CoordinateBounds(f->bounds) : CoordinateBounds();
+                          });
+  this->FaceBVHReady = !this->FaceBVH.empty();
+};
 
-    double particlize_spacing = std::min(spacing, Min(extLength(f->getLines()))) / 30.;
-    for (const auto& [xyz, t0t1] : triangleIntoPoints(f->getXVertices(), particlize_spacing))
-      bucket.add(xyz, f);
-  };
-
-  for (auto f : this->getFaces()) {
-    insert(f, this->BucketFaces);
-    if (f->BoundaryQ())
-      insert(f, this->BucketSurfaces);
-  }
-  VerbosePrint("insert done");
-  this->BucketFaces.setVector();
-  VerbosePrint("BucketFaces.setVector done");
-  this->BucketSurfaces.setVector();
-  VerbosePrint("BucketSurfaces.setVector done");
-  VerbosePrint(this->getName(), " makeBucketFaces done");
+void Network::makeBoundingVolumeHierarchyForBoundaryFaces() {
+  this->BoundaryFaceBVHReady = false;
+  const auto boundary_faces = this->getBoundaryFaces();
+  this->BoundaryFaceBVH.setVector(boundary_faces,
+                                  [](networkFace* f) {
+                                    return f ? CoordinateBounds(f->bounds) : CoordinateBounds();
+                                  });
+  this->BoundaryFaceBVHReady = !this->BoundaryFaceBVH.empty();
 };
 
 void Network::makeBucketPoints(double spacing) {
@@ -469,10 +936,138 @@ double Network::windingNumber(const Tddd& X) const {
 bool Network::InsideQ(const Tddd& X) const {
   if (!CoordinateBounds::InsideQ(X))
     return false;
-  else if (this->windingNumber(X) < 0.5)
+
+  if (!insideQFastNormalEnabled())
+    return this->InsideQExact(X);
+
+  if (insideQFastNormalStatsEnabled())
+    ensureInsideQFastNormalStatsPrinter();
+
+  if (insideQFastNormalValidateEnabled()) {
+    const auto fast = this->InsideQByNearestNormal(X);
+    const bool exact = this->InsideQExact(X);
+    if (fast.has_value()) {
+      insideq_fast_normal_stats.validation_checks.fetch_add(1, std::memory_order_relaxed);
+      if (*fast != exact) {
+        const auto mismatch_index = insideq_fast_normal_stats.validation_mismatches.fetch_add(1, std::memory_order_relaxed);
+        if (mismatch_index < 20) {
+          std::cerr << "[InsideQFastNormal:mismatch] network=" << this->getName()
+                    << " X=" << X
+                    << " fast=" << *fast
+                    << " exact=" << exact
+                    << " winding=" << this->windingNumber(X)
+                    << std::endl;
+        }
+      }
+    }
+    return exact;
+  }
+
+  if (const auto fast = this->InsideQByNearestNormal(X); fast.has_value())
+    return *fast;
+  return this->InsideQExact(X);
+};
+
+bool Network::InsideQExact(const Tddd& X) const {
+  if (!CoordinateBounds::InsideQ(X))
     return false;
-  else
+  return this->windingNumber(X) >= 0.5;
+};
+
+std::optional<bool> Network::InsideQByNearestNormal(const Tddd& X) const {
+  if (insideQFastNormalStatsEnabled())
+    insideq_fast_normal_stats.attempts.fetch_add(1, std::memory_order_relaxed);
+
+  if (!CoordinateBounds::InsideQ(X))
+    return false;
+
+  if (!this->BoundaryFaceBVHReady || this->BoundaryFaceBVH.empty()) {
+    countInsideQFastFallback(insideq_fast_normal_stats.fallback_no_bvh);
+    return std::nullopt;
+  }
+
+  const auto [nearest_face, nearest_x] = this->Nearest(X);
+  if (!nearest_face || !isFinite(nearest_x) || !isFinite(nearest_face->normal)) {
+    countInsideQFastFallback(insideq_fast_normal_stats.fallback_invalid);
+    return std::nullopt;
+  }
+
+  const double face_scale = faceMaxEdgeLength(nearest_face);
+  const double normal_norm = Norm(nearest_face->normal);
+  const double network_scale = std::max(1.0, this->getScale());
+  if (!(face_scale > 0.0) || !std::isfinite(face_scale) ||
+      !(normal_norm > 0.0) || !std::isfinite(normal_norm)) {
+    countInsideQFastFallback(insideq_fast_normal_stats.fallback_invalid);
+    return std::nullopt;
+  }
+
+  const Tddd normal = nearest_face->normal / normal_norm;
+  const double normal_margin = std::max(1.0e-10 * network_scale, 1.0e-5 * face_scale);
+  const double distance = Norm(nearest_x - X);
+  if (!std::isfinite(distance)) {
+    countInsideQFastFallback(insideq_fast_normal_stats.fallback_invalid);
+    return std::nullopt;
+  }
+  if (distance <= normal_margin) {
+    countInsideQFastFallback(insideq_fast_normal_stats.fallback_near_surface);
+    return std::nullopt;
+  }
+  if (distance > insideq_normal_max_distance_factor * face_scale) {
+    countInsideQFastFallback(insideq_fast_normal_stats.fallback_far);
+    return std::nullopt;
+  }
+
+  const auto tri = nearest_face->getXVertices();
+  const auto [wa, wb, nearest_from_bary, tri_normal] = ::Nearest_(X, tri);
+  const double wc = 1.0 - wa - wb;
+  const double min_bary = std::min({wa, wb, wc});
+  if (!std::isfinite(min_bary) || !isFinite(nearest_from_bary) || !isFinite(tri_normal)) {
+    countInsideQFastFallback(insideq_fast_normal_stats.fallback_invalid);
+    return std::nullopt;
+  }
+  if (min_bary < insideq_normal_barycentric_margin) {
+    countInsideQFastFallback(insideq_fast_normal_stats.fallback_edge);
+    return std::nullopt;
+  }
+
+  const double ambiguity_band = std::max(4.0 * normal_margin,
+                                         insideq_normal_ambiguity_distance_factor * face_scale);
+  bool ambiguous_normal = false;
+  this->applyBoundaryFacesNear(X, distance + ambiguity_band, [&](networkFace* candidate) {
+    if (ambiguous_normal || !candidate || candidate == nearest_face)
+      return;
+    if (!isFinite(candidate->normal))
+      return;
+    const double candidate_normal_norm = Norm(candidate->normal);
+    if (!(candidate_normal_norm > 0.0) || !std::isfinite(candidate_normal_norm))
+      return;
+    const Tddd candidate_nearest = ::Nearest(X, candidate);
+    const double candidate_distance = Norm(candidate_nearest - X);
+    if (!std::isfinite(candidate_distance) || candidate_distance > distance + ambiguity_band)
+      return;
+    const Tddd candidate_normal = candidate->normal / candidate_normal_norm;
+    if (Dot(normal, candidate_normal) < insideq_normal_large_angle_cos)
+      ambiguous_normal = true;
+  });
+  if (ambiguous_normal) {
+    countInsideQFastFallback(insideq_fast_normal_stats.fallback_ambiguous_normal);
+    return std::nullopt;
+  }
+
+  const double signed_gap = Dot(nearest_x - X, normal);
+  if (!std::isfinite(signed_gap) || std::abs(signed_gap) <= normal_margin) {
+    countInsideQFastFallback(insideq_fast_normal_stats.fallback_small_signed_gap);
+    return std::nullopt;
+  }
+
+  if (signed_gap > 0.0) {
+    if (insideQFastNormalStatsEnabled())
+      insideq_fast_normal_stats.fast_inside.fetch_add(1, std::memory_order_relaxed);
     return true;
+  }
+  if (insideQFastNormalStatsEnabled())
+    insideq_fast_normal_stats.fast_outside.fetch_add(1, std::memory_order_relaxed);
+  return false;
 };
 
 std::vector<double> Network::windingNumber(const std::vector<Tddd>& Xs) const {
@@ -654,11 +1249,11 @@ std::vector<networkPoint*> Network::getBoundaryPoints() const {
 
 /* ------------------------------ 境界条件に関する設定関数 ------------------------------ */
 
-std::unordered_set<networkPoint*> Network::getPointsCORNER() const {
+std::unordered_set<networkPoint*> Network::getPointsBCInterface() const {
   std::unordered_set<networkPoint*> ret;
   ret.reserve(this->Points.size());
   for (const auto& p : this->Points)
-    if (p->CORNER)
+    if (p->BCInterface)
       ret.emplace(p);
   return ret;
 };
@@ -679,13 +1274,13 @@ std::unordered_set<networkPoint*> Network::getPointsDirichlet() const {
   return ret;
 };
 
-void Network::setMinDepthFromCORNER() {
+void Network::setMinDepthFromBCInterface() {
   std::vector<networkPoint*> points = ToVector(this->getPoints());
   for (const auto& p : points) {
-    if (p->CORNER)
-      p->minDepthFromCORNER_ = p->minDepthFromCORNER = 0;
+    if (p->BCInterface)
+      p->minDepthFromBCInterface_ = p->minDepthFromBCInterface = 0;
     else
-      p->minDepthFromCORNER_ = p->minDepthFromCORNER = 100000000;
+      p->minDepthFromBCInterface_ = p->minDepthFromBCInterface = 100000000;
     //
     if (p->isMultipleNode)
       p->minDepthFromMultipleNode_ = p->minDepthFromMultipleNode = 0;
@@ -698,7 +1293,7 @@ void Network::setMinDepthFromCORNER() {
     for (auto& p : points)
       // #pragma omp single nowait
       for (auto& q : p->getNeighbors()) {
-        p->minDepthFromCORNER_ = std::min(p->minDepthFromCORNER_, q->minDepthFromCORNER + 1);
+        p->minDepthFromBCInterface_ = std::min(p->minDepthFromBCInterface_, q->minDepthFromBCInterface + 1);
         p->minDepthFromMultipleNode_ = std::min(p->minDepthFromMultipleNode_, q->minDepthFromMultipleNode + 1);
       }
     // apply
@@ -706,7 +1301,7 @@ void Network::setMinDepthFromCORNER() {
     for (const auto& p : points)
     // #pragma omp single nowait
     {
-      p->minDepthFromCORNER = p->minDepthFromCORNER_;
+      p->minDepthFromBCInterface = p->minDepthFromBCInterface_;
       p->minDepthFromMultipleNode = p->minDepthFromMultipleNode_;
     }
   }
@@ -1004,9 +1599,6 @@ void Network::setGeometricPropertiesImpl() {
 
       for (const auto& f : this->getFaces())
         f->setGeometricProperties(ToX(f->getPoints())); // @ face->Lines must have been determined
-
-      for (const auto& f : this->getBoundaryFaces())
-        f->setDodecaPoints();
 
       for (const auto& t : this->getTetras())
         t->setProperties(ToX(t->Points));
@@ -1935,31 +2527,31 @@ netL* unlink(netP* obj, netP* obj_) {
  * under scorer _ means the function returns FLATTEND list
  */
 
-std::unordered_set<networkPoint*> extPointsCORNER_(const std::vector<networkPoint*>& ps) {
+std::unordered_set<networkPoint*> extPointsBCInterface_(const std::vector<networkPoint*>& ps) {
   std::unordered_set<networkPoint*> ret;
   for (const auto& p : ps)
-    if (p->CORNER)
+    if (p->BCInterface)
       ret.emplace(p);
   return ret;
 };
-std::unordered_set<networkPoint*> extPointsCORNER_(const std::unordered_set<networkPoint*>& ps) {
+std::unordered_set<networkPoint*> extPointsBCInterface_(const std::unordered_set<networkPoint*>& ps) {
   std::unordered_set<networkPoint*> ret;
   for (const auto& p : ps)
-    if (p->CORNER)
+    if (p->BCInterface)
       ret.emplace(p);
   return ret;
 };
 std::unordered_set<networkPoint*> extPointsCornerOrNeumann_(const std::vector<networkPoint*>& ps) {
   std::unordered_set<networkPoint*> ret;
   for (const auto& p : ps)
-    if (p->CORNER || p->Neumann)
+    if (p->BCInterface || p->Neumann)
       ret.emplace(p);
   return ret;
 };
 std::unordered_set<networkPoint*> extPointsCornerOrNeumann_(const std::unordered_set<networkPoint*>& ps) {
   std::unordered_set<networkPoint*> ret;
   for (const auto& p : ps)
-    if (p->CORNER || p->Neumann)
+    if (p->BCInterface || p->Neumann)
       ret.emplace(p);
   return ret;
 };
@@ -1968,11 +2560,11 @@ std::unordered_set<networkPoint*> extPointsCornerOrNeumann_(const std::unordered
 // b! ---------------------- extLines ---------------------- */
 // b! ------------------------------------------------------ */
 /* ------------------ for unordered_set ----------------- */
-std::unordered_set<networkLine*> extLinesCORNER_(const std::unordered_set<networkFace*>& fs) {
+std::unordered_set<networkLine*> extLinesBCInterface_(const std::unordered_set<networkFace*>& fs) {
   std::unordered_set<networkLine*> ret;
   for (const auto& f : fs)
     std::ranges::for_each(f->getLines(), [&](const auto& l) {
-      if (l->CORNER) {
+      if (l->BCInterface) {
         ret.emplace(l);
       };
     });
@@ -1984,18 +2576,18 @@ std::unordered_set<networkLine*> extLines_(const std::unordered_set<networkFace*
     std::ranges::for_each(f->getLines(), [&](const auto& l) { ret.emplace(l); });
   return ret;
 };
-std::unordered_set<networkLine*> extLinesCORNER_(const std::unordered_set<networkPoint*>& ps) {
+std::unordered_set<networkLine*> extLinesBCInterface_(const std::unordered_set<networkPoint*>& ps) {
   std::unordered_set<networkLine*> ret;
   for (const auto& p : ps)
     for (const auto& l : p->getLines())
-      if (l->CORNER)
+      if (l->BCInterface)
         ret.emplace(l);
   return ret;
 };
-std::unordered_set<networkLine*> extLinesCORNER_(const networkPoint* p) {
+std::unordered_set<networkLine*> extLinesBCInterface_(const networkPoint* p) {
   std::unordered_set<networkLine*> ret;
   for (const auto& l : p->getLines())
-    if (l->CORNER)
+    if (l->BCInterface)
       ret.emplace(l);
   return ret;
 };
@@ -2007,11 +2599,11 @@ std::unordered_set<networkLine*> extLines_(const std::unordered_set<networkPoint
   return ret;
 };
 /* --------------------- for vector --------------------- */
-std::unordered_set<networkLine*> extLinesCORNER_(const std::vector<networkFace*>& fs) {
+std::unordered_set<networkLine*> extLinesBCInterface_(const std::vector<networkFace*>& fs) {
   std::unordered_set<networkLine*> ret;
   for (const auto& f : fs)
     std::ranges::for_each(f->getLines(), [&](const auto& l) {
-      if (l->CORNER) {
+      if (l->BCInterface) {
         ret.emplace(l);
       };
     });
@@ -2023,11 +2615,11 @@ std::unordered_set<networkLine*> extLines_(const std::vector<networkFace*>& fs) 
     std::ranges::for_each(f->getLines(), [&](const auto& l) { ret.emplace(l); });
   return ret;
 };
-std::unordered_set<networkLine*> extLinesCORNER_(const std::vector<networkPoint*>& ps) {
+std::unordered_set<networkLine*> extLinesBCInterface_(const std::vector<networkPoint*>& ps) {
   std::unordered_set<networkLine*> ret;
   for (const auto& p : ps)
     for (const auto& l : p->getLines())
-      if (l->CORNER)
+      if (l->BCInterface)
         ret.emplace(l);
   return ret;
 };
@@ -2251,6 +2843,14 @@ Tddd Nearest(const Tddd& X, const networkFace* f) {
   //    ret = X4;
   // return ret;
 };
+Tddd NearestAnisotropic(const Tddd& X,
+                        const networkFace* f,
+                        const double normal_axis_length,
+                        const double tangent_axis_length) {
+  if (!f)
+    return X;
+  return NearestAnisotropic(X, ToX(f), f->normal, normal_axis_length, tangent_axis_length);
+};
 double Distance(const Tddd& X, const networkFace* f) { return Norm(Nearest(X, ToX(f)) - X); };
 // Tddd Nearest(const networkPoint *p, const networkFace *f) { return
 // Nearest(ToX(p), ToX(f)); };
@@ -2331,8 +2931,137 @@ double DirectedHausdorffDistance(const V_netFp& query_faces, const V_netFp& targ
   }
 }
 
+DirectedHausdorffDistanceResult DirectedHausdorffDistanceWithLimit(const V_netFp& query_faces,
+                                                                   const V_netFp& target_faces,
+                                                                   const int triangle_subdivision,
+                                                                   const double limit) {
+  const auto query = uniqueValidFaces(query_faces);
+  const auto target = uniqueValidFaces(target_faces);
+
+  if (query.empty())
+    return {};
+  if (target.empty()) {
+    DirectedHausdorffDistanceResult result;
+    result.distance = std::numeric_limits<double>::infinity();
+    result.exceeded = std::isfinite(limit);
+    return result;
+  }
+
+  switch (triangle_subdivision) {
+  case 1:
+    return directedHausdorffDistanceWithLimitImpl<1>(query, target, limit);
+  case 2:
+    return directedHausdorffDistanceWithLimitImpl<2>(query, target, limit);
+  case 3:
+    return directedHausdorffDistanceWithLimitImpl<3>(query, target, limit);
+  case 4:
+    return directedHausdorffDistanceWithLimitImpl<4>(query, target, limit);
+  case 5:
+    return directedHausdorffDistanceWithLimitImpl<5>(query, target, limit);
+  case 6:
+    return directedHausdorffDistanceWithLimitImpl<6>(query, target, limit);
+  case 8:
+    return directedHausdorffDistanceWithLimitImpl<8>(query, target, limit);
+  case 10:
+    return directedHausdorffDistanceWithLimitImpl<10>(query, target, limit);
+  case 12:
+    return directedHausdorffDistanceWithLimitImpl<12>(query, target, limit);
+  case 15:
+    return directedHausdorffDistanceWithLimitImpl<15>(query, target, limit);
+  default:
+    return directedHausdorffDistanceWithLimitImpl<6>(query, target, limit);
+  }
+}
+
 double DirectedHausdorffDistance(const V_netFp& query_faces, const V_Netp& target_networks, const int triangle_subdivision) {
-  return DirectedHausdorffDistance(query_faces, boundaryFacesFromNetworks(target_networks), triangle_subdivision);
+  const auto query = uniqueValidFaces(query_faces);
+
+  if (query.empty())
+    return 0.;
+
+  bool has_target = false;
+  for (auto* target : target_networks) {
+    if (target && !target->getBoundaryFaces().empty()) {
+      has_target = true;
+      break;
+    }
+  }
+  if (!has_target)
+    return std::numeric_limits<double>::infinity();
+
+  switch (triangle_subdivision) {
+  case 1:
+    return directedHausdorffDistanceImpl<1>(query, target_networks);
+  case 2:
+    return directedHausdorffDistanceImpl<2>(query, target_networks);
+  case 3:
+    return directedHausdorffDistanceImpl<3>(query, target_networks);
+  case 4:
+    return directedHausdorffDistanceImpl<4>(query, target_networks);
+  case 5:
+    return directedHausdorffDistanceImpl<5>(query, target_networks);
+  case 6:
+    return directedHausdorffDistanceImpl<6>(query, target_networks);
+  case 8:
+    return directedHausdorffDistanceImpl<8>(query, target_networks);
+  case 10:
+    return directedHausdorffDistanceImpl<10>(query, target_networks);
+  case 12:
+    return directedHausdorffDistanceImpl<12>(query, target_networks);
+  case 15:
+    return directedHausdorffDistanceImpl<15>(query, target_networks);
+  default:
+    return directedHausdorffDistanceImpl<6>(query, target_networks);
+  }
+}
+
+DirectedHausdorffDistanceResult DirectedHausdorffDistanceWithLimit(const V_netFp& query_faces,
+                                                                   const V_Netp& target_networks,
+                                                                   const int triangle_subdivision,
+                                                                   const double limit) {
+  const auto query = uniqueValidFaces(query_faces);
+
+  if (query.empty())
+    return {};
+
+  bool has_target = false;
+  for (auto* target : target_networks) {
+    if (target && !target->getBoundaryFaces().empty()) {
+      has_target = true;
+      break;
+    }
+  }
+  if (!has_target) {
+    DirectedHausdorffDistanceResult result;
+    result.distance = std::numeric_limits<double>::infinity();
+    result.exceeded = std::isfinite(limit);
+    return result;
+  }
+
+  switch (triangle_subdivision) {
+  case 1:
+    return directedHausdorffDistanceWithLimitImpl<1>(query, target_networks, limit);
+  case 2:
+    return directedHausdorffDistanceWithLimitImpl<2>(query, target_networks, limit);
+  case 3:
+    return directedHausdorffDistanceWithLimitImpl<3>(query, target_networks, limit);
+  case 4:
+    return directedHausdorffDistanceWithLimitImpl<4>(query, target_networks, limit);
+  case 5:
+    return directedHausdorffDistanceWithLimitImpl<5>(query, target_networks, limit);
+  case 6:
+    return directedHausdorffDistanceWithLimitImpl<6>(query, target_networks, limit);
+  case 8:
+    return directedHausdorffDistanceWithLimitImpl<8>(query, target_networks, limit);
+  case 10:
+    return directedHausdorffDistanceWithLimitImpl<10>(query, target_networks, limit);
+  case 12:
+    return directedHausdorffDistanceWithLimitImpl<12>(query, target_networks, limit);
+  case 15:
+    return directedHausdorffDistanceWithLimitImpl<15>(query, target_networks, limit);
+  default:
+    return directedHausdorffDistanceWithLimitImpl<6>(query, target_networks, limit);
+  }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -2568,11 +3297,14 @@ void Network::computePrincipalCurvatures(const bool force_all) {
     std::unordered_set<networkPoint*> point_set;
     std::unordered_set<networkLine*> line_set;
     for (auto* f : l->getBoundaryFaces()) {
-      if (!f) continue;
+      if (!f)
+        continue;
       for (auto* p : f->getPoints())
-        if (p) point_set.insert(p);
+        if (p)
+          point_set.insert(p);
       for (auto* ll : f->getLines())
-        if (ll && ll != l) line_set.insert(ll);
+        if (ll && ll != l)
+          line_set.insert(ll);
     }
     fitAndStore(l, point_set, line_set);
   }
@@ -2685,7 +3417,6 @@ bool Network::replacePatch(Network& patchB, double coord_eps) {
         delete l;
   }
 
-
   // ======================================================================
   // 6. patchB の外周コピーを this の境界要素に差し替え
   // ======================================================================
@@ -2770,7 +3501,6 @@ bool Network::replacePatch(Network& patchB, double coord_eps) {
     }
   }
 
-
   // ======================================================================
   // 7. patchB の外周コピー辺/点を削除
   // ======================================================================
@@ -2780,7 +3510,6 @@ bool Network::replacePatch(Network& patchB, double coord_eps) {
     delete l;
   for (auto& [copy, orig] : boundary_match)
     delete copy;
-
 
   // ======================================================================
   // 8. 後処理
@@ -2805,76 +3534,79 @@ networkLine* Network::copyLocalPatch(Network& patch, networkLine* l, int ring_de
   if (!p0 || !p1)
     return nullptr;
 
-  // 1. seed を構築（辺の隣接境界面の全頂点 + ring_depth 拡張）
-  std::unordered_set<networkPoint*> seed;
-  auto faces = l->getBoundaryFaces();
-  for (auto* f : faces) {
-    if (!f)
-      continue;
-    auto [fp0, fp1, fp2] = f->getPoints();
-    seed.insert(fp0);
-    seed.insert(fp1);
-    seed.insert(fp2);
-  }
-  for (int r = 0; r < ring_depth; ++r) {
-    std::unordered_set<networkPoint*> next;
-    for (auto* p : seed)
-      for (auto* q : p->getNeighbors())
-        if (q)
-          next.insert(q);
-    seed.insert(next.begin(), next.end());
-  }
-
-  // 2. seed 内の全点をコピー
   patch.copied_points.clear();
   patch.copied_lines.clear();
   patch.copied_faces.clear();
-  std::unordered_map<networkPoint*, networkPoint*> orig2copy;
-  for (auto* p : seed) {
+
+  // seed_vec: 挿入順に seed 点を保持。BFS フロンティアの window / 終了時の
+  // patch_copy リセットに使う。patch_copy (mutable スクラッチポインタ) が
+  // orig→copy マップ兼 seed メンバシップフラグの役割を担い、hash 不要で O(1)。
+  std::vector<networkPoint*> seed_vec;
+  seed_vec.reserve(64);
+
+  auto add_to_seed = [&](networkPoint* p) {
+    if (!p || p->patch_copy)
+      return;
     auto* cp = new networkPoint(&patch, p->X);
-    cp->CORNER = p->CORNER;
+    cp->BCInterface = p->BCInterface;
     cp->Neumann = p->Neumann;
     cp->Dirichlet = p->Dirichlet;
     cp->isMultipleNode = p->isMultipleNode;
     cp->phiphin = p->phiphin;
     cp->phiphin_t = p->phiphin_t;
-    orig2copy[p] = cp;
+    p->patch_copy = cp;
+    seed_vec.push_back(p);
     patch.copied_points.insert(p);
+  };
+
+  // ring 0: {p0, p1} + それぞれの 1-ring 近傍（元実装と同じ広さ）。
+  add_to_seed(p0);
+  add_to_seed(p1);
+  for (auto* lp : p0->Lines)
+    add_to_seed((*lp)(p0));
+  for (auto* lp : p1->Lines)
+    add_to_seed((*lp)(p1));
+
+  // ring r: ring r-1 フロンティアの隣接点のうち未登場のもの。
+  std::size_t frontier_begin = 0;
+  std::size_t frontier_end = seed_vec.size();
+  for (int r = 1; r <= ring_depth; ++r) {
+    for (std::size_t i = frontier_begin; i < frontier_end; ++i) {
+      auto* p = seed_vec[i];
+      for (auto* lp : p->Lines)
+        add_to_seed((*lp)(p));
+    }
+    frontier_begin = frontier_end;
+    frontier_end = seed_vec.size();
   }
 
-  // 3. 3頂点が全て seed 内にある boundary face をコピー
-  // （face コンストラクタ内の link() で line が自動生成される）
-  faces = this->getBoundaryFaces();
-  for (auto* f : faces) {
-    auto [fp0, fp1, fp2] = f->getPoints();
-    if (orig2copy.count(fp0) && orig2copy.count(fp1) && orig2copy.count(fp2)) {
-      new networkFace(&patch, orig2copy[fp0], orig2copy[fp1], orig2copy[fp2]);
+  // 3頂点すべてが seed 内にある boundary face をコピーし、同時に 3 辺のデータも転送する。
+  // face の重複訪問は「p == fp[0] のときのみ処理」で dedup（fp[0] が seed にある
+  // face はコピー対象なので必ず 1 回処理される）。face 作成直後に orig/copy の
+  // 3 線が getLines() で同順に取れるので逆引き不要。共有辺は複数回書かれるが冪等。
+  for (auto* p : seed_vec) {
+    for (auto* f : p->Faces) {
+      if (!f || !f->BoundaryQ())
+        continue;
+      const auto& fp = f->getPoints();
+      if (fp[0] != p)
+        continue;
+      auto* cp1p = fp[1]->patch_copy;
+      auto* cp2p = fp[2]->patch_copy;
+      if (!cp1p || !cp2p)
+        continue;
+      auto* cf = new networkFace(&patch, p->patch_copy, cp1p, cp2p);
       patch.copied_faces.insert(f);
-    }
-  }
 
-  // 3b. パッチの辺に元の辺のデータをコピー（X_mid, phiphin, phiphin_t, midpoint_index 等）
-  // copy → original の逆引き配列
-  std::vector<std::pair<networkPoint*, networkPoint*>> copy2orig;
-  copy2orig.reserve(orig2copy.size());
-  for (auto& [orig, copy] : orig2copy)
-    copy2orig.push_back({copy, orig});
-
-  for (auto* copy_l : patch.getLines()) {
-    auto [copy_p0, copy_p1] = copy_l->getPoints();
-    networkPoint* orig_p0 = nullptr;
-    networkPoint* orig_p1 = nullptr;
-    for (auto& [copy_p, orig_p] : copy2orig) {
-      if (copy_p == copy_p0)
-        orig_p0 = orig_p;
-      if (copy_p == copy_p1)
-        orig_p1 = orig_p;
-    }
-    if (orig_p0 && orig_p1) {
-      auto* orig_l = Line(orig_p0, orig_p1);
-      if (orig_l) {
+      const auto& ol = f->getLines();
+      const auto& cl = cf->getLines();
+      for (int i = 0; i < 3; ++i) {
+        auto* orig_l = ol[i];
+        auto* copy_l = cl[i];
+        if (!orig_l || !copy_l)
+          continue;
         patch.copied_lines.insert(orig_l);
-        copy_l->CORNER = orig_l->CORNER;
+        copy_l->BCInterface = orig_l->BCInterface;
         copy_l->Neumann = orig_l->Neumann;
         copy_l->Dirichlet = orig_l->Dirichlet;
         copy_l->midpoint_index = orig_l->midpoint_index;
@@ -2885,11 +3617,17 @@ networkLine* Network::copyLocalPatch(Network& patch, networkLine* l, int ring_de
     }
   }
 
-  // 4. 幾何プロパティ更新
   patch.setGeometricPropertiesForce();
 
-  // 5. コピー側の対象辺を返す
-  return Line(orig2copy[p0], orig2copy[p1]);
+  auto* copy_p0 = p0->patch_copy;
+  auto* copy_p1 = p1->patch_copy;
+  auto* ret = Line(copy_p0, copy_p1);
+
+  // スクラッチポインタをリセット（関数外で patch_copy が残らないよう保証）。
+  for (auto* p : seed_vec)
+    p->patch_copy = nullptr;
+
+  return ret;
 }
 
 // ---------------------------------------------------------------------------
@@ -2900,67 +3638,75 @@ networkPoint* Network::copyLocalPatch(Network& patch, networkPoint* p, int ring_
   if (!p)
     return nullptr;
 
-  // 1. seed を構築（点 + ring_depth 拡張）
-  std::unordered_set<networkPoint*> seed = {p};
-  for (int r = 0; r < ring_depth; ++r) {
-    std::unordered_set<networkPoint*> next;
-    for (auto* q : seed)
-      for (auto* r : q->getNeighbors())
-        if (r)
-          next.insert(r);
-    seed.insert(next.begin(), next.end());
-  }
+  // seed_vec + networkPoint::patch_copy スクラッチポインタで hash 不要の O(1) 管理。
+  std::vector<networkPoint*> seed_vec;
+  seed_vec.reserve(64);
 
-  // 2. seed 内の全点をコピー
-  std::unordered_map<networkPoint*, networkPoint*> orig2copy;
-  for (auto* q : seed) {
+  auto add_to_seed = [&](networkPoint* q) {
+    if (!q || q->patch_copy)
+      return;
     auto* cq = new networkPoint(&patch, q->X);
-    cq->CORNER = q->CORNER;
+    cq->BCInterface = q->BCInterface;
     cq->isMultipleNode = q->isMultipleNode;
     cq->Neumann = q->Neumann;
     cq->Dirichlet = q->Dirichlet;
     cq->phiphin = q->phiphin;
     cq->phiphin_t = q->phiphin_t;
-    orig2copy[q] = cq;
-  }
+    q->patch_copy = cq;
+    seed_vec.push_back(q);
+  };
 
-  // 3. 3頂点が全て seed 内にある boundary face をコピー
-  for (auto* f : this->Faces) {
-    if (!f->BoundaryQ())
-      continue;
-    auto [fp0, fp1, fp2] = f->getPoints();
-    if (orig2copy.count(fp0) && orig2copy.count(fp1) && orig2copy.count(fp2))
-      new networkFace(&patch, orig2copy[fp0], orig2copy[fp1], orig2copy[fp2]);
-  }
-
-  // 3b. パッチの辺に元の辺のデータをコピー（X_mid, phiphin, phiphin_t, midpoint_index 等）
-  for (auto* cl : patch.getLines()) {
-    auto [cp0, cp1] = cl->getPoints();
-    networkPoint* orig_p0 = nullptr;
-    networkPoint* orig_p1 = nullptr;
-    for (auto& [orig, copy] : orig2copy) {
-      if (copy == cp0)
-        orig_p0 = orig;
-      if (copy == cp1)
-        orig_p1 = orig;
+  // ring 0: {p}、ring r: ring r-1 フロンティアの隣接点のうち未登場のもの。
+  add_to_seed(p);
+  std::size_t frontier_begin = 0;
+  std::size_t frontier_end = seed_vec.size();
+  for (int r = 0; r < ring_depth; ++r) {
+    for (std::size_t i = frontier_begin; i < frontier_end; ++i) {
+      auto* q = seed_vec[i];
+      for (auto* lp : q->Lines)
+        add_to_seed((*lp)(q));
     }
-    if (orig_p0 && orig_p1) {
-      auto* orig_line = Line(orig_p0, orig_p1);
-      if (orig_line) {
-        cl->X_mid = orig_line->X_mid;
-        cl->phiphin = orig_line->phiphin;
-        cl->phiphin_t = orig_line->phiphin_t;
-        cl->midpoint_index = orig_line->midpoint_index;
-        cl->CORNER = orig_line->CORNER;
-        cl->Neumann = orig_line->Neumann;
-        cl->Dirichlet = orig_line->Dirichlet;
+    frontier_begin = frontier_end;
+    frontier_end = seed_vec.size();
+  }
+
+  // 3頂点すべてが seed 内にある boundary face をコピーし、同時に 3 辺のデータも転送。
+  // 同じ face への重複訪問は fp[0] == q のとき以外をスキップして dedup。
+  for (auto* q : seed_vec) {
+    for (auto* f : q->Faces) {
+      if (!f || !f->BoundaryQ())
+        continue;
+      const auto& fp = f->getPoints();
+      if (fp[0] != q)
+        continue;
+      auto* cp1p = fp[1]->patch_copy;
+      auto* cp2p = fp[2]->patch_copy;
+      if (!cp1p || !cp2p)
+        continue;
+      auto* cf = new networkFace(&patch, q->patch_copy, cp1p, cp2p);
+
+      const auto& ol = f->getLines();
+      const auto& cl = cf->getLines();
+      for (int i = 0; i < 3; ++i) {
+        auto* orig_l = ol[i];
+        auto* copy_l = cl[i];
+        if (!orig_l || !copy_l)
+          continue;
+        copy_l->X_mid = orig_l->X_mid;
+        copy_l->phiphin = orig_l->phiphin;
+        copy_l->phiphin_t = orig_l->phiphin_t;
+        copy_l->midpoint_index = orig_l->midpoint_index;
+        copy_l->BCInterface = orig_l->BCInterface;
+        copy_l->Neumann = orig_l->Neumann;
+        copy_l->Dirichlet = orig_l->Dirichlet;
       }
     }
   }
 
-  // 4. 幾何プロパティ更新
   patch.setGeometricPropertiesForce();
 
-  // 5. コピー側の対象点を返す
-  return orig2copy[p];
+  auto* ret = p->patch_copy;
+  for (auto* q : seed_vec)
+    q->patch_copy = nullptr;
+  return ret;
 }

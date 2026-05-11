@@ -522,16 +522,10 @@ readCheckpoint(const std::filesystem::path& filepath,
       Network* new_net = new Network(); // empty constructor
 
       // Set vertices
-      // NOTE:
-      // Checkpoint restore must preserve point IDs one-to-one.
-      // `Network::setPoints(std::vector<Tddd>)` may merge near-coincident points
-      // (within ~1e-10), which can collapse a valid face (i,j,k) into
-      // a degenerate one (i,i,k) and later fail in `link(p,p,...)`.
-      // So we reconstruct points explicitly without deduplication.
-      V_netPp points;
-      points.reserve(num_points);
+      std::vector<Tddd> vertices(num_points);
       for (uint32_t i = 0; i < num_points; ++i)
-         points.emplace_back(new networkPoint(new_net, point_records[i].X));
+         vertices[i] = point_records[i].X;
+      V_netPp points = new_net->setPoints(vertices);
       std::map<networkPoint*, checkpoint_point_id_t> checkpoint_point_id_of_restored_point;
       for (checkpoint_point_id_t i = 0; i < points.size(); ++i)
          checkpoint_point_id_of_restored_point[points[i]] = i;
@@ -780,7 +774,12 @@ void pruneCheckpoints(const std::filesystem::path& dir, int max_keep) {
    if (max_keep <= 0) return; // 0 = keep all
 
    std::regex pattern(R"(checkpoint_(\d+)\.bin)");
-   std::vector<std::pair<int, std::filesystem::path>> checkpoints;
+   struct CheckpointFile {
+      int step;
+      std::filesystem::path path;
+      std::filesystem::file_time_type mtime;
+   };
+   std::vector<CheckpointFile> checkpoints;
 
    for (const auto& entry : std::filesystem::directory_iterator(dir)) {
       if (!entry.is_regular_file()) continue;
@@ -788,20 +787,25 @@ void pruneCheckpoints(const std::filesystem::path& dir, int max_keep) {
       std::smatch m;
       if (std::regex_match(fname, m, pattern)) {
          int step = std::stoi(m[1].str());
-         checkpoints.emplace_back(step, entry.path());
+         checkpoints.push_back({step, entry.path(), entry.last_write_time()});
       }
    }
 
    if (static_cast<int>(checkpoints.size()) <= max_keep) return;
 
-   // Sort by step descending
+   // Sort by file update time descending. The checkpoint number is only a
+   // tie-breaker; old high-step files from another run must not win over new files.
    std::sort(checkpoints.begin(), checkpoints.end(),
-             [](const auto& a, const auto& b) { return a.first > b.first; });
+             [](const auto& a, const auto& b) {
+                if (a.mtime != b.mtime)
+                   return a.mtime > b.mtime;
+                return a.step > b.step;
+             });
 
    // Remove older ones
    for (size_t i = max_keep; i < checkpoints.size(); ++i) {
-      std::filesystem::remove(checkpoints[i].second);
-      std::cout << "[checkpoint] Pruned: " << checkpoints[i].second.filename().string() << std::endl;
+      std::filesystem::remove(checkpoints[i].path);
+      std::cout << "[checkpoint] Pruned: " << checkpoints[i].path.filename().string() << std::endl;
    }
 }
 

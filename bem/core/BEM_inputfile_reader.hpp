@@ -11,7 +11,11 @@
 #include "basic.hpp"
 #include "TanakaSolitaryWave.hpp"
 
-std::string toLowerCase(const std::string& str);
+inline std::string toLowerCase(const std::string& str) {
+  std::string strLower = str;
+  std::transform(strLower.begin(), strLower.end(), strLower.begin(), [](unsigned char c) { return std::tolower(c); });
+  return strLower;
+}
 
 struct SimulationSettings {
   enum class DomainMode { Time,
@@ -42,9 +46,13 @@ struct SimulationSettings {
     double max_dt = 0.0;
     int rk_order = 4; // Runge-Kutta order (1=Euler, 2=Heun, 3=RK3, 4=RK4)
     struct NodeRelocationSettings {
-      using Method = ::NodeRelocationMethod;
-      using Surface = ::NodeRelocationSurface;
-      using MidpointMode = ::InterpolationMidpointMode;
+      enum class Method { none,
+                          ALE,
+                          interpolation };
+      enum class Surface { linear,
+                           pseudo_quadratic,
+                           true_quadratic };
+      enum class MidpointMode { nearest };
       Method method = Method::none;
       int period = 0;
       Surface surface = Surface::pseudo_quadratic;
@@ -52,12 +60,41 @@ struct SimulationSettings {
       bool surface_explicitly_set = false;
       bool debug_output = false;
     } node_relocation;
+
+    struct MeshPreparationPipelineSettings {
+      using PseudoQuadraticPolicy = ::MeshPreparationPseudoQuadraticPolicy;
+      bool enabled = true;
+      bool phase1_clung = true;
+      bool phase2_remesh = true;
+      bool phase3_interpolate = true;
+      bool dump_after_phase0 = false;
+      bool dump_after_phase1 = false;
+      bool dump_after_phase2 = false;
+      bool dump_after_phase3 = false;
+      bool debug_dump_all_phases = false;
+      bool verbose_debug = false;
+      bool waterline_geometry = true;
+      bool waterline_fast_quality_enabled = true;
+      bool geometry_projector_v2 = true;
+      PseudoQuadraticPolicy pseudo_quadratic_policy = PseudoQuadraticPolicy::error;
+      int clung_max_iter = 10;
+      double clung_tol = 1e-6;
+      double clung_move_limit_factor = 0.3;
+    } mesh_preparation_pipeline;
   } time;
 
   /* ------------------------- frequency-domain settings ---------------------- */
   struct FrequencyDomainSettings {
     std::vector<double> omegas;
     std::vector<int> dofs;
+    std::vector<double> rao_restoring;
+    struct SpongeSettings {
+      bool enabled = false;
+      double r_start = 0.0;
+      double length = 0.0;
+      double mu_max = 0.0;
+      int order = 2;
+    } sponge;
   } frequency;
 
   /* ------------------------------ BEM settings ------------------------------ */
@@ -116,8 +153,8 @@ struct SimulationSettings {
 
   /* ---------------------------- remeshing settings -------------------------- */
   struct RemeshingSettings {
-    // min_edge_length removed — limit_len is now always global_mean_len * 0.1
-    double min_edge_length = 0.0;  // kept for backward compatibility but unused
+    // Used by remesh_for_main_loop
+    double min_edge_length = 0.0;
 
     // Meshing options
     bool tetrahedralize = false;
@@ -149,62 +186,271 @@ struct SimulationSettings {
 
     bool shell_visualization = false;
     bool front_advancing_debug = false;
+    bool debug_output = false;
+    bool debug_verbose = false;
+    bool debug_edges = false;
+    bool ai_edge_logging = false;
+    bool ai_edge_model_enabled = false;
+    std::string ai_edge_model_mode = "off"; // off | edge_top20
+    int ai_edge_model_top_k = 20;
+    bool training_data_enabled = false;
+    std::string training_data_mode = "off"; // off | weighted_random_batch | stratified_op_scenario_sweep
+    int training_data_max_iter = 20;           // 0 = disabled
+    int training_data_max_edges_per_iter = -1; // -1 = all boundary edges, 0 = disabled, >0 = cap
+    int training_data_random_extra_edges_per_iter = 100;
+    int training_data_max_apply_per_iter = 10;          // -1 = unlimited, 0 = disabled, >0 = cap
+    int training_data_max_saved_success_per_iter = 100; // -1 = unlimited, 0 = disabled, >0 = cap
+    int training_data_max_saved_failure_per_iter = 100; // -1 = unlimited, 0 = disabled, >0 = cap
+    double training_data_min_score_gain = 0.0;
+    int training_data_random_seed = 1;
+    double training_data_weight_alpha = 1.0;
+    int training_data_sweep_split_edges_per_iter = 24;
+    int training_data_sweep_collapse_edges_per_iter = 24;
+    int training_data_sweep_flip_edges_per_iter = 24;
+    double training_data_sweep_bcinterface_fraction = 0.4;
+    double training_data_sweep_dirichlet_fraction = 0.3;
+    double training_data_sweep_neumann_fraction = 0.3;
 
-    // Curvature-based mesh density control
-    double max_edge_length = 0.0;  // 0 なら無効。曲率ベース h_target の上限に使う。
+    bool lightgbm_ranking_enabled = false;
+    std::string lightgbm_mode = "ranker"; // ranker | recommender
+    std::string lightgbm_safe_model_path;
+    int lightgbm_recommender_top_k = 3;
 
-    // ---- Remesh numerical parameters (default = current hardcoded values) ----
+    bool defer_scalar_interpolation = false;
+    double max_edge_length = 0.0;
 
-    // A. 辺長制御 (len_*)
-    double len_target_divisor = 40.0;       // free_surface_target_len = sqrt(dx^2+dy^2) / この値
-    double len_fs_split_ratio = 1.1;        // 自由表面辺: len > fs_target * この値 で split
-    double len_fs_collapse_ratio = 0.55;    // 自由表面辺: len < fs_target * この値 で collapse
-    double len_global_max_ratio = 3.0;      // 全辺共通: len > fs_target * この値 で無条件 split
-    double len_global_min_ratio = 0.2;      // 全辺共通: len < fs_target * この値 で無条件 collapse
+    double len_target_divisor = 40.0;
+    double len_global_max_ratio = 3.0;
+    double len_global_min_ratio = 0.2;
 
-    // B. 曲率忠実度 (theta_*)
-    bool theta_enabled = true;              // 曲率ベース split/collapse の有効化
-    double theta_target_N = 60.0;           // 円筒 N 分割目標 → theta_target = 2π/N
-    double theta_split_ratio = 1.2;         // θ > theta_target * この値 で split
-    double theta_collapse_ratio = 0.8;      // θ < theta_target * この値 で collapse
+    bool theta_enabled = true;
+    double theta_target_N = 60.0;
+    double theta_split_ratio = 1.2;
+    double theta_collapse_ratio = 0.8;
 
-    // C. スムージング
-    double feature_angle_deg = 30.0;        // feature edge 保護角度 [deg]
+    double feature_angle_deg = 60.0;
+    int total_ops_limit = -1;    // -1 = unlimited, 0 = disabled, >0 = cap
+    int split_ops_limit = -1;    // -1 = unlimited, 0 = disabled, >0 = cap
+    int collapse_ops_limit = -1; // -1 = unlimited, 0 = disabled, >0 = cap
+    int flip_ops_limit = -1;     // -1 = unlimited, 0 = disabled, >0 = cap
+    int iter_split_collapse = 3; // 0 = no split/collapse/flip iteration
+    std::string remesh_method = "Trial";
+    enum class FlipMode { ValenceStrict, ValenceRelaxed, ValenceOnly, DelaunayOnly };
+    enum class SmoothMode { AreaLaplacian, OdtLaplacian, OdtCircumcenter, CircumradiusToInradius };
+    enum class ScenarioScope { Patch, Global };
+    enum class ScenarioOp { Split, Collapse, Flip, Smooth };
 
-    // D. ループ制御
-    //   各パスで試行する ops シナリオを直接指定できる。runTrials は各シナリオを
-    //   並列に試行し、patchQuality が最大のものを採択する。
-    //   ops の文字:  P=Split (trigger 辺), C=Collapse (trigger 辺), F=Flip (patch 内全 line valence 最適化),
-    //              S=Smooth (patch 内全 point の品質向上変位)
-    //   例:  split_scenarios = {"P","PS","PF","PFS","PFSFS","PFSFSFS"}
-    //        smoothing_scenarios = {"FS","FSFS","FSFSFS"}
-    std::vector<std::string> split_scenarios     = {"P","PS","PF","PFS","PFSFS","PFSFSFS"};
-    std::vector<std::string> collapse_scenarios  = {"C","CS","CF","CFS","CFSFS","CFSFSFS"};
-    std::vector<std::string> smoothing_scenarios = {"FS","FSFS","FSFSFS"};
-    // 各パスの 1 ステップあたり成功上限
-    int max_splits_per_step    = 10;
-    int max_collapses_per_step = 10;
-    int max_smoothing_per_step = 30;  // smoothing 独立パスの per-BC_predicate 上限（ir/angle/corner_halo 各々）
-    // [5] split / smoothing / collapse ループを何回繰り返すか（外側ループ回数）
-    int iter_split_collapse = 3;
+    struct ScenarioToken {
+      ScenarioOp op = ScenarioOp::Smooth;
+      char variant = 0; // F: v/d, otherwise 0
+      int valence_version = 1; // Fv=1, Fv2=2
+      SmoothMode smooth_mode = SmoothMode::AreaLaplacian;
+      bool has_smooth_mode_suffix = false;
+      bool sharp_safe = false;
+      std::string spelling;
+    };
 
-    // リメッシュ方式の選択
-    //   "trial"    : 既存。patchQuality ベースの local trial-and-error 方式（重いが物理保存強い）
-    //   "explicit" : MeshLab 風 Isotropic Explicit。split→collapse→flip→smooth を直接適用（速い）
-    std::string remesh_method = "trial";
+    FlipMode flip_mode = FlipMode::ValenceStrict;
+    SmoothMode smooth_mode = SmoothMode::AreaLaplacian;
+    int odt_smooth_iterations = 3;
 
-    // E. Trial acceptance / quality gate (緩めれば採用されやすくなる)
-    double quality_hd_diag_ratio = 0.1;        // hd_limit = min(diag * this, R * quality_hd_curv_ratio)
+    bool global_flip_enabled = true;
+    bool global_smoothing_enabled = true;
+    int global_smooth_iterations = 10;
+    bool expand_smooth_kernel_scenarios = true;
+
+    std::vector<std::string> split_scenarios = {"PS", "PSs", "PFS", "PFSs", "PFvsS", "PFvsSs", "PFdsS", "PFdsSs",
+                                                "PSc", "PScs", "PSls", "PFvsSl", "PFvsSls", "PFdsSls", "PFdsScs"};
+    std::vector<std::string> collapse_scenarios = {"CS", "CSs", "CFS", "CFSs", "CFvsS", "CFvsSs", "CFdsS", "CFdsSs",
+                                                   "CSc", "CScs", "CSls", "CFvsSl", "CFvsSls", "CFdsSls", "CFdsScs"};
+    std::vector<std::string> flip_scenarios = {"FS", "FSs", "FvsS", "FvsSs", "FdsS", "FdsSs",
+                                               "FSl", "FSls", "FvsSl", "FvsSls", "FdsSl", "FdsSls"};
+    std::vector<std::string> global_scenarios = {};
+    bool global_scenarios_explicit = false;
+
+    double quality_hd_diag_ratio = 0.1;
     double quality_hd_curv_ratio = 0.2;
-    double quality_normal_flip_cos = -0.3;     // 隣接面法線内積 < この値 で反転判定（致命的不適合）
-    double quality_score_improve_margin = 0.0; // trial.score > score_before + この値 で採用
-    // F. patchQuality スコア設計
-    //   score = worst_ir + 1/(1+local_cv_mean)
-    //         - resolution_weight * (fs_target_dist + 0.5 * theta_target_dist)
-    //   fs_target_dist = mean_{Dirichlet辺} (log(len/fs_target))^2   ← 長短両方向に対称
-    //   theta_target_dist = mean_{曲率valid辺} (log(theta/theta_target))^2
-    // resolution_weight を大きくすると target 達成が優先される (local quality より)
+    double quality_normal_flip_cos = -0.3;
+    double quality_score_improve_margin = 0.0;
+    double quality_min_angle_deg = 5.0;
+    bool aggressive_split = false;
     double quality_resolution_weight = 1.0;
+    bool waterline_protection_enabled = true;
+    bool waterline_fast_quality_enabled = true;
+    double waterline_split_min_score_gain = 0.005;
+    double waterline_midpoint_min_angle_deg = 2.0;
+    double waterline_midpoint_max_aspect = 60.0;
+    double waterline_face_min_angle_deg = 5.0;
+    double waterline_face_max_aspect = 20.0;
+
+    static FlipMode parse_flip_mode(const std::string& s) {
+      std::string t;
+      t.reserve(s.size());
+      for (char c : s) t.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+      if (t == "valence_relaxed" || t == "eltopo" || t == "relaxed")
+        return FlipMode::ValenceRelaxed;
+      if (t == "delaunay_only" || t == "delaunay")
+        return FlipMode::DelaunayOnly;
+      if (t == "valence_only" || t == "valence")
+        return FlipMode::ValenceOnly;
+      return FlipMode::ValenceStrict;
+    }
+
+    static SmoothMode parse_smooth_mode(const std::string& s) {
+      std::string t;
+      t.reserve(s.size());
+      for (char c : s) t.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+      if (t == "odt_laplacian" || t == "dunyach")
+        return SmoothMode::OdtLaplacian;
+      if (t == "odt_circumcenter" || t == "chen_holst" || t == "chenholst")
+        return SmoothMode::OdtCircumcenter;
+      if (t == "circumradius_to_inradius" || t == "circumtoincenter")
+        return SmoothMode::CircumradiusToInradius;
+      return SmoothMode::AreaLaplacian;
+    }
+
+    static bool is_smooth_kernel_suffix(char c) {
+      return c == 'c' || c == 'l';
+    }
+
+    static bool parse_scenario_tokens(const std::string& scenario,
+                                      ScenarioScope scope,
+                                      std::vector<ScenarioToken>* tokens,
+                                      std::string* error = nullptr) {
+      if (tokens)
+        tokens->clear();
+      auto fail = [&](const std::string& msg) {
+        if (error)
+          *error = msg;
+        return false;
+      };
+      if (scenario.empty())
+        return fail("empty scenario string");
+
+      std::size_t i = 0;
+      while (i < scenario.size()) {
+        ScenarioToken token;
+        const std::size_t begin = i;
+        const char op = scenario[i++];
+        if (op == 'P' || op == 'C') {
+          if (scope == ScenarioScope::Global)
+            return fail("global scenarios support only F/S tokens; got " + std::string(1, op));
+          token.op = (op == 'P') ? ScenarioOp::Split : ScenarioOp::Collapse;
+        } else if (op == 'F') {
+          token.op = ScenarioOp::Flip;
+          if (i < scenario.size() && scenario[i] == 'v') {
+            token.variant = scenario[i++];
+            if (i < scenario.size() && scenario[i] == '2') {
+              token.valence_version = 2;
+              ++i;
+            }
+          } else if (i < scenario.size() && scenario[i] == 'd') {
+            token.variant = scenario[i++];
+          }
+          if (i < scenario.size() && scenario[i] == 's') {
+            token.sharp_safe = true;
+            ++i;
+          }
+        } else if (op == 'S') {
+          token.op = ScenarioOp::Smooth;
+          token.smooth_mode = SmoothMode::AreaLaplacian;
+          if (i < scenario.size()) {
+            if (scenario[i] == 'c') {
+              token.smooth_mode = SmoothMode::CircumradiusToInradius;
+              token.has_smooth_mode_suffix = true;
+              ++i;
+            } else if (scenario[i] == 'l') {
+              token.smooth_mode = SmoothMode::AreaLaplacian;
+              token.has_smooth_mode_suffix = true;
+              ++i;
+            }
+          }
+          if (i < scenario.size() && scenario[i] == 's') {
+            token.sharp_safe = true;
+            ++i;
+          }
+        } else {
+          return fail("unknown scenario token '" + std::string(1, op) + "'");
+        }
+        token.spelling = scenario.substr(begin, i - begin);
+        if (tokens)
+          tokens->push_back(token);
+      }
+      return true;
+    }
+
+    static void validate_scenario_list(const std::vector<std::string>& scenarios,
+                                       ScenarioScope scope,
+                                       const std::string& key) {
+      for (const auto& scenario : scenarios) {
+        std::string error;
+        if (!parse_scenario_tokens(scenario, scope, nullptr, &error)) {
+          throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__,
+                              "Invalid remesh scenario in settings key \"" + key +
+                                  "\": \"" + scenario + "\" (" + error + ")");
+        }
+      }
+    }
+
+    static std::vector<std::string> expand_smooth_kernel_variants(const std::vector<std::string>& scenarios) {
+      auto append_unique = [](std::vector<std::string>& dst, const std::string& value) {
+        if (std::find(dst.begin(), dst.end(), value) == dst.end())
+          dst.push_back(value);
+      };
+
+      std::vector<std::string> expanded;
+      for (const auto& scenario : scenarios) {
+        std::vector<std::pair<std::string, std::size_t>> pending{{scenario, 0}};
+        while (!pending.empty()) {
+          auto [variant, pos] = pending.back();
+          pending.pop_back();
+
+          std::size_t i = pos;
+          for (; i < variant.size(); ++i)
+            if (variant[i] == 'S')
+              break;
+          if (i >= variant.size()) {
+            append_unique(expanded, variant);
+            continue;
+          }
+
+	          auto c2i = variant;
+	          auto laplace = variant;
+	          const bool has_kernel =
+	              (i + 1 < variant.size()) && is_smooth_kernel_suffix(variant[i + 1]);
+          const std::size_t next_pos = i + 2;
+          if (has_kernel) {
+            c2i[i + 1] = 'c';
+            laplace[i + 1] = 'l';
+          } else {
+            c2i.insert(c2i.begin() + static_cast<std::ptrdiff_t>(i + 1), 'c');
+            laplace.insert(laplace.begin() + static_cast<std::ptrdiff_t>(i + 1), 'l');
+          }
+          pending.emplace_back(laplace, next_pos);
+          pending.emplace_back(c2i, next_pos);
+        }
+      }
+      return expanded;
+    }
+
+    void normalize_scenario_lists() {
+      if (expand_smooth_kernel_scenarios) {
+        split_scenarios = expand_smooth_kernel_variants(split_scenarios);
+        collapse_scenarios = expand_smooth_kernel_variants(collapse_scenarios);
+        flip_scenarios = expand_smooth_kernel_variants(flip_scenarios);
+      }
+      if (!global_scenarios_explicit) {
+        global_scenarios.clear();
+        if (global_flip_enabled)
+          global_scenarios.push_back("F");
+        if (global_smoothing_enabled)
+          global_scenarios.push_back("S");
+      }
+      validate_scenario_list(split_scenarios, ScenarioScope::Patch, "remesh_patch_split_scenarios");
+      validate_scenario_list(collapse_scenarios, ScenarioScope::Patch, "remesh_patch_collapse_scenarios");
+      validate_scenario_list(flip_scenarios, ScenarioScope::Patch, "remesh_patch_flip_scenarios");
+      validate_scenario_list(global_scenarios, ScenarioScope::Global, "remesh_global_scenarios");
+    }
   } remeshing;
 
   /* ------------------------------- VPM settings ----------------------------- */
@@ -229,7 +475,895 @@ struct SimulationSettings {
   std::vector<Network*> FluidObject, RigidBodyObject, SoftBodyObject, AbsorberObject;
   std::vector<JSON> MeasurementJSONs;
 
-  SimulationSettings(std::filesystem::path input_directory, DomainMode mode_in = DomainMode::Time);
+  SimulationSettings(std::filesystem::path input_directory, DomainMode mode_in = DomainMode::Time)
+      : settings_file_path([&] {
+          const auto canonical = input_directory / settings_filename;
+          if (std::filesystem::exists(canonical))
+            return canonical;
+          const auto legacy = input_directory / legacy_setting_filename;
+          if (std::filesystem::exists(legacy)) {
+            std::cout << Yellow << "Warning: using legacy settings file name \"" << legacy_setting_filename
+                      << "\". Please rename it to \"" << settings_filename << "\"." << colorReset << std::endl;
+            return legacy;
+          }
+          throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__,
+                              "Missing settings file: expected \"" + settings_filename + "\" (or legacy \"" + legacy_setting_filename + "\") in: " + input_directory.string());
+        }()),
+        settingJSON(settings_file_path) {
+    domain_mode = mode_in;
+    common.input_directory = std::move(input_directory);
+    const auto mode_label = (domain_mode == DomainMode::Time) ? std::string("time_domain") : std::string("frequency_domain");
+
+    auto pick_key = [&](std::initializer_list<const char*> keys) -> std::optional<std::string> {
+      for (const auto* k : keys) {
+        if (settingJSON.find(k))
+          return std::string(k);
+      }
+      return std::nullopt;
+    };
+    auto require_key = [&](std::initializer_list<const char*> keys, const std::string& label) -> std::string {
+      auto hit = pick_key(keys);
+      if (!hit) {
+        throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__,
+                            "Missing key in settings.json (" + mode_label + "): " + label);
+      }
+      return *hit;
+    };
+    auto reject_removed_key = [&](const char* key, const std::string& replacement) {
+      if (!settingJSON.find(key))
+        return;
+      throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__,
+                          "Removed remesh setting in settings.json: \"" + std::string(key) +
+                              "\". The explicit remesh path has been removed; valid remesh_method is Trial." +
+                              (replacement.empty() ? "" : " " + replacement));
+    };
+
+    reject_removed_key("remesh_sizing_mode", "");
+    reject_removed_key("remesh_multi_scenario", "Use remesh_split_scenarios/remesh_collapse_scenarios/remesh_flip_scenarios directly.");
+    reject_removed_key("remesh_eltopo_check_self_intersection", "");
+    reject_removed_key("remesh_approximation_tolerance", "");
+    reject_removed_key("remesh_adaptive_L_min_factor", "");
+    reject_removed_key("remesh_adaptive_L_max_factor", "");
+    reject_removed_key("remesh_len_fs_split_ratio", "Trial uses fixed split threshold len > 4/3 * target.");
+    reject_removed_key("remesh_len_fs_collapse_ratio", "Trial uses fixed collapse threshold len < 4/5 * target.");
+
+    const auto output_key = require_key({"output_directory"}, "output_directory");
+    const auto input_files_key = require_key({"input_files"}, "input_files");
+    common.output_directory = settingJSON.at(output_key)[0];
+    if (common.output_directory.is_relative())
+      common.output_directory = common.input_directory / common.output_directory;
+    // Allow overriding output directory without editing the input case.
+    // Useful for sandboxed runs / short benchmarks.
+    if (const char* out_env = std::getenv("BEM_OUTPUT_DIR")) {
+      if (out_env[0] != '\0') {
+        common.output_directory = std::filesystem::path(out_env);
+        std::cout << Yellow << "Override output_directory via BEM_OUTPUT_DIR: " << common.output_directory << colorReset << std::endl;
+        std::filesystem::create_directories(common.output_directory);
+      }
+    }
+    (void)input_files_key;
+
+    // Helper: parse node_relocation from a string array
+    // ["method", period, "surface", "midpoint_mode"]
+    auto parse_node_relocation = [&](const std::vector<std::string>& arr) {
+      using M = TimeDomainSettings::NodeRelocationSettings::Method;
+      using S = TimeDomainSettings::NodeRelocationSettings::Surface;
+      using MM = TimeDomainSettings::NodeRelocationSettings::MidpointMode;
+      auto& nr = time.node_relocation;
+      auto method_str = toLowerCase(arr[0]);
+      if (method_str == "none")
+        nr.method = M::none;
+      else if (method_str == "ale")
+        nr.method = M::ALE;
+      else if (method_str == "interpolation")
+        nr.method = M::interpolation;
+      else
+        throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__,
+                            "node_relocation method must be none, ALE, or interpolation (got: " + arr[0] + ")");
+      if (arr.size() >= 2)
+        nr.period = std::stoi(arr[1]);
+      if (arr.size() >= 3) {
+        auto surf_str = toLowerCase(arr[2]);
+        nr.surface_explicitly_set = true;
+        if (surf_str == "linear")
+          nr.surface = S::linear;
+        else if (surf_str.contains("true"))
+          nr.surface = S::true_quadratic;
+        else if (surf_str.contains("pseudo") || surf_str.contains("quad"))
+          nr.surface = S::pseudo_quadratic;
+        else
+          throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__,
+                              "node_relocation surface must be linear, pseudo_quadratic, or true_quadratic (got: " + arr[2] + ")");
+      }
+      if (arr.size() >= 4) {
+        auto midpoint_mode_str = toLowerCase(arr[3]);
+        if (midpoint_mode_str == "nearest")
+          nr.midpoint_mode = MM::nearest;
+        else
+          throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__,
+                              "node_relocation midpoint_mode must be nearest (got: " + arr[3] + ")");
+      }
+    };
+
+    // Helper: parse legacy ALE/ALEPERIOD keys into node_relocation
+    auto parse_legacy_ale = [&](const std::string& ale_value, int period) {
+      using M = TimeDomainSettings::NodeRelocationSettings::Method;
+      using S = TimeDomainSettings::NodeRelocationSettings::Surface;
+      auto& nr = time.node_relocation;
+      nr.period = period;
+      auto val = toLowerCase(ale_value);
+      if (val == "none") {
+        nr.method = M::none;
+      } else if (val == "remap") {
+        nr.method = M::interpolation;
+      } else {
+        nr.method = M::ALE;
+        if (val == "linear") {
+          nr.surface = S::linear;
+          nr.surface_explicitly_set = true;
+        }
+        // "pseudo_quad", "true_quadratic" etc. → surface auto-resolved from element type
+      }
+      std::cout << Yellow << "Note: 'ALE'/'ALEPERIOD' keys are deprecated. Use 'node_relocation' instead. "
+                << "(e.g., \"node_relocation\": [\"ALE\", " << period << "])" << colorReset << std::endl;
+    };
+
+    if (domain_mode == DomainMode::Time) {
+      const auto end_step_key = require_key({"time_end_time_step", "end_time_step"}, "end_time_step");
+      const auto end_time_key = require_key({"time_end_time", "end_time"}, "end_time");
+      const auto max_dt_key = require_key({"time_max_dt", "max_dt"}, "max_dt");
+
+      time.end_time_step = stoi(settingJSON.at(end_step_key))[0];
+      time.end_time = stod(settingJSON.at(end_time_key))[0];
+      time.max_dt = stod(settingJSON.at(max_dt_key))[0];
+
+      if (const auto nr_key = pick_key({"node_relocation"})) {
+        parse_node_relocation(settingJSON.at(*nr_key));
+      } else {
+        // Legacy fallback
+        const auto ale_key = require_key({"time_ALE", "ALE"}, "ALE");
+        const auto ale_period_key = require_key({"time_ALEPERIOD", "ALEPERIOD"}, "ALEPERIOD");
+        parse_legacy_ale(settingJSON.at(ale_key)[0], stoi(settingJSON.at(ale_period_key))[0]);
+      }
+    } else {
+      if (const auto end_step_key = pick_key({"time_end_time_step", "end_time_step"}))
+        time.end_time_step = stoi(settingJSON.at(*end_step_key))[0];
+      if (const auto end_time_key = pick_key({"time_end_time", "end_time"}))
+        time.end_time = stod(settingJSON.at(*end_time_key))[0];
+      if (const auto max_dt_key = pick_key({"time_max_dt", "max_dt"}))
+        time.max_dt = stod(settingJSON.at(*max_dt_key))[0];
+
+      if (const auto nr_key = pick_key({"node_relocation"})) {
+        parse_node_relocation(settingJSON.at(*nr_key));
+      } else {
+        int period = 0;
+        if (const auto ale_period_key = pick_key({"time_ALEPERIOD", "ALEPERIOD"}))
+          period = stoi(settingJSON.at(*ale_period_key))[0];
+        if (const auto ale_key = pick_key({"time_ALE", "ALE"}))
+          parse_legacy_ale(settingJSON.at(*ale_key)[0], period);
+      }
+    }
+
+    bool coupling_explicitly_set = false;
+    {
+
+      std::cout << "input_directory : " << common.input_directory << std::endl;
+
+      /* -------------------------------------------------------------------------- */
+      /*                           read settings.json                               */
+      /* -------------------------------------------------------------------------- */
+
+      for (auto& [key, value] : settingJSON())
+        std::cout << key << ": " << value << std::endl;
+
+      // Required key validation already handled above (mode-aware).
+
+      /* ----------------------------- meshing options ---------------------------- */
+
+      settingJSON.find("meshing_options", [&](const auto& STR_VEC) {
+        for (const auto& STR_VEC : STR_VEC) {
+          if (STR_VEC == "tetrahedralize")
+            remeshing.tetrahedralize = true;
+          if (STR_VEC == "surface_flip")
+            remeshing.surface_flip = true;
+          if (STR_VEC == "surface_split")
+            remeshing.surface_split = true;
+          if (STR_VEC == "surface_collapse")
+            remeshing.surface_collapse = true;
+          if (STR_VEC == "improve_tetrahedra")
+            remeshing.improve_tetrahedra = true;
+        }
+      });
+
+      /* -------------------------------------------------------------------------- */
+
+      if (settingJSON.find("element")) {
+        auto elem_str = toLowerCase(settingJSON.at("element")[0]);
+        if (elem_str == "linear") {
+          bem.element.linear = true;
+        } else if (elem_str == "true_quadratic" || elem_str == "true_quad" || elem_str == "quadratic") {
+          bem.element.linear = false;
+          bem.element.true_quadratic = true;
+        } else if (elem_str.contains("hybrid")) {
+          bem.element.linear = false;
+          bem.element.quadratic_linear_hybrid = true;
+        } else if (elem_str.contains("quad") && elem_str.contains("pseudo")) {
+          bem.element.linear = false;
+          bem.element.pseudo_quadratic = true;
+        } else {
+          bem.element.linear = true;
+        }
+      } else {
+        bem.element.linear = true;
+      }
+
+      if (bem.element.linear)
+        std::cout << "LINEAR_ELEMENT" << std::endl;
+      if (bem.element.pseudo_quadratic)
+        std::cout << "PSEUDO_QUADRATIC_ELEMENT" << std::endl;
+      if (bem.element.true_quadratic)
+        std::cout << "TRUE_QUADRATIC_ELEMENT" << std::endl;
+      if (bem.element.quadratic_linear_hybrid)
+        std::cout << "QUADRATIC_LINEAR_HYBRID_ELEMENT" << std::endl;
+
+      {
+        using M = TimeDomainSettings::NodeRelocationSettings::Method;
+        using S = TimeDomainSettings::NodeRelocationSettings::Surface;
+        using MM = TimeDomainSettings::NodeRelocationSettings::MidpointMode;
+        auto& nr = time.node_relocation;
+        if (nr.method == M::none)
+          std::cout << "NODE_RELOCATION: none (pure Lagrangian)" << std::endl;
+        else {
+          std::cout << "NODE_RELOCATION: " << (nr.method == M::ALE ? "ALE" : "interpolation")
+                    << ", period=" << nr.period;
+          if (nr.method == M::interpolation)
+            std::cout << ", midpoint_mode=nearest";
+          std::cout << std::endl;
+        }
+      }
+
+      settingJSON.find("node_relocation_debug", [&](const auto& v) {
+        time.node_relocation.debug_output = stob(v)[0];
+      });
+      std::cout << "NODE_RELOCATION_DEBUG: " << (time.node_relocation.debug_output ? "true" : "false") << std::endl;
+
+      settingJSON.find("use_mesh_preparation_pipeline", [&](const auto& v) {
+        time.mesh_preparation_pipeline.enabled = stob(v)[0];
+      });
+      settingJSON.find("mesh_preparation_phase1_clung", [&](const auto& v) {
+        time.mesh_preparation_pipeline.phase1_clung = stob(v)[0];
+      });
+      settingJSON.find("mesh_preparation_phase2_remesh", [&](const auto& v) {
+        time.mesh_preparation_pipeline.phase2_remesh = stob(v)[0];
+      });
+      settingJSON.find("mesh_preparation_phase3_interpolate", [&](const auto& v) {
+        time.mesh_preparation_pipeline.phase3_interpolate = stob(v)[0];
+      });
+      settingJSON.find("mesh_preparation_dump_after_phase0", [&](const auto& v) {
+        time.mesh_preparation_pipeline.dump_after_phase0 = stob(v)[0];
+      });
+      settingJSON.find("mesh_preparation_dump_after_phase1", [&](const auto& v) {
+        time.mesh_preparation_pipeline.dump_after_phase1 = stob(v)[0];
+      });
+      settingJSON.find("mesh_preparation_dump_after_phase2", [&](const auto& v) {
+        time.mesh_preparation_pipeline.dump_after_phase2 = stob(v)[0];
+      });
+      settingJSON.find("mesh_preparation_dump_after_phase3", [&](const auto& v) {
+        time.mesh_preparation_pipeline.dump_after_phase3 = stob(v)[0];
+      });
+      settingJSON.find("mesh_preparation_debug_dump_all_phases", [&](const auto& v) {
+        time.mesh_preparation_pipeline.debug_dump_all_phases = stob(v)[0];
+      });
+      settingJSON.find("mesh_preparation_verbose_debug", [&](const auto& v) {
+        time.mesh_preparation_pipeline.verbose_debug = stob(v)[0];
+      });
+      settingJSON.find("mesh_preparation_waterline_geometry", [&](const auto& v) {
+        time.mesh_preparation_pipeline.waterline_geometry = stob(v)[0];
+      });
+      settingJSON.find("remesh_waterline_fast_quality_enabled", [&](const auto& v) {
+        const bool enabled = stob(v)[0];
+        time.mesh_preparation_pipeline.waterline_fast_quality_enabled = enabled;
+        remeshing.waterline_fast_quality_enabled = enabled;
+      });
+      settingJSON.find("mesh_preparation_geometry_projector_v2", [&](const auto& v) {
+        time.mesh_preparation_pipeline.geometry_projector_v2 = stob(v)[0];
+      });
+      settingJSON.find("mesh_preparation_pseudo_quadratic_policy", [&](const auto& v) {
+        const std::string policy = toLowerCase(StringTrim(v[0], {" "}));
+        using P = TimeDomainSettings::MeshPreparationPipelineSettings::PseudoQuadraticPolicy;
+        if (policy == "error" || policy == "strict" || policy == "throw") {
+          time.mesh_preparation_pipeline.pseudo_quadratic_policy = P::error;
+        } else if (policy == "fallback" || policy == "fallback_6node" || policy == "6node" || policy == "warn_fallback") {
+          time.mesh_preparation_pipeline.pseudo_quadratic_policy = P::fallback_6node;
+        } else {
+          throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__,
+                              "mesh_preparation_pseudo_quadratic_policy must be error or fallback_6node (got: " + v[0] + ")");
+        }
+      });
+      settingJSON.find("mesh_preparation_clung_max_iter", [&](const auto& v) {
+        time.mesh_preparation_pipeline.clung_max_iter = std::max(0, std::stoi(v[0]));
+      });
+      settingJSON.find("mesh_preparation_clung_tol", [&](const auto& v) {
+        time.mesh_preparation_pipeline.clung_tol = std::stod(v[0]);
+      });
+      settingJSON.find("mesh_preparation_clung_move_limit_factor", [&](const auto& v) {
+        time.mesh_preparation_pipeline.clung_move_limit_factor = std::stod(v[0]);
+      });
+      std::cout << "MESH_PREPARATION_PIPELINE: "
+                << (time.mesh_preparation_pipeline.enabled ? "true" : "false") << std::endl;
+      std::cout << "MESH_PREPARATION_PSEUDO_QUADRATIC_POLICY: "
+                << (time.mesh_preparation_pipeline.pseudo_quadratic_policy ==
+                            TimeDomainSettings::MeshPreparationPipelineSettings::PseudoQuadraticPolicy::fallback_6node
+                        ? "fallback_6node"
+                        : "error")
+                << std::endl;
+      std::cout << "MESH_PREPARATION_WATERLINE_GEOMETRY: "
+                << (time.mesh_preparation_pipeline.waterline_geometry ? "true" : "false") << std::endl;
+      std::cout << "MESH_PREPARATION_GEOMETRY_PROJECTOR_V2: "
+                << (time.mesh_preparation_pipeline.geometry_projector_v2 ? "true" : "false") << std::endl;
+
+      // Runge-Kutta order (1=Euler, 2=Heun, 3=RK3, 4=RK4)
+      settingJSON.find("rk_order", [&](const auto& v) {
+        int order = std::stoi(v[0]);
+        if (order < 1 || order > 4)
+          throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "rk_order must be 1, 2, 3, or 4 (got " + std::to_string(order) + ")");
+        time.rk_order = order;
+      });
+      std::cout << "RK_ORDER: " << time.rk_order << std::endl;
+
+      std::cout << "" << std::endl;
+
+      // Accept both uppercase (canonical) and lowercase (legacy) keys
+      {
+        const char* wd_key = settingJSON.find("WATER_DENSITY") ? "WATER_DENSITY" : (settingJSON.find("water_density") ? "water_density" : nullptr);
+        if (wd_key && settingJSON.find(wd_key, [&](auto STR_VEC) {
+              common.water_density = stod(STR_VEC[0]);
+              _WATER_DENSITY_ = common.water_density;
+            }))
+          std::cout << "WATER_DENSITY: " << common.water_density << std::endl;
+      }
+      {
+        const char* g_key = settingJSON.find("GRAVITY") ? "GRAVITY" : (settingJSON.find("gravity") ? "gravity" : nullptr);
+        if (g_key && settingJSON.find(g_key, [&](auto STR_VEC) {
+              common.gravity = stod(STR_VEC[0]);
+              _GRAVITY_ = common.gravity;
+            }))
+          std::cout << "GRAVITY: " << common.gravity << std::endl;
+      }
+
+      auto set_preconditioner = [&](std::string v) {
+        v = toLowerCase(StringTrim(v, {" "}));
+        if (v.empty() || v == "none" || v == "off" || v == "no" || v == "false" || v == "0") {
+          bem.solver.preconditioner_type = "NONE";
+          return;
+        }
+        if (v == "ilu") {
+          bem.solver.preconditioner_type = "ILU";
+          return;
+        }
+        if (v == "milu" || v == "milu0" || v == "milu(0)") {
+          bem.solver.preconditioner_type = "MILU";
+          return;
+        }
+        if (v == "ilut") {
+          bem.solver.preconditioner_type = "ILUT";
+          return;
+        }
+        if (v == "schwarz" || v == "additive_schwarz" || v == "as" || v == "block-jacobi" || v == "block_jacobi" || v == "bj") {
+          bem.solver.preconditioner_type = "SCHWARZ";
+          return;
+        }
+        if (v == "diagonal" || v == "jacobi") {
+          throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "preconditioner \"" + v + "\" is not supported (removed). Use \"ILU\", \"MILU\", \"ILUT\", \"SCHWARZ\", or \"NONE\".");
+        }
+        throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "Unknown preconditioner \"" + v + "\". Supported: \"ILU\", \"MILU\", \"ILUT\", \"SCHWARZ\", \"NONE\".");
+      };
+
+      auto set_ilu_neighborhood = [&](std::string type, const std::optional<std::string>& num_str = std::nullopt) {
+        type = toLowerCase(StringTrim(type, {" "}));
+        if (type == "buckets" || type == "bucket") {
+          bem.solver.ilu_neighborhood_type = "BUCKETS";
+          return;
+        }
+        if (type == "k-ring" || type == "kring" || type == "k_ring" || type == "k-ring ") {
+          if (!num_str.has_value())
+            throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "ILU neighborhood \"k-ring\" requires an integer num (0..20).");
+          const int num = std::stoi(StringTrim(*num_str, {" "}));
+          if (num < 0 || num > 20)
+            throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "ILU k-ring num must be in [0,20].");
+          bem.solver.ilu_neighborhood_type = "K-RING";
+          bem.solver.ilu_kring_num = num;
+          return;
+        }
+        throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "Unknown ILU neighborhood \"" + type + "\". Supported: \"k-ring\" (with num 0..20), \"buckets\".");
+      };
+
+      auto set_coupling = [&](std::string v) {
+        v = toLowerCase(StringTrim(v, {" "}));
+        if (v.empty() || v == "none" || v == "off") {
+          bem.solver.coupling_type = "NONE";
+          return;
+        }
+        if (v == "anderson" || v == "aa") {
+          bem.solver.coupling_type = "ANDERSON";
+          return;
+        }
+        if (v == "aitken") {
+          bem.solver.coupling_type = "AITKEN";
+          return;
+        }
+        if (v == "broyden") {
+          bem.solver.coupling_type = "BROYDEN";
+          return;
+        }
+        if (v == "newton") {
+          bem.solver.coupling_type = "NEWTON";
+          return;
+        }
+        throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "Unknown coupling \"" + v + "\". Supported: \"NONE\", \"ANDERSON\", \"AITKEN\", \"BROYDEN\".");
+      };
+
+      // Solver settings
+      settingJSON.find("solver", [&](const auto& v) {
+        if (v.size() >= 1)
+          bem.solver.solver_type = StringTrim(v[0], {" "});
+        if (v.size() >= 2)
+          bem.solver.solver_tol = std::stod(v[1]);
+        if (v.size() >= 3)
+          bem.solver.solver_max_iter = std::stoi(v[2]);
+        if (v.size() >= 4)
+          bem.solver.solver_restart = std::stoi(v[3]);
+        if (v.size() >= 5)
+          set_preconditioner(v[4]);
+        if (v.size() >= 6) {
+          if (bem.solver.preconditioner_type == "ILU" || bem.solver.preconditioner_type == "MILU" || bem.solver.preconditioner_type == "ILUT" || bem.solver.preconditioner_type == "SCHWARZ") {
+            set_ilu_neighborhood(v[5], (v.size() >= 7) ? std::optional<std::string>(v[6]) : std::nullopt);
+            if (bem.solver.preconditioner_type == "ILUT") {
+              // Optional ILUT params:
+              // solver (examples):
+              // - [GMRES, tol, max_iter, restart, ILUT, buckets, <drop_tol>, <max_entries_per_row>, <pivot_min>]
+              // - [GMRES, tol, max_iter, restart, ILUT, k-ring, <num>, <drop_tol>, <max_entries_per_row>, <pivot_min>]
+              std::size_t idx = 6;
+              if (bem.solver.ilu_neighborhood_type == "K-RING")
+                idx = 7;
+              if (v.size() > idx)
+                bem.solver.ilut_drop_tol = std::stod(v[idx]);
+              if (v.size() > idx + 1)
+                bem.solver.ilut_max_entries_per_row = std::stoi(v[idx + 1]);
+              if (v.size() > idx + 2)
+                bem.solver.ilut_pivot_min = std::stod(v[idx + 2]);
+            } else if (bem.solver.preconditioner_type == "MILU") {
+              // Optional MILU params:
+              // - [GMRES, tol, max_iter, restart, MILU, buckets, <omega>]
+              // - [GMRES, tol, max_iter, restart, MILU, k-ring, <num>, <omega>]
+              std::size_t idx = 6;
+              if (bem.solver.ilu_neighborhood_type == "K-RING")
+                idx = 7;
+              if (v.size() > idx)
+                bem.solver.milu_omega = std::stod(v[idx]);
+            } else if (bem.solver.preconditioner_type == "SCHWARZ") {
+              if (bem.solver.ilu_neighborhood_type != "K-RING") {
+                throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "SCHWARZ preconditioner currently requires ILU neighborhood type \"k-ring\".");
+              }
+              // Optional SCHWARZ params:
+              // - [GMRES, tol, max_iter, restart, SCHWARZ, k-ring, <num>, <core_k>, <overlap_k>, <max_core_size>, <max_block_size>, <pivot_min>, <diag_shift>]
+              std::size_t idx = 7; // after k-ring num
+              if (v.size() > idx)
+                bem.solver.schwarz_core_k = std::stoi(v[idx]);
+              if (v.size() > idx + 1)
+                bem.solver.schwarz_overlap_k = std::stoi(v[idx + 1]);
+              if (v.size() > idx + 2)
+                bem.solver.schwarz_max_core_size = std::stoi(v[idx + 2]);
+              if (v.size() > idx + 3)
+                bem.solver.schwarz_max_block_size = std::stoi(v[idx + 3]);
+              if (v.size() > idx + 4)
+                bem.solver.schwarz_pivot_min = std::stod(v[idx + 4]);
+              if (v.size() > idx + 5)
+                bem.solver.schwarz_diag_shift = std::stod(v[idx + 5]);
+            }
+          } else {
+            std::cout << Yellow << "Warning: extra solver parameters after preconditioner are ignored because preconditioner=\"" << bem.solver.preconditioner_type << "\"." << colorReset << std::endl;
+          }
+        }
+      });
+      settingJSON.find("solver_tol", [&](const auto& v) { bem.solver.solver_tol = std::stod(v[0]); });
+      settingJSON.find("solver_max_iter", [&](const auto& v) { bem.solver.solver_max_iter = std::stoi(v[0]); });
+      settingJSON.find("solver_restart", [&](const auto& v) { bem.solver.solver_restart = std::stoi(v[0]); });
+      settingJSON.find("preconditioner", [&](const auto& v) { set_preconditioner(v[0]); });
+      settingJSON.find("milu_omega", [&](const auto& v) { bem.solver.milu_omega = std::stod(v[0]); });
+      settingJSON.find("ilut_drop_tol", [&](const auto& v) { bem.solver.ilut_drop_tol = std::stod(v[0]); });
+      settingJSON.find("ilut_max_entries_per_row", [&](const auto& v) { bem.solver.ilut_max_entries_per_row = std::stoi(v[0]); });
+      settingJSON.find("ilut_pivot_min", [&](const auto& v) { bem.solver.ilut_pivot_min = std::stod(v[0]); });
+      settingJSON.find("schwarz_core_k", [&](const auto& v) { bem.solver.schwarz_core_k = std::stoi(v[0]); });
+      settingJSON.find("schwarz_overlap_k", [&](const auto& v) { bem.solver.schwarz_overlap_k = std::stoi(v[0]); });
+      settingJSON.find("schwarz_max_core_size", [&](const auto& v) { bem.solver.schwarz_max_core_size = std::stoi(v[0]); });
+      settingJSON.find("schwarz_max_block_size", [&](const auto& v) { bem.solver.schwarz_max_block_size = std::stoi(v[0]); });
+      settingJSON.find("schwarz_pivot_min", [&](const auto& v) { bem.solver.schwarz_pivot_min = std::stod(v[0]); });
+      settingJSON.find("schwarz_diag_shift", [&](const auto& v) { bem.solver.schwarz_diag_shift = std::stod(v[0]); });
+      settingJSON.find("coupling", [&](const auto& v) {
+        coupling_explicitly_set = true;
+        if (v.size() >= 1)
+          set_coupling(v[0]);
+        if (v.size() >= 2)
+          bem.solver.coupling_tol = std::stod(v[1]);
+        if (v.size() > 2) {
+          bem.solver.coupling_params.clear();
+          for (size_t i = 2; i < v.size(); ++i)
+            bem.solver.coupling_params.push_back(std::stod(v[i]));
+        }
+      });
+
+      // Metal M2L GPU acceleration settings (requires GMRES + FMM)
+      settingJSON.find("use_metal_m2l", [&](const auto& v) { bem.solver.use_metal_m2l = stob(v)[0]; });
+      settingJSON.find("metal_m2l_threadgroup", [&](const auto& v) { bem.solver.metal_m2l_threadgroup = stob(v)[0]; });
+      settingJSON.find("metal_m2l_sort_terms", [&](const auto& v) { bem.solver.metal_m2l_sort_terms = stob(v)[0]; });
+
+      // P2M quadrature points (Dunavant rule)
+      settingJSON.find("p2m_quadrature_points", [&](const auto& v) { bem.solver.p2m_quadrature_points = std::stoi(v[0]); });
+
+      // MAC criterion parameter
+      settingJSON.find("mac_theta", [&](const auto& v) { bem.solver.mac_theta = std::stod(v[0]); });
+
+      // Nearfield integration mode
+      settingJSON.find("nearfield_mode", [&](const auto& v) { bem.solver.nearfield_mode = v[0]; });
+
+      // FMM tree structure settings (requires GMRES + FMM)
+      settingJSON.find("fmm_max_level", [&](const auto& v) { bem.solver.fmm_max_level = stoi(v)[0]; });
+      settingJSON.find("fmm_bucket_max_points", [&](const auto& v) { bem.solver.fmm_bucket_max_points = stoi(v)[0]; });
+
+      // Pressure-based detachment
+      settingJSON.find("pressure_detachment_enabled", [&](const auto& v) { bem.solver.enable_pressure_detachment = stob(v)[0]; });
+      settingJSON.find("pressure_detachment_threshold", [&](const auto& v) { bem.solver.detachment_pressure_threshold = std::stod(v[0]); });
+      settingJSON.find("pressure_detachment_consecutive_steps", [&](const auto& v) { bem.solver.detachment_consecutive_steps = std::stoi(v[0]); });
+
+      // Remeshing schedule / controls
+      settingJSON.find("stop_remesh_time", [&](auto STR_VEC) { remeshing.stop_remesh_time = stod(STR_VEC[0]); });
+      settingJSON.find("force_remesh_time", [&](auto STR_VEC) { remeshing.force_remesh_time = stod(STR_VEC[0]); });
+      settingJSON.find("grid_refinement", [&](auto STR_VEC) { remeshing.grid_refinement = stoi(STR_VEC[0]); });
+      settingJSON.find("min_edge_length", [&](const auto& v) { remeshing.min_edge_length = std::stod(v[0]); });
+      settingJSON.find("remesh_debug_output", [&](const auto& v) { remeshing.debug_output = stob(v)[0]; });
+      settingJSON.find("remesh_debug_verbose", [&](const auto& v) { remeshing.debug_verbose = stob(v)[0]; });
+      settingJSON.find("remesh_debug_edges", [&](const auto& v) { remeshing.debug_edges = stob(v)[0]; });
+      settingJSON.find("remesh_ai_edge_logging", [&](const auto& v) { remeshing.ai_edge_logging = stob(v)[0]; });
+      settingJSON.find("remesh_ai_edge_model_enabled", [&](const auto& v) { remeshing.ai_edge_model_enabled = stob(v)[0]; });
+      settingJSON.find("remesh_ai_edge_model_mode", [&](const auto& v) { remeshing.ai_edge_model_mode = v[0]; });
+      settingJSON.find("remesh_ai_edge_model_top_k", [&](const auto& v) { remeshing.ai_edge_model_top_k = std::max(1, std::stoi(v[0])); });
+      settingJSON.find("remesh_training_data_enabled", [&](const auto& v) { remeshing.training_data_enabled = stob(v)[0]; });
+      settingJSON.find("remesh_training_data_mode", [&](const auto& v) { remeshing.training_data_mode = v[0]; });
+      settingJSON.find("remesh_training_data_max_iter", [&](const auto& v) { remeshing.training_data_max_iter = std::max(0, std::stoi(v[0])); });
+      settingJSON.find("remesh_training_data_max_edges_per_iter", [&](const auto& v) { remeshing.training_data_max_edges_per_iter = std::max(-1, std::stoi(v[0])); });
+      settingJSON.find("remesh_training_data_random_extra_edges_per_iter", [&](const auto& v) { remeshing.training_data_random_extra_edges_per_iter = std::max(0, std::stoi(v[0])); });
+      settingJSON.find("remesh_training_data_max_apply_per_iter", [&](const auto& v) { remeshing.training_data_max_apply_per_iter = std::max(-1, std::stoi(v[0])); });
+      settingJSON.find("remesh_training_data_max_saved_success_per_iter", [&](const auto& v) { remeshing.training_data_max_saved_success_per_iter = std::max(-1, std::stoi(v[0])); });
+      settingJSON.find("remesh_training_data_max_saved_failure_per_iter", [&](const auto& v) { remeshing.training_data_max_saved_failure_per_iter = std::max(-1, std::stoi(v[0])); });
+      settingJSON.find("remesh_training_data_min_score_gain", [&](const auto& v) { remeshing.training_data_min_score_gain = std::stod(v[0]); });
+      settingJSON.find("remesh_training_data_random_seed", [&](const auto& v) { remeshing.training_data_random_seed = std::stoi(v[0]); });
+      settingJSON.find("remesh_training_data_weight_alpha", [&](const auto& v) { remeshing.training_data_weight_alpha = std::max(0.0, std::stod(v[0])); });
+      settingJSON.find("remesh_training_data_sweep_split_edges_per_iter", [&](const auto& v) { remeshing.training_data_sweep_split_edges_per_iter = std::max(0, std::stoi(v[0])); });
+      settingJSON.find("remesh_training_data_sweep_collapse_edges_per_iter", [&](const auto& v) { remeshing.training_data_sweep_collapse_edges_per_iter = std::max(0, std::stoi(v[0])); });
+      settingJSON.find("remesh_training_data_sweep_flip_edges_per_iter", [&](const auto& v) { remeshing.training_data_sweep_flip_edges_per_iter = std::max(0, std::stoi(v[0])); });
+      settingJSON.find("remesh_training_data_sweep_bcinterface_fraction", [&](const auto& v) { remeshing.training_data_sweep_bcinterface_fraction = std::max(0.0, std::stod(v[0])); });
+      settingJSON.find("remesh_training_data_sweep_dirichlet_fraction", [&](const auto& v) { remeshing.training_data_sweep_dirichlet_fraction = std::max(0.0, std::stod(v[0])); });
+      settingJSON.find("remesh_training_data_sweep_neumann_fraction", [&](const auto& v) { remeshing.training_data_sweep_neumann_fraction = std::max(0.0, std::stod(v[0])); });
+      auto parse_remesh_lightgbm_ranking = [&](const auto& v) {
+        remeshing.lightgbm_ranking_enabled = stob(v)[0];
+        remeshing.lightgbm_mode = "ranker";
+        if (v.size() >= 2)
+          remeshing.lightgbm_safe_model_path = v[1];
+      };
+      auto parse_remesh_lightgbm = [&](const auto& v) {
+        remeshing.lightgbm_ranking_enabled = stob(v)[0];
+        if (v.size() >= 2) {
+          if (v[1] == "ranker" || v[1] == "recommender") {
+            remeshing.lightgbm_mode = v[1];
+            if (v.size() >= 3)
+              remeshing.lightgbm_safe_model_path = v[2];
+          } else {
+            remeshing.lightgbm_mode = "ranker";
+            remeshing.lightgbm_safe_model_path = v[1];
+          }
+        }
+      };
+      settingJSON.find("remesh_lightgbm_ranking_enabled", parse_remesh_lightgbm_ranking);
+      settingJSON.find("remesh_lightgbm_scenario_ranking_enabled", parse_remesh_lightgbm_ranking);
+      settingJSON.find("remesh_lightgbm", parse_remesh_lightgbm);
+      settingJSON.find("remesh_lightgbm_safe_model_path", [&](const auto& v) { remeshing.lightgbm_safe_model_path = v[0]; });
+      settingJSON.find("remesh_lightgbm_recommender_top_k", [&](const auto& v) { remeshing.lightgbm_recommender_top_k = std::max(1, std::stoi(v[0])); });
+      settingJSON.find("remesh_len_target_divisor", [&](const auto& v) { remeshing.len_target_divisor = std::stod(v[0]); });
+      settingJSON.find("remesh_len_global_max_ratio", [&](const auto& v) { remeshing.len_global_max_ratio = std::stod(v[0]); });
+      settingJSON.find("remesh_len_global_min_ratio", [&](const auto& v) { remeshing.len_global_min_ratio = std::stod(v[0]); });
+      settingJSON.find("remesh_theta_enabled", [&](const auto& v) { remeshing.theta_enabled = stob(v)[0]; });
+      settingJSON.find("remesh_theta_target_N", [&](const auto& v) { remeshing.theta_target_N = std::stod(v[0]); });
+      settingJSON.find("remesh_theta_split_ratio", [&](const auto& v) { remeshing.theta_split_ratio = std::stod(v[0]); });
+      settingJSON.find("remesh_theta_collapse_ratio", [&](const auto& v) { remeshing.theta_collapse_ratio = std::stod(v[0]); });
+      settingJSON.find("remesh_feature_angle_deg", [&](const auto& v) { remeshing.feature_angle_deg = std::stod(v[0]); });
+      settingJSON.find("remesh_iter_split_collapse", [&](const auto& v) { remeshing.iter_split_collapse = std::max(0, std::stoi(v[0])); });
+      settingJSON.find("remesh_total_ops_limit", [&](const auto& v) { remeshing.total_ops_limit = std::max(-1, std::stoi(v[0])); });
+      settingJSON.find("remesh_split_ops_limit", [&](const auto& v) { remeshing.split_ops_limit = std::max(-1, std::stoi(v[0])); });
+      settingJSON.find("remesh_collapse_ops_limit", [&](const auto& v) { remeshing.collapse_ops_limit = std::max(-1, std::stoi(v[0])); });
+      settingJSON.find("remesh_flip_ops_limit", [&](const auto& v) { remeshing.flip_ops_limit = std::max(-1, std::stoi(v[0])); });
+      settingJSON.find("remesh_global_flip_enabled", [&](const auto& v) { remeshing.global_flip_enabled = stob(v)[0]; });
+      settingJSON.find("remesh_global_smoothing_enabled", [&](const auto& v) { remeshing.global_smoothing_enabled = stob(v)[0]; });
+      settingJSON.find("remesh_global_smooth_iterations", [&](const auto& v) { remeshing.global_smooth_iterations = std::max(0, std::stoi(v[0])); });
+      settingJSON.find("remesh_expand_smooth_kernel_scenarios", [&](const auto& v) { remeshing.expand_smooth_kernel_scenarios = stob(v)[0]; });
+      settingJSON.find("remesh_method", [&](const auto& v) { remeshing.remesh_method = v[0]; });
+      settingJSON.find("remesh_flip_mode", [&](const auto& v) { remeshing.flip_mode = RemeshingSettings::parse_flip_mode(v[0]); });
+      settingJSON.find("remesh_smooth_mode", [&](const auto& v) { remeshing.smooth_mode = RemeshingSettings::parse_smooth_mode(v[0]); });
+      settingJSON.find("remesh_odt_smooth_iterations", [&](const auto& v) { remeshing.odt_smooth_iterations = std::max(0, std::stoi(v[0])); });
+
+      // Legacy names are kept as aliases. Canonical patch_* keys win when both
+      // are present so existing cases remain valid while new settings read
+      // directly as patch/global scenario scopes.
+      settingJSON.find("remesh_split_scenarios", [&](const auto& v) { remeshing.split_scenarios = v; });
+      settingJSON.find("remesh_collapse_scenarios", [&](const auto& v) { remeshing.collapse_scenarios = v; });
+      settingJSON.find("remesh_flip_scenarios", [&](const auto& v) { remeshing.flip_scenarios = v; });
+      settingJSON.find("remesh_patch_split_scenarios", [&](const auto& v) { remeshing.split_scenarios = v; });
+      settingJSON.find("remesh_patch_collapse_scenarios", [&](const auto& v) { remeshing.collapse_scenarios = v; });
+      settingJSON.find("remesh_patch_flip_scenarios", [&](const auto& v) { remeshing.flip_scenarios = v; });
+      settingJSON.find("remesh_global_scenarios", [&](const auto& v) {
+        remeshing.global_scenarios = v;
+        remeshing.global_scenarios_explicit = true;
+      });
+      settingJSON.find("remesh_quality_hd_diag_ratio", [&](const auto& v) { remeshing.quality_hd_diag_ratio = std::stod(v[0]); });
+      settingJSON.find("remesh_quality_hd_curv_ratio", [&](const auto& v) { remeshing.quality_hd_curv_ratio = std::stod(v[0]); });
+      settingJSON.find("remesh_quality_normal_flip_cos", [&](const auto& v) { remeshing.quality_normal_flip_cos = std::stod(v[0]); });
+      settingJSON.find("remesh_quality_score_improve_margin", [&](const auto& v) { remeshing.quality_score_improve_margin = std::stod(v[0]); });
+      settingJSON.find("remesh_quality_min_angle_deg", [&](const auto& v) { remeshing.quality_min_angle_deg = std::stod(v[0]); });
+      settingJSON.find("remesh_quality_resolution_weight", [&](const auto& v) { remeshing.quality_resolution_weight = std::stod(v[0]); });
+      settingJSON.find("remesh_waterline_protection_enabled", [&](const auto& v) { remeshing.waterline_protection_enabled = stob(v)[0]; });
+      settingJSON.find("remesh_waterline_fast_quality_enabled", [&](const auto& v) { remeshing.waterline_fast_quality_enabled = stob(v)[0]; });
+      settingJSON.find("remesh_waterline_split_min_score_gain", [&](const auto& v) { remeshing.waterline_split_min_score_gain = std::max(0.0, std::stod(v[0])); });
+      settingJSON.find("remesh_waterline_midpoint_min_angle_deg", [&](const auto& v) { remeshing.waterline_midpoint_min_angle_deg = std::max(0.0, std::stod(v[0])); });
+      settingJSON.find("remesh_waterline_midpoint_max_aspect", [&](const auto& v) { remeshing.waterline_midpoint_max_aspect = std::max(1.0, std::stod(v[0])); });
+      settingJSON.find("remesh_waterline_face_min_angle_deg", [&](const auto& v) { remeshing.waterline_face_min_angle_deg = std::max(0.0, std::stod(v[0])); });
+      settingJSON.find("remesh_waterline_face_max_aspect", [&](const auto& v) { remeshing.waterline_face_max_aspect = std::max(1.0, std::stod(v[0])); });
+      settingJSON.find("remesh_aggressive_split", [&](const auto& v) { remeshing.aggressive_split = stob(v)[0]; });
+      remeshing.normalize_scenario_lists();
+
+      // Initial mesh pre-relaxation (ALE-style), before the first remesh/collapse.
+      // settings.json spec: "initial_mesh_pre_relax": ["true", "<loop:int>", "<coef:double>"]
+      settingJSON.find("initial_mesh_pre_relax", [&](const auto& v) {
+        if (v.empty())
+          return;
+        remeshing.initial_mesh_pre_relax.enabled = stob(v)[0];
+        if (!remeshing.initial_mesh_pre_relax.enabled)
+          return;
+        if (v.size() < 3) {
+          throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "initial_mesh_pre_relax must be: [true, loop(int), coef(double)]");
+        }
+        remeshing.initial_mesh_pre_relax.loop = std::stoi(v[1]);
+        remeshing.initial_mesh_pre_relax.coef = std::stod(v[2]);
+      });
+
+      // Surface collision detection and resolution
+      settingJSON.find("collision_enabled", [&](const auto& v) { remeshing.collision.enabled = stob(v)[0]; });
+      settingJSON.find("collision_proximity_factor", [&](const auto& v) { remeshing.collision.proximity_factor = std::stod(v[0]); });
+      settingJSON.find("collision_normal_reversal_cos", [&](const auto& v) { remeshing.collision.normal_reversal_cos = std::stod(v[0]); });
+      settingJSON.find("collision_min_zone_faces", [&](const auto& v) { remeshing.collision.min_zone_faces = std::stoi(v[0]); });
+      settingJSON.find("collision_detect_folding", [&](const auto& v) { remeshing.collision.detect_folding = stob(v)[0]; });
+      settingJSON.find("collision_detect_non_adjacent", [&](const auto& v) { remeshing.collision.detect_non_adjacent = stob(v)[0]; });
+      settingJSON.find("collision_resolve_with_tetgen", [&](const auto& v) { remeshing.collision.resolve_with_tetgen = stob(v)[0]; });
+      settingJSON.find("subsurface_altitude_reject", [&](const auto& v) { remeshing.subsurface_altitude_reject.enabled = stob(v)[0]; });
+      settingJSON.find("subsurface_min_face_altitude_rel", [&](const auto& v) { remeshing.subsurface_altitude_reject.min_face_altitude_rel = std::stod(v[0]); });
+      settingJSON.find("subsurface_min_edge_angle_deg", [&](const auto& v) { remeshing.subsurface_altitude_reject.min_edge_angle_deg = std::stod(v[0]); });
+      settingJSON.find("subsurface_max_edge_angle_deg", [&](const auto& v) { remeshing.subsurface_altitude_reject.max_edge_angle_deg = std::stod(v[0]); });
+      settingJSON.find("shell_visualization", [&](const auto& v) { remeshing.shell_visualization = stob(v)[0]; });
+      settingJSON.find("front_advancing_debug", [&](const auto& v) { remeshing.front_advancing_debug = stob(v)[0]; });
+
+      // VPM (optional)
+      settingJSON.find("use_VPM", [&](const auto& v) { vpm.enabled = stob(v)[0]; });
+      settingJSON.find("VPM_wall_min_absorb_receivers", [&](const auto& v) { vpm.wall_min_absorb_receivers = static_cast<std::size_t>(std::stoll(v[0])); });
+      settingJSON.find("VPM_wall_min_absorb_total_weight", [&](const auto& v) { vpm.wall_min_absorb_total_weight = std::stod(v[0]); });
+      settingJSON.find("VPM_sigma_factor", [&](const auto& v) { vpm.sigma_factor = std::stod(v[0]); });
+      settingJSON.find("VPM_stretching_scheme", [&](const auto& v) {
+        if (!v.empty())
+          vpm.stretching_scheme = v[0];
+      });
+      settingJSON.find("VPM_PSE_correction", [&](const auto& v) {
+        if (!v.empty())
+          vpm.PSE_correction = v[0];
+      });
+
+      // Checkpoint settings
+      settingJSON.find("checkpoint_interval", [&](const auto& v) { checkpoint.interval = std::stoi(v[0]); });
+      settingJSON.find("restart_from_checkpoint", [&](const auto& v) { if (!v.empty()) checkpoint.restart_from = v[0]; });
+      settingJSON.find("checkpoint_max_keep", [&](const auto& v) { checkpoint.max_keep = std::stoi(v[0]); });
+
+      // Frequency-domain optional settings (parsed even in time mode; used by main_freq_domain).
+      auto parse_double_list = [&](const std::vector<std::string>& v, std::vector<double>& out) {
+        out.clear();
+        out.reserve(v.size());
+        for (const auto& s : v)
+          out.push_back(std::stod(s));
+      };
+      auto parse_int_list = [&](const std::vector<std::string>& v, std::vector<int>& out) {
+        out.clear();
+        out.reserve(v.size());
+        for (const auto& s : v)
+          out.push_back(std::stoi(s));
+      };
+      auto set_omegas = [&](const std::vector<std::string>& v) { parse_double_list(v, frequency.omegas); };
+      auto set_dofs = [&](const std::vector<std::string>& v) { parse_int_list(v, frequency.dofs); };
+      auto set_rao_restoring = [&](const std::vector<std::string>& v) {
+        parse_double_list(v, frequency.rao_restoring);
+        if (frequency.rao_restoring.size() != 36)
+          throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "freq_rao_restoring must contain 36 row-major values");
+      };
+      auto parse_bool = [](const std::string& s) {
+        const auto t = toLowerCase(s);
+        return t == "1" || t == "true" || t == "yes" || t == "on";
+      };
+      if (!settingJSON.find("freq_omegas", set_omegas)) {
+        if (!settingJSON.find("frequency_omegas", set_omegas)) {
+          settingJSON.find("omegas", set_omegas);
+        }
+      }
+      if (!settingJSON.find("freq_dofs", set_dofs)) {
+        if (!settingJSON.find("frequency_dofs", set_dofs)) {
+          settingJSON.find("dofs", set_dofs);
+        }
+      }
+      settingJSON.find("freq_rao_restoring", set_rao_restoring);
+      settingJSON.find("freq_sponge_enabled", [&](const std::vector<std::string>& v) {
+        if (!v.empty())
+          frequency.sponge.enabled = parse_bool(v[0]);
+      });
+      settingJSON.find("freq_sponge_r_start", [&](const std::vector<std::string>& v) {
+        if (!v.empty())
+          frequency.sponge.r_start = std::stod(v[0]);
+      });
+      settingJSON.find("freq_sponge_length", [&](const std::vector<std::string>& v) {
+        if (!v.empty())
+          frequency.sponge.length = std::stod(v[0]);
+      });
+      settingJSON.find("freq_sponge_mu_max", [&](const std::vector<std::string>& v) {
+        if (!v.empty())
+          frequency.sponge.mu_max = std::stod(v[0]);
+      });
+      settingJSON.find("freq_sponge_order", [&](const std::vector<std::string>& v) {
+        if (!v.empty())
+          frequency.sponge.order = std::stoi(v[0]);
+      });
+
+      /* -------------------------------------------------------------------------- */
+      /*                read JSON files, input_files in settings.json               */
+      /* -------------------------------------------------------------------------- */
+
+      for (auto input_file_name : settingJSON["input_files"]) {
+        std::cout << Green << common.input_directory / input_file_name << colorReset << std::endl;
+        JSON injson(common.input_directory / input_file_name);
+
+        /* -------------------- display contents of the JSON file ------------------- */
+        for (auto& [key, value] : injson())
+          std::cout << Green << key << colorReset << ": " << value << std::endl;
+        auto object_name = injson.at("name")[0];
+
+        /* --------------------------- check required keys -------------------------- */
+        if (!injson.find("name"))
+          throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, (input_directory / input_file_name).string() + " does not have \"name\" key");
+        if (!injson.find("type"))
+          throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, (input_directory / input_file_name).string() + " does not have \"type\" key");
+        auto type = injson.at("type")[0];
+        if ((type.contains("Fluid") || type.contains("Body")) && !injson.find("objfile"))
+          throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, (input_directory / input_file_name).string() + " does not have \"objfile\" key");
+        else if (type.contains("Measurement") || type.contains("gauge")) {
+          MeasurementJSONs.emplace_back(injson);
+          std::cout << "type = " << type << std::endl;
+          std::cout << "skipped" << std::endl;
+          continue;
+        }
+
+        /* ------------------------ create Network object --------------------------- */
+
+        if (!injson.find("ignore") || !stob(injson["ignore"])[0]) {
+
+          std::string objfile_str = injson.at("objfile")[0];
+          std::filesystem::path objpath(objfile_str);
+          if (objpath.is_relative())
+            objpath = common.input_directory / objpath;
+          auto net = new Network(objpath.string(), object_name);
+          net->inputJSON = injson;
+          net->applyTransformations(injson);
+          setOutputInfo(injson.at("name")[0], common.output_directory);            //* for boundary surface */
+          setOutputInfo(injson.at("name")[0] + "_tetra", common.output_directory); //* for volume mesh */
+          if (type.contains("Fluid")) {
+            setOutputInfo(injson.at("name")[0] + "_shell_faces", common.output_directory);
+            setOutputInfo(injson.at("name")[0] + "_shell_tets", common.output_directory);
+            setOutputInfo(injson.at("name")[0] + "_shell_inner_tets", common.output_directory);
+            setOutputInfo(injson.at("name")[0] + "_shell_outer_tets", common.output_directory);
+            setOutputInfo(injson.at("name")[0] + "_aft_candidates", common.output_directory);
+          }
+
+          // rotation/translation は applyTransformations (Network.cpp) で処理済み
+
+          setTypes(net);
+          std::filesystem::copy_file(common.input_directory / input_file_name, common.output_directory / input_file_name, std::filesystem::copy_options::overwrite_existing);
+          mk_vtu(common.output_directory / (object_name + "_init.vtu"), {net->getFaces()});
+          /* -------------------------------------------------------------------------- */
+          for (auto& [key, value] : injson()) {
+            if (key.contains("mooring")) {
+              //$ ------------------------ MOORING ---------------------- */
+              //$ extract key the contains "mooring" as key name. extract them as vector
+              std::cout << "/* ------------------------ MOORING ---------------------- */" << std::endl;
+              std::cout << "initialize mooring" << std::endl;
+
+              //! check if the value contains 12 elements
+              if (value.size() != 13) //! show contents of the value nicely
+                throw error_message(__FILE__, __PRETTY_FUNCTION__, __LINE__, "mooring line must have 12 elements");
+
+              const auto name = value[0];
+              const int n_points = std::stoi(value[8]); //$ number of points
+              const std::array<double, 3> X_begin = {std::stod(value[1]), std::stod(value[2]), std::stod(value[3])};
+              const std::array<double, 3> X_end = {std::stod(value[4]), std::stod(value[5]), std::stod(value[6])};
+              const double total_length = std::stod(value[7]); //! [m]
+              const double w = std::stod(value[9]);            //! [kg/m]
+              const double stiffness = std::stod(value[10]);   //! [N/m]
+              const double damp = std::stod(value[11]);        //! [N/(m/s^2)]
+              const double diam = std::stod(value[12]);        //! [m]
+
+              std::cout << std::right << std::setw(15) << "name : " << name << std::endl;
+              std::cout << std::right << std::setw(15) << "X_begin : " << X_begin << std::endl;
+              std::cout << std::right << std::setw(15) << "X_end : " << X_end << std::endl;
+              std::cout << std::right << std::setw(15) << "total_length : " << total_length << std::endl;
+              std::cout << std::right << std::setw(15) << "n_points : " << n_points << std::endl;
+              std::cout << std::right << std::setw(15) << "mass per unit length : " << w << std::endl;
+              std::cout << std::right << std::setw(15) << "stiffness : " << stiffness << std::endl;
+              std::cout << std::right << std::setw(15) << "damp : " << damp << std::endl;
+              std::cout << std::right << std::setw(15) << "diam : " << diam << std::endl;
+              std::cout << std::right << std::setw(15) << "total mass" << w * total_length << std::endl;
+
+              std::cout << std::right << std::setw(15) << "initialize MooringLine" << std::endl;
+              auto mooring_net = new MooringLine(X_begin, X_end, total_length, n_points);
+              mooring_net->setName(name);
+
+              std::cout << std::right << std::setw(15) << "MooringLine->getPoints().size() = " << mooring_net->getPoints().size() << std::endl;
+              std::cout << std::right << std::setw(15) << "MooringLine->getName() = " << mooring_net->getName() << std::endl;
+
+              std::cout << std::right << std::setw(15) << "MooringLine->setDensityStiffnessDampingDiameter" << std::endl;
+              mooring_net->setDensityStiffnessDampingDiameter(w, stiffness, damp, diam);
+
+              net->mooringLines.emplace_back(mooring_net);
+              setOutputInfo(name, common.output_directory);
+
+              std::cout << std::right << std::setw(15) << "MooringLine->setEquilibriumState" << std::endl;
+              auto boundary_condition = [&](networkPoint* p) {
+                if (p == mooring_net->lastPoint || p == mooring_net->firstPoint) {
+                  p->acceleration.fill(0.);
+                  p->velocity.fill(0.);
+                }
+              };
+
+              mooring_net->setEquilibriumState(boundary_condition);
+
+              std::cout << "/* ------------------------------------------------------- */" << std::endl;
+            }
+          }
+          //$ ------------------------------------------------------- */
+        } else
+          Print("skipped");
+      }
+    }
+
+    // If coupling is not explicitly specified and there are no movable bodies, disable coupling.
+    if (!coupling_explicitly_set) {
+      bool has_movable_body = false;
+      for (auto* net : Join(RigidBodyObject, SoftBodyObject)) {
+        for (const auto& fixed : net->isFixed) {
+          if (!fixed) {
+            has_movable_body = true;
+            break;
+          }
+        }
+        if (has_movable_body)
+          break;
+      }
+      if (!has_movable_body) {
+        bem.solver.coupling_type = "NONE";
+        bem.solver.coupling_params.clear();
+      }
+    }
+  }
+
   /* -------------------------------------------------------------------------- */
 
   void setOutputInfo(auto output_name, const std::filesystem::path& output_directory) {
@@ -333,20 +1467,18 @@ struct SimulationSettings {
         std::string tmp = STR_VEC[0];
         std::transform(tmp.begin(), tmp.end(), tmp.begin(), [](char c) { return std::tolower(c); });
         if (tmp == "jonswap") {
-          double height = std::stod(STR_VEC[1]);
-          double period = std::stod(STR_VEC[2]);
+          std::cout << "Using JONSWAP" << std::endl;
+          H13 = std::stod(STR_VEC[1]);
+          T13 = std::stod(STR_VEC[2]);
           h = std::stod(STR_VEC[3]);
           bottom_z = std::stod(STR_VEC[4]);
-          double gamma = (STR_VEC.size() >= 6) ? std::stod(STR_VEC[5]) : 3.3;
-          // Check for parameter mode (7th element from GUI): default is Hm0_Tp for JONSWAP
-          std::string param_mode_str = (STR_VEC.size() >= 7) ? STR_VEC[6] : "Hm0_Tp";
-          WaveParamMode param_mode = WaveParamMode::HM0_TP;
-          if (param_mode_str == "H13_T13")
-            param_mode = WaveParamMode::H13_T13;
-          std::cout << "Using JONSWAP (" << param_mode << ")" << std::endl;
-          net->random_water_wave_theory =
-              RandomWaterWaveTheory::create(SpectrumType::JONSWAP, param_mode,
-                                            height, period, gamma, h, bottom_z);
+          net->random_water_wave_theory = RandomWaterWaveTheory(H13, T13, h, bottom_z);
+          if (STR_VEC.size() == 6)
+            net->random_water_wave_theory.gamma = std::stod(STR_VEC[5]);
+          else
+            net->random_water_wave_theory.gamma = 3.3;
+
+          net->random_water_wave_theory.setSpectrumType(SpectrumType::JONSWAP);
         } else {
 
           if (STR_VEC.size() < 4)
@@ -357,8 +1489,7 @@ struct SimulationSettings {
           T13 = vec[1];
           h = vec[2];
           bottom_z = vec[3];
-          net->random_water_wave_theory =
-              RandomWaterWaveTheory::Bretschneider(H13, T13, h, bottom_z);
+          net->random_water_wave_theory = RandomWaterWaveTheory(H13, T13, h, bottom_z);
         }
 
         std::cout << net->random_water_wave_theory;
@@ -367,7 +1498,7 @@ struct SimulationSettings {
         net->absorb_gradPhi_t = [net](const Tddd& X, double t) { return net->random_water_wave_theory.gradPhi_t(X, t); };
         net->absorb_phi = [net](const Tddd& X, const double t) { return net->random_water_wave_theory.phi(X, t); };
         net->absorb_eta = [net](const Tddd& X, const double t) { return net->random_water_wave_theory.eta(X, t); };
-        net->absorb_gamma = [net](double sd) { return std::clamp(sd / (3. * net->random_water_wave_theory.reference_wavelength), 0., 1.); };
+        net->absorb_gamma = [net](double sd) { return std::clamp(sd / (3. * net->random_water_wave_theory.L13), 0., 1.); };
       });
       net->inputJSON.find("solitary_wave_theory", [&](auto STR_VEC) {
         // Format: [H/h, depth, bottom_z, x_crest]

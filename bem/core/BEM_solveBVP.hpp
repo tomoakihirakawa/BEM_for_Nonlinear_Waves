@@ -1,7 +1,5 @@
 #pragma once
 
-#include "BEM_legacy_globals.hpp"
-#include "BEM_setBoundaryTypes.hpp"
 #include "basic_linear_systems.hpp"
 #include <algorithm>
 #include <cctype>
@@ -239,52 +237,6 @@ struct calculateFluidInteraction {
     return {force, torque};
   };
 
-  // Integrate pressure on a subset of acting faces, with explicit torque reference point
-  std::array<Tddd, 2> surfaceIntegralOfPressureOnSubset(
-      const std::vector<networkFace*>& subset,
-      const Tddd& reference_COM) const {
-    Tddd force = {0., 0., 0.}, torque = {0., 0., 0.};
-    for (const auto& f : subset) {
-      Tddd F_tmp = {0., 0., 0.}, T_tmp = {0., 0., 0.};
-      auto [p0, p1, p2] = f->getPoints();
-      if (use_true_quadratic_element && f->isTrueQuadraticElement) {
-        const auto& [l0, l1, l2] = f->Lines;
-        const std::array<double, 6> P6 = {
-            pressureAtActivePoint(p0, f), pressureAtActivePoint(p1, f), pressureAtActivePoint(p2, f),
-            pressureAtActiveMidpoint(l0, f), pressureAtActiveMidpoint(l1, f), pressureAtActiveMidpoint(l2, f)};
-        const T6Tddd X6 = {p0->X, p1->X, p2->X, l0->X_mid, l1->X_mid, l2->X_mid};
-        constexpr std::array<bool, 3> all_true{true, true, true};
-        for (const auto& [x0, x1, w0w1] : __GWGW10__Tuple) {
-          auto bary = ModTriShape<3>(x0, x1);
-          auto N6 = f->trueQuadN6(bary[0], bary[1]);
-          auto dN_dt0 = D_TriShape<6, 1, 0>(bary[0], bary[1], all_true);
-          auto dN_dt1 = D_TriShape<6, 0, 1>(bary[0], bary[1], all_true);
-          auto X_q = Dot(TriShape<6>(bary[0], bary[1], all_true), X6);
-          auto cross_q = Cross(Dot(dN_dt0, X6), Dot(dN_dt1, X6));
-          auto pressure_q = Dot(N6, P6);
-          auto df = pressure_q * w0w1 * (1. - x0) * cross_q;
-          F_tmp += df;
-          T_tmp += Cross(X_q - reference_COM, df);
-        }
-      } else {
-        std::array<double, 3> P012 = {
-            pressureAtActivePoint(p0, f), pressureAtActivePoint(p1, f), pressureAtActivePoint(p2, f)};
-        std::array<std::array<double, 3>, 3> X012 = {p0->X, p1->X, p2->X};
-        auto intpP = interpolationTriangleLinear0101(P012);
-        auto intpX = interpolationTriangleLinear0101(X012);
-        auto n = TriangleNormal(X012);
-        for (const auto& [x0, x1, w0w1] : __GWGW10__Tuple) {
-          auto df = intpP(x0, x1) * intpX.J(x0, x1) * w0w1 * n;
-          F_tmp += df;
-          T_tmp += Cross(intpX(x0, x1) - reference_COM, df);
-        }
-      }
-      force += F_tmp;
-      torque += T_tmp;
-    }
-    return {force, torque};
-  };
-
   std::array<Tddd, 2> surfaceIntegralOfVerySimplifiedDrag() {
     this->simplified_drag.fill(0.);
     this->simplified_drag_torque.fill(0.);
@@ -418,7 +370,7 @@ NOTE: ちなみに，$\frac{1-\xi_0}{{\| {{\bf{x}}\left( \pmb{\xi } \right) - {{
 
 */
 
-inline std::array<double, 3> weight(double t0, double t1) {
+std::array<double, 3> weight(double t0, double t1) {
   auto shape = [](double t0, double t1) -> std::array<double, 3> { return {t0, t1, 1 - t0 - t1}; };
 
   static const std::array<std::array<double, 2>, 3> vertex = {{{std::cos(M_PI / 2), std::sin(M_PI / 2)}, {std::cos(7 * M_PI / 6), std::sin(7 * M_PI / 6)}, {std::cos(11 * M_PI / 6), std::sin(11 * M_PI / 6)}}};
@@ -554,6 +506,83 @@ struct BEM_BVP {
   std::size_t* profile_fmm_matvec_calls = nullptr;
   std::array<double, 6>* profile_fmm_update_step_time_sum = nullptr;
 
+  // Optional hook for callers that keep auxiliary data keyed by BIE unknown index.
+  // solveGMRES may reindex unknowns for locality before building FMM sources.
+  std::function<void()> after_reindex_unknowns;
+
+  struct FMMMatvecStats {
+    std::string setup_source;
+    bool coordinate_scaling = false;
+    bool morton_reindex = false;
+    bool reused_sources = false;
+    bool reused_static_fmm = false;
+    std::size_t targets = 0;
+    std::size_t sources = 0;
+    std::size_t total_near_terms = 0;
+    double mean_near_terms_per_target = 0.0;
+    std::size_t max_near_terms_per_target = 0;
+    std::size_t vertex_targets = 0;
+    std::size_t vertex_total_near_terms = 0;
+    double vertex_mean_near_terms_per_target = 0.0;
+    std::size_t vertex_max_near_terms_per_target = 0;
+    std::size_t midpoint_targets = 0;
+    std::size_t midpoint_total_near_terms = 0;
+    double midpoint_mean_near_terms_per_target = 0.0;
+    std::size_t midpoint_max_near_terms_per_target = 0;
+    double max_source_offset = 0.0;
+    double mean_source_offset = 0.0;
+    double p95_source_offset = 0.0;
+    double coordinate_scale_factor = 1.0;
+    std::vector<std::pair<int, double>> top_source_offsets;
+  };
+
+  struct FMMMatvecSession {
+    std::vector<Network*>* waters = nullptr;
+    bool* use_scaling = nullptr;
+    double* scale_factor = nullptr;
+    bool active_scaling = false;
+    FMMMatvecSession() = default;
+    FMMMatvecSession(const FMMMatvecSession&) = delete;
+    FMMMatvecSession& operator=(const FMMMatvecSession&) = delete;
+    FMMMatvecSession(FMMMatvecSession&& other) noexcept
+        : waters(other.waters),
+          use_scaling(other.use_scaling),
+          scale_factor(other.scale_factor),
+          active_scaling(other.active_scaling) {
+      other.active_scaling = false;
+    }
+    FMMMatvecSession& operator=(FMMMatvecSession&& other) noexcept {
+      if (this == &other)
+        return *this;
+      reset();
+      waters = other.waters;
+      use_scaling = other.use_scaling;
+      scale_factor = other.scale_factor;
+      active_scaling = other.active_scaling;
+      other.active_scaling = false;
+      return *this;
+    }
+    void reset() noexcept {
+      if (active_scaling && waters) {
+        for (auto& net : *waters)
+          net->removeScaling();
+        if (use_scaling)
+          *use_scaling = false;
+        if (scale_factor)
+          *scale_factor = 1.0;
+      }
+      waters = nullptr;
+      use_scaling = nullptr;
+      scale_factor = nullptr;
+      active_scaling = false;
+    }
+    ~FMMMatvecSession() {
+      reset();
+    }
+  };
+
+  FMMMatvecStats last_fmm_matvec_stats;
+
   std::filesystem::path output_directory; // settings.json の output_directory
 
   BEM_BVP(std::vector<Network*> WATERS) : WATERS(WATERS) {};
@@ -677,7 +706,7 @@ struct BEM_BVP {
   int matrix_size = 0;
 
   /*展開次数*/
-  Buckets<std::shared_ptr<source4FMM<target4FMM>>, 10 /*展開項数*/> B_poles;
+  Buckets<std::shared_ptr<source4FMM<target4FMM>>, 8 /*展開項数*/> B_poles;
 
   std::array<double, 3> solve() {
     TimeWatch watch, watch_from_start;
@@ -1323,17 +1352,11 @@ struct BEM_BVP {
       if (body->isFloatingBody) {
         //$ ------------------------------ 係留索から受ける力とトルク ----------------------------- */
         //$ フェアリードの節点が隣の線要素から受けている張力ベクトル --> 浮体が受ける力とトルク
-        // Phase 2 (2026-04-12): replaced raw mooringLines loop with
-        // LumpedCableSystem::forceOnBody, which handles end_a/end_b symmetric
-        // lookup (matters when an end other than `lastPoint` is body-attached)
-        // and keeps the moment computed about body->COM with the same sign
-        // convention as the previous implementation.
         std::array<double, 3> F_mooring = {0., 0., 0.}, T_mooring = {0., 0., 0.};
         //! simulateはアップデートの際に行なっておく．
-        if (body->cable_system) {
-          auto [F_cable, T_cable] = body->cable_system->forceOnBody(body);
-          F_mooring = F_cable;
-          T_mooring = T_cable;
+        for (auto& mooring_line : body->mooringLines) {
+          F_mooring += mooring_line->lastPoint->getForce();
+          T_mooring += Cross(mooring_line->lastPoint->X - body->COM, mooring_line->lastPoint->getForce());
         }
 
         //@ ------------------------------ 浮体が流体力とトルク ----------------------------- */
